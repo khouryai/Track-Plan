@@ -1,0 +1,8 @@
+{
+  "_doc": "Manual corrections applied after label decoding. Match on the label text as decoded plus its page position (x, y of the box's top-left corner, within 3 pt; see docs/qa_report.md). Actions: \"ignore\": true drops the label; \"mp\" / \"track\" replace the decoded milepost / track suffix. Rebuild with: python3 pipeline/build.py --skip-svg",
+  "corrections": [
+    {"text": "23.38S", "x": 5921, "y": 897, "ignore": true,
+     "note": "Drawn between 25.35S and 25.52S - almost certainly a drafting typo for 25.38S. Confirm, then replace ignore with \"mp\": 25.38."},
+    {"text": "23.38S", "x": 5921, "y": 1120, "ignore": true, "note": "Same label below the tracks."}
+  ]
+}
