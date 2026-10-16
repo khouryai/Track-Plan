@@ -310,19 +310,93 @@ function renderScaled() {
 
 // ------------------------------------------------------------------ requests UI
 
+// Requests live in the database when server.py is running.  On a static host
+// (GitHub Pages) there is no API, so they are kept in this browser instead.
+let MODE = null;   // "server" | "local"
+const LS_KEY = "trackmap.requests.v1";
+let memStore = { next: 1, items: [] };
+
+function readLocal() {
+  try { const s = JSON.parse(localStorage.getItem(LS_KEY)); if (s && Array.isArray(s.items)) return s; } catch (e) { /* storage blocked */ }
+  return memStore;
+}
+function writeLocal(s) {
+  memStore = s;
+  try { localStorage.setItem(LS_KEY, JSON.stringify(s)); } catch (e) { /* keep in memory only */ }
+}
+
+function localApi(method, url, body) {
+  const s = readLocal(), id = parseInt(url.split("/")[2], 10);
+  const now = new Date().toISOString().slice(0, 19) + "Z";
+  const check = (r) => {
+    if (r.track_id !== undefined && !trackRange(r.track_id)) throw new Error(`unknown track ${r.track_id}`);
+    for (const k of ["from_mp", "to_mp"]) if (k in r && isNaN(parseFloat(r[k]))) throw new Error(`${k} must be a number`);
+  };
+  if (method === "GET") return [...s.items].sort((a, b) => (a.start_time || "").localeCompare(b.start_time || "") || a.id - b.id);
+  if (method === "POST") {
+    check(body);
+    const r = { request_no: null, start_time: null, end_time: null, work_type: null, requester: null, notes: null, status: "requested",
+      ...body, id: s.next++, created_at: now, updated_at: null };
+    s.items.push(r); writeLocal(s); return r;
+  }
+  const i = s.items.findIndex((r) => r.id === id);
+  if (i < 0) throw new Error("no such request");
+  if (method === "PUT") { check(body); s.items[i] = { ...s.items[i], ...body, id, updated_at: now }; writeLocal(s); return s.items[i]; }
+  if (method === "DELETE") { s.items.splice(i, 1); writeLocal(s); return { deleted: id }; }
+  throw new Error("unsupported");
+}
+
 async function api(method, url, body) {
+  if (MODE === "local") return localApi(method, url, body);
   const res = await fetch(url, { method, headers: body ? { "Content-Type": "application/json" } : {}, body: body ? JSON.stringify(body) : undefined });
   const j = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(j.error || res.statusText);
   return j;
 }
 
+async function detectMode() {
+  try {
+    const res = await fetch("api/requests", { cache: "no-store" });
+    const j = res.ok ? await res.json() : null;
+    MODE = Array.isArray(j) ? "server" : "local";
+  } catch (e) { MODE = "local"; }
+  $("#store-note").textContent = MODE === "server"
+    ? "Saved to the shared database (server.py)."
+    : "Static site: requests are saved in this browser only. Use Export to share or back them up.";
+}
+
 async function loadRequests() {
   try { state.requests = await api("GET", "api/requests"); }
-  catch (e) { state.requests = []; $("#form-msg").textContent = "Server not reachable - requests cannot be saved (run server.py)."; $("#form-msg").className = "msg err"; }
+  catch (e) { state.requests = []; formMsg("Could not load requests: " + e.message, true); }
   renderRequestList();
   renderRequests();
 }
+
+function exportRequests() {
+  const blob = new Blob([JSON.stringify(state.requests, null, 2)], { type: "application/json" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `access-requests-${new Date().toISOString().slice(0, 10)}.json`;
+  document.body.append(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+
+async function importRequests(file) {
+  let items;
+  try { items = JSON.parse(await file.text()); if (!Array.isArray(items)) throw new Error("expected a JSON array"); }
+  catch (e) { return formMsg("Import failed: " + e.message, true); }
+  let n = 0;
+  for (const r of items) {
+    const rec = {};
+    for (const k of ["request_no", "track_id", "from_mp", "to_mp", "start_time", "end_time", "work_type", "requester", "status", "notes"]) if (r[k] != null) rec[k] = r[k];
+    try { await api("POST", "api/requests", rec); n++; } catch (e) { /* skip invalid rows */ }
+  }
+  formMsg(`Imported ${n} of ${items.length} requests.`);
+  await loadRequests();
+}
+$("#export").onclick = exportRequests;
+$("#import").onclick = () => $("#import-file").click();
+$("#import-file").onchange = (e) => { if (e.target.files[0]) importRequests(e.target.files[0]); e.target.value = ""; };
 
 function fmtTime(t) { return t ? t.replace("T", " ") : "—"; }
 
@@ -549,5 +623,6 @@ function renderLegend() {
   renderRoutes(); renderAnchors(); renderQA();
   $("#loading").remove();
   zoomTo(0, 0, PAGE_W, PAGE_H, 0);
+  await detectMode();
   await loadRequests();
 })();

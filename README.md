@@ -5,14 +5,26 @@ The map looks the same as the PDF because the base layer *is* the PDF: an
 exact vector conversion. Everything interactive sits on top of it, in the same
 coordinate frame, and is driven by data extracted automatically from the drawing.
 
-## Quick start
+## Website
+
+The viewer is deployed to GitHub Pages from `main` by
+`.github/workflows/pages.yml` (it publishes the `web/` folder):
+**https://khouryai.github.io/Track-Plan/**
+
+A static host has no server, so on the website access requests are saved
+**in the viewer's browser** (localStorage). Use *Export JSON* / *Import JSON* to
+share or back them up. To keep requests in the shared SQLite database, run the
+server below; the same page then reads and writes through its API.
+
+## Run locally with the database
 
 ```bash
 python3 server.py            # http://127.0.0.1:8000  (standard library only)
 ```
 
 The server creates `db/trackmap.db` from `web/data/map.json` on first run.
-Open the page to:
+
+## Using the map
 
 - pan and zoom the drawing (mouse wheel, drag, pinch, arrow keys, `+` / `-`)
 - hover any track to read its **track and milepost** (e.g. `W1 MP 23.500`)
