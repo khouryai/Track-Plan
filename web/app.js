@@ -1,17 +1,17 @@
 "use strict";
-// Track map viewer.  The base layer is the drawing itself (map.svg, an exact
-// vector copy of the PDF); everything interactive is an SVG overlay in the same
-// coordinate frame (PDF points, origin top-left).
+// Track map viewer.  The base layer is the drawing rendered into map tiles
+// straight from the vector PDF (pipeline/make_tiles.py), so it is sharp at
+// every zoom.  Overlays use the drawing's own coordinates: PDF points, origin
+// top-left, mapped to Leaflet CRS.Simple as latLng(-y, x).
 
 const PAGE_W = 6552, PAGE_H = 1440;
-const SVGNS = "http://www.w3.org/2000/svg";
 const STATUS_COLOR = {
-  requested: "var(--req-requested)", approved: "var(--req-approved)", active: "var(--req-active)",
-  completed: "var(--req-completed)", cancelled: "var(--req-cancelled)",
+  requested: "#e08a00", approved: "#1f5fbf", active: "#d1242f", completed: "#6b7280", cancelled: "#9ca3af",
 };
+const HOVER = "#0a8f6a", ROUTE = "#8a2be2";
 const $ = (s) => document.querySelector(s);
 
-const state = { data: null, requests: [], view: { s: 1, tx: 0, ty: 0 }, sel: null, pick: null };
+const state = { data: null, requests: [], sel: null, pick: null };
 
 // ------------------------------------------------------------------ geometry
 
@@ -91,175 +91,94 @@ function bboxOf(polys) {
   return [x0, y0, x1, y1];
 }
 
-// ------------------------------------------------------------------ view
+// ------------------------------------------------------------------ map
 
-const vp = $("#viewport"), stage = $("#stage");
+const ll = (x, y) => L.latLng(-y, x);
+const llPoly = (pl) => pl.map(([x, y]) => ll(x, y));
+const PAGE_BOUNDS = L.latLngBounds(ll(0, PAGE_H), ll(PAGE_W, 0));
 
-function applyView() {
-  const { s, tx, ty } = state.view;
-  stage.style.transform = `translate(${tx}px, ${ty}px) scale(${s})`;
-  document.documentElement.style.setProperty("--inv", 1 / s);
-  renderScaled();
-}
+const map = L.map("viewport", {
+  crs: L.CRS.Simple, minZoom: -5, maxZoom: 6, zoomSnap: 0.25, zoomDelta: 0.5, wheelPxPerZoomLevel: 100,
+  zoomControl: false, attributionControl: false, maxBounds: PAGE_BOUNDS.pad(0.25), maxBoundsViscosity: 0.8,
+});
+const scale = () => map.getZoomScale(map.getZoom(), 0);   // screen px per PDF point
 
-function clampView() {
-  const v = state.view, W = vp.clientWidth, H = vp.clientHeight;
-  v.s = Math.max(fitScale() * 0.8, Math.min(v.s, 12));
-  const mw = PAGE_W * v.s, mh = PAGE_H * v.s;
-  v.tx = mw < W ? (W - mw) / 2 : Math.min(0, Math.max(W - mw, v.tx));
-  v.ty = mh < H ? (H - mh) / 2 : Math.min(0, Math.max(H - mh, v.ty));
-}
+// Only non-blank tiles exist; blank ones are served as white without a request.
+const WHITE = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='1' height='1'%3E%3Crect width='1' height='1' fill='%23fff'/%3E%3C/svg%3E";
+const DrawingTiles = L.TileLayer.extend({
+  // draw each tile 1px larger so neighbours overlap: no hairline seams when
+  // the browser scales tiles at fractional zoom levels
+  _initTile(tile) {
+    L.TileLayer.prototype._initTile.call(this, tile);
+    const s = this.getTileSize();
+    tile.style.width = s.x + 1 + "px";
+    tile.style.height = s.y + 1 + "px";
+  },
+  getTileUrl(c) {
+    const z = this._getZoomForUrl(), col = this.options.index[z] && this.options.index[z][c.x];
+    return col && col.includes(c.y) ? `tiles/${z}/${c.x}/${c.y}.png` : WHITE;
+  },
+});
 
-function fitScale() { return Math.min(vp.clientWidth / PAGE_W, vp.clientHeight / PAGE_H); }
-
-function zoomAt(f, cx, cy) {
-  const v = state.view, ns = Math.max(fitScale() * 0.8, Math.min(v.s * f, 12));
-  v.tx = cx - (cx - v.tx) * (ns / v.s);
-  v.ty = cy - (cy - v.ty) * (ns / v.s);
-  v.s = ns;
-  clampView();
-  applyView();
-}
+const layers = {
+  routes: L.layerGroup(), anchors: L.layerGroup(), qa: L.layerGroup(),
+  requests: L.layerGroup(), pick: L.layerGroup(), hover: L.layerGroup(),
+};
 
 function zoomTo(x0, y0, x1, y1, pad = 40) {
-  const W = vp.clientWidth, H = vp.clientHeight;
-  const s = Math.min(W / (x1 - x0 + 2 * pad), H / (y1 - y0 + 2 * pad), 6);
-  state.view = { s, tx: W / 2 - ((x0 + x1) / 2) * s, ty: H / 2 - ((y0 + y1) / 2) * s };
-  clampView();
-  applyView();
+  map.fitBounds(L.latLngBounds(ll(x0 - pad, y1 + pad), ll(x1 + pad, y0 - pad)), { maxZoom: 3.5 });
 }
+const fitPage = () => map.fitBounds(PAGE_BOUNDS, { animate: false });
 
-function toMap(clientX, clientY) {
-  const r = vp.getBoundingClientRect(), v = state.view;
-  return [(clientX - r.left - v.tx) / v.s, (clientY - r.top - v.ty) / v.s];
-}
-
-// pointer pan / pinch
-const pointers = new Map();
-let drag = null, moved = false;
-vp.addEventListener("pointerdown", (e) => {
-  vp.setPointerCapture(e.pointerId);
-  pointers.set(e.pointerId, [e.clientX, e.clientY]);
-  moved = false;
-  if (pointers.size === 1) drag = { x: e.clientX, y: e.clientY, tx: state.view.tx, ty: state.view.ty };
-  else drag = null;
-});
-vp.addEventListener("pointermove", (e) => {
-  if (pointers.has(e.pointerId)) {
-    const prev = pointers.get(e.pointerId);
-    pointers.set(e.pointerId, [e.clientX, e.clientY]);
-    if (pointers.size === 2) {
-      const [a, b] = [...pointers.values()];
-      const other = [...pointers.entries()].find(([id]) => id !== e.pointerId)[1];
-      const d0 = Math.hypot(prev[0] - other[0], prev[1] - other[1]), d1 = Math.hypot(a[0] - b[0], a[1] - b[1]);
-      const r = vp.getBoundingClientRect();
-      if (d0 > 0) zoomAt(d1 / d0, (a[0] + b[0]) / 2 - r.left, (a[1] + b[1]) / 2 - r.top);
-      moved = true;
-      return;
-    }
-    if (drag) {
-      const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
-      if (Math.abs(dx) + Math.abs(dy) > 3) { moved = true; vp.classList.add("dragging"); }
-      state.view.tx = drag.tx + dx;
-      state.view.ty = drag.ty + dy;
-      clampView();
-      applyView();
-    }
-  }
-  scheduleHover(e.clientX, e.clientY);
-});
-const endPointer = (e) => {
-  pointers.delete(e.pointerId);
-  vp.classList.remove("dragging");
-  if (pointers.size === 0) {
-    if (!moved && e.type === "pointerup") onMapClick(e.clientX, e.clientY);
-    drag = null;
-  }
-};
-vp.addEventListener("pointerup", endPointer);
-vp.addEventListener("pointercancel", endPointer);
-vp.addEventListener("wheel", (e) => {
-  e.preventDefault();
-  const r = vp.getBoundingClientRect();
-  zoomAt(Math.exp(-e.deltaY * (e.deltaMode ? 0.05 : 0.0015)), e.clientX - r.left, e.clientY - r.top);
-}, { passive: false });
-vp.addEventListener("keydown", (e) => {
-  const W = vp.clientWidth / 2, H = vp.clientHeight / 2;
-  if (e.key === "+" || e.key === "=") zoomAt(1.4, W, H);
-  else if (e.key === "-") zoomAt(1 / 1.4, W, H);
-  else if (e.key.startsWith("Arrow")) {
-    const d = 80;
-    state.view.tx += e.key === "ArrowLeft" ? d : e.key === "ArrowRight" ? -d : 0;
-    state.view.ty += e.key === "ArrowUp" ? d : e.key === "ArrowDown" ? -d : 0;
-    clampView(); applyView();
-  } else if (e.key === "Escape") cancelPick();
-  else return;
-  e.preventDefault();
-});
-$("#zoom-in").onclick = () => zoomAt(1.5, vp.clientWidth / 2, vp.clientHeight / 2);
-$("#zoom-out").onclick = () => zoomAt(1 / 1.5, vp.clientWidth / 2, vp.clientHeight / 2);
-$("#zoom-fit").onclick = () => { zoomTo(0, 0, PAGE_W, PAGE_H, 0); };
-window.addEventListener("resize", () => { clampView(); applyView(); });
-$("#toggle-panel").onclick = () => { $("#panel").classList.toggle("hidden"); setTimeout(() => { clampView(); applyView(); }, 0); };
+$("#zoom-in").onclick = () => map.zoomIn();
+$("#zoom-out").onclick = () => map.zoomOut();
+$("#zoom-fit").onclick = fitPage;
+$("#toggle-panel").onclick = () => { $("#panel").classList.toggle("hidden"); setTimeout(() => map.invalidateSize(), 0); };
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") cancelPick(); });
 
 // ------------------------------------------------------------------ hover readout
 
-let hoverReq = null;
-function scheduleHover(cx, cy) {
-  if (hoverReq) return;
-  hoverReq = requestAnimationFrame(() => { hoverReq = null; hover(cx, cy); });
-}
-function hover(cx, cy) {
-  const [x, y] = toMap(cx, cy);
-  const hit = nearestTrackPoint(x, y, Math.max(3, 14 / state.view.s));
-  const g = $("#g-hover");
-  g.replaceChildren();
+map.on("mousemove", (e) => {
+  const x = e.latlng.lng, y = -e.latlng.lat;
+  const hit = nearestTrackPoint(x, y, Math.max(1, 14 / scale()));
+  layers.hover.clearLayers();
   if (!hit) { $("#readout").textContent = state.pick ? pickPrompt() : "Hover a track for its milepost"; return; }
   $("#readout").innerHTML = `<b>${hit.track}</b> MP <b>${hit.mp.toFixed(3)}</b>` + (state.pick ? " — click to set " + (state.pick.stage === 0 ? "start" : "end") : "");
-  g.append(el("circle", { cx: hit.x, cy: hit.y, r: px(5), "stroke-width": px(1.5), class: "hover-dot" }));
-}
-
-// overlay sizes in map units that stay readable at any zoom: px / scale,
-// but never thinner than the drawn track itself when zoomed right in
-const px = (n) => n / state.view.s;
+  L.circleMarker(ll(hit.x, hit.y), { radius: 5, color: "#fff", weight: 1.5, fillColor: HOVER, fillOpacity: 1, interactive: false }).addTo(layers.hover);
+});
+map.on("mouseout", () => layers.hover.clearLayers());
+map.on("click", (e) => onMapClick(e.latlng.lng, -e.latlng.lat));
 
 // ------------------------------------------------------------------ overlays
 
-function el(tag, attrs = {}, text) {
-  const n = document.createElementNS(SVGNS, tag);
-  for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, v);
-  if (text != null) n.textContent = text;
-  return n;
-}
-const pathD = (pl) => "M" + pl.map((p) => p[0].toFixed(2) + " " + p[1].toFixed(2)).join("L");
+// request highlights: at least 8 px wide, growing with zoom to cover the drawn track
+const reqWeight = (sel) => Math.max(sel ? 11 : 8, Math.min(70, (sel ? 5.5 : 4.5) * scale()));
 
 function renderRoutes() {
-  const g = $("#g-routes"); g.replaceChildren();
+  layers.routes.clearLayers();
   if (!$("#lyr-routes").checked) return;
   for (const pieces of Object.values(state.data.routes))
-    for (const pc of pieces) for (const lg of pc.legs) g.append(el("path", { d: pathD(lg.pts), class: "route" }));
+    for (const pc of pieces) for (const lg of pc.legs)
+      L.polyline(llPoly(lg.pts), { color: ROUTE, weight: 2, opacity: 0.6, interactive: false }).addTo(layers.routes);
 }
 
 function renderAnchors() {
-  const g = $("#g-anchors"); g.replaceChildren();
+  layers.anchors.clearLayers();
   if (!$("#lyr-anchors").checked) return;
   for (const [track, pieces] of Object.entries(state.data.routes))
-    for (const pc of pieces) for (const a of pc.anchors) {
-      const c = el("circle", { cx: a.x, cy: a.y, r: 1.6, class: "anchor" + (a.line_level ? " line" : "") });
-      c.append(el("title", {}, `${track} MP ${a.mp}${a.line_level ? " (line-level)" : ""}`));
-      g.append(c);
-    }
+    for (const pc of pieces) for (const a of pc.anchors)
+      L.circleMarker(ll(a.x, a.y), { radius: 4, color: a.line_level ? "#b07ae6" : ROUTE, weight: 1.5, fillColor: "#fff", fillOpacity: 1 })
+        .bindTooltip(`${track} MP ${a.mp}${a.line_level ? " (line-level)" : ""}`).addTo(layers.anchors);
 }
 
 function renderQA() {
-  const g = $("#g-qa"); g.replaceChildren();
+  layers.qa.clearLayers();
   if (!$("#lyr-qa").checked) return;
   for (const l of state.data.labels) {
     if (!["out_of_sequence", "unanchored", "unused"].includes(l.status)) continue;
     const [x0, y0, x1, y1] = l.bbox;
-    const r = el("rect", { x: x0 - 2, y: y0 - 2, width: x1 - x0 + 4, height: y1 - y0 + 4, rx: 2, class: "qa" });
-    r.append(el("title", {}, `${l.text}: ${l.status.replace(/_/g, " ")}`));
-    g.append(r);
+    L.rectangle(L.latLngBounds(ll(x0 - 2, y1 + 2), ll(x1 + 2, y0 - 2)), { color: STATUS_COLOR.active, weight: 2, fill: false })
+      .bindTooltip(`${l.text}: ${l.status.replace(/_/g, " ")}`).addTo(layers.qa);
   }
 }
 
@@ -280,32 +199,33 @@ function visibleRequests() {
 }
 
 function renderRequests() {
-  const g = $("#g-requests"); g.replaceChildren();
+  layers.requests.clearLayers();
   if (!$("#lyr-requests").checked) return;
   for (const r of visibleRequests()) {
     const polys = sliceTrack(r.track_id, r.from_mp, r.to_mp);
-    const col = STATUS_COLOR[r.status] || "var(--muted)", sel = state.sel === r.id;
-    for (const pl of polys) {
-      const p = el("path", { d: pathD(pl), class: "req" + (sel ? " sel" : ""), stroke: col, "stroke-width": Math.max(sel ? 6 : 4.5, px(sel ? 12 : 9)) });
-      p.append(el("title", {}, `#${r.id} ${r.track_id} MP ${r.from_mp}–${r.to_mp} (${r.status})`));
-      g.append(p);
-    }
+    if (!polys.length) continue;
+    const col = STATUS_COLOR[r.status] || "#666", sel = state.sel === r.id;
+    const tip = `#${r.id} ${r.track_id} MP ${r.from_mp}–${r.to_mp} (${r.status})`;
+    for (const pl of polys)
+      L.polyline(llPoly(pl), { color: col, weight: reqWeight(sel), opacity: sel ? 0.8 : 0.55, lineCap: "butt" })
+        .bindTooltip(tip, { sticky: true }).on("click", () => selectRequest(r, false)).addTo(layers.requests);
     for (const mp of [r.from_mp, r.to_mp]) {
       const q = locate(r.track_id, mp);
-      if (q) g.append(el("circle", { cx: q.x, cy: q.y, r: Math.max(2.4, px(4.5)), fill: "#fff", stroke: col, "stroke-width": px(1.5), class: "req-end" }));
+      if (q) L.circleMarker(ll(q.x, q.y), { radius: 5, color: col, weight: 2, fillColor: "#fff", fillOpacity: 1, interactive: false }).addTo(layers.requests);
     }
-    if (polys.length) {
-      const [x0, y0] = bboxOf(polys);
-      g.append(el("text", { x: x0, y: y0 - Math.max(4, px(8)), class: "req-label", fill: col, "font-size": px(13), "stroke-width": px(3) },
-        `#${r.id} ${r.track_id} ${r.from_mp}–${r.to_mp}`));
-    }
+    const [x0, y0] = bboxOf(polys);
+    L.marker(ll(x0, y0), { interactive: false, icon: L.divIcon({ className: "req-label", html: `<span style="color:${col}">#${r.id} ${esc(r.track_id)} ${r.from_mp}–${r.to_mp}</span>`, iconSize: null, iconAnchor: [0, 22] }) })
+      .addTo(layers.requests);
   }
 }
 
-function renderScaled() {
-  // stroke widths of request overlays follow zoom so they stay legible
-  clearTimeout(renderScaled.t);
-  renderScaled.t = setTimeout(() => { renderRequests(); renderPick(); }, 60);
+map.on("zoomend", () => { renderRequests(); renderPick(); });
+
+function selectRequest(r, zoom = true) {
+  state.sel = r.id;
+  const polys = sliceTrack(r.track_id, r.from_mp, r.to_mp);
+  if (zoom && polys.length) zoomTo(...bboxOf(polys), 120);
+  renderRequestList(); renderRequests();
 }
 
 // ------------------------------------------------------------------ requests UI
@@ -355,7 +275,8 @@ async function api(method, url, body) {
 }
 
 async function detectMode() {
-  try {
+  if (location.hostname.endsWith("github.io")) MODE = "local";   // static hosting: no API to probe
+  else try {
     const res = await fetch("api/requests", { cache: "no-store" });
     const j = res.ok ? await res.json() : null;
     MODE = Array.isArray(j) ? "server" : "local";
@@ -421,10 +342,7 @@ function renderRequestList() {
       const act = e.target.dataset && e.target.dataset.act;
       if (act === "edit") return editRequest(r);
       if (act === "del") return deleteRequest(r);
-      state.sel = r.id;
-      const polys = sliceTrack(r.track_id, r.from_mp, r.to_mp);
-      if (polys.length) zoomTo(...bboxOf(polys), 120);
-      renderRequestList(); renderRequests();
+      selectRequest(r);
     };
     ul.append(li);
   }
@@ -481,30 +399,30 @@ form.addEventListener("input", () => previewForm());
 function previewForm() {
   const f = form.elements, a = parseFloat(f.from_mp.value), b = parseFloat(f.to_mp.value);
   state.pick = state.pick && state.pick.stage < 2 ? state.pick : null;
-  const g = $("#g-pick"); g.replaceChildren();
+  layers.pick.clearLayers();
   if (!f.track_id.value || isNaN(a) || isNaN(b)) return;
-  for (const pl of sliceTrack(f.track_id.value, a, b)) g.append(el("path", { d: pathD(pl), class: "pick-line", "stroke-width": Math.max(4.5, px(9)) }));
+  for (const pl of sliceTrack(f.track_id.value, a, b))
+    L.polyline(llPoly(pl), { color: HOVER, weight: reqWeight(false), opacity: 0.5, interactive: false }).addTo(layers.pick);
 }
 
 // pick limits on map
 function pickPrompt() { return state.pick.stage === 0 ? "Click the start of the work limits on a track" : `Click the end on ${state.pick.track}`; }
 $("#pick").onclick = () => {
-  if (state.pick) return cancelPick();
+  if (state.pick && state.pick.stage < 2) return cancelPick();
   state.pick = { stage: 0 };
   $("#pick").classList.add("armed"); $("#pick").textContent = "Picking… (Esc to cancel)";
-  vp.classList.add("picking");
+  map.getContainer().classList.add("picking");
   $("#readout").textContent = pickPrompt();
 };
 function cancelPick() {
   state.pick = null;
   $("#pick").classList.remove("armed"); $("#pick").textContent = "Pick limits on map";
-  vp.classList.remove("picking");
+  map.getContainer().classList.remove("picking");
   renderPick();
 }
-function onMapClick(cx, cy) {
-  if (!state.pick) return;
-  const [x, y] = toMap(cx, cy);
-  const hit = nearestTrackPoint(x, y, Math.max(3, 14 / state.view.s));
+function onMapClick(x, y) {
+  if (!state.pick || state.pick.stage > 1) return;
+  const hit = nearestTrackPoint(x, y, Math.max(1, 20 / scale()));
   if (!hit) return;
   const r3 = (v) => Math.round(v * 1000) / 1000;
   if (state.pick.stage === 0) {
@@ -512,6 +430,7 @@ function onMapClick(cx, cy) {
     form.elements.track_id.value = hit.track;
     form.elements.from_mp.value = r3(hit.mp);
     form.elements.to_mp.value = "";
+    $("#readout").textContent = pickPrompt();
   } else {
     let mp = hit.mp;
     if (hit.track !== state.pick.track) {   // project onto the first track
@@ -523,7 +442,6 @@ function onMapClick(cx, cy) {
     const p = state.pick;
     cancelPick();
     state.pick = { stage: 2, track: p.track };
-    previewForm();
     formMsg("Limits set - fill in the details and save.");
   }
   renderPick();
@@ -541,9 +459,9 @@ function nearestTrackPointOn(track, x, y) {
 }
 function renderPick() {
   if (state.pick && state.pick.stage === 1) {
-    const g = $("#g-pick"); g.replaceChildren();
-    g.append(el("circle", { cx: state.pick.a.x, cy: state.pick.a.y, r: px(6), "stroke-width": px(1.5), class: "pick-dot" }));
-  } else if (!state.pick || state.pick.stage === 2) previewForm();
+    layers.pick.clearLayers();
+    L.circleMarker(ll(state.pick.a.x, state.pick.a.y), { radius: 6, color: "#fff", weight: 1.5, fillColor: HOVER, fillOpacity: 1, interactive: false }).addTo(layers.pick);
+  } else previewForm();
 }
 
 // ------------------------------------------------------------------ find / layers
@@ -555,8 +473,8 @@ function showTab(name) {
 document.querySelectorAll(".tabs button").forEach((b) => (b.onclick = () => showTab(b.dataset.tab)));
 
 function flash(x, y) {
-  const g = $("#g-hover"); g.replaceChildren();
-  g.append(el("circle", { cx: x, cy: y, r: px(18), "stroke-width": px(2.5), class: "find-ring" }));
+  layers.hover.clearLayers();
+  L.circleMarker(ll(x, y), { radius: 18, color: HOVER, weight: 3, fill: false, interactive: false }).addTo(layers.hover);
 }
 
 $("#find-mp").addEventListener("submit", (e) => {
@@ -566,7 +484,7 @@ $("#find-mp").addEventListener("submit", (e) => {
   if (!q) { $("#find-msg").textContent = `${t} MP ${mp} is outside the calibrated range (${r.from_mp}–${r.to_mp}).`; return; }
   $("#find-msg").textContent = `${t} MP ${mp}: drawing position ${q.x.toFixed(1)}, ${q.y.toFixed(1)}`;
   zoomTo(q.x - 60, q.y - 40, q.x + 60, q.y + 40, 0);
-  setTimeout(() => flash(q.x, q.y), 80);
+  map.once("moveend", () => flash(q.x, q.y));
 });
 
 function renderStations() {
@@ -577,7 +495,7 @@ function renderStations() {
     seen.add(s.name);
     const li = document.createElement("li");
     li.textContent = s.name;
-    li.onclick = () => { zoomTo(s.x - 150, s.y - 70, s.x + 150, s.y + 70, 0); setTimeout(() => flash(s.x, s.y), 80); };
+    li.onclick = () => { zoomTo(s.x - 150, s.y - 70, s.x + 150, s.y + 70, 0); map.once("moveend", () => flash(s.x, s.y)); };
     ul.append(li);
   }
 }
@@ -605,24 +523,30 @@ function renderLegend() {
     .map(([k, c]) => `<div><span class="sw" style="background:${c}"></span>${k}</div>`).join("");
   const d = state.data, n = (s) => d.labels.filter((l) => l.status === s).length;
   $("#data-info").innerHTML = `Source: ${esc(d.source)} · extracted ${esc(d.generated.slice(0, 10))}<br>
-    ${d.labels.length} milepost labels read · ${d.tracks.length} calibrated tracks · ${n("out_of_sequence") + n("unanchored") + n("unused")} labels flagged for review (see docs/qa_report.md)`;
+    ${d.labels.length} milepost labels read · ${d.tracks.length} calibrated tracks · ${n("out_of_sequence") + n("unanchored") + n("unused")} labels flagged for review (see docs/qa_report.md)<br>
+    <a href="map.svg" target="_blank" rel="noopener">Vector copy of the drawing (SVG)</a>`;
 }
 
 // ------------------------------------------------------------------ boot
 
 (async function boot() {
-  const [data] = await Promise.all([
+  const [data, index] = await Promise.all([
     fetch("data/map.json").then((r) => r.json()),
-    new Promise((res) => { const img = $("#base"); if (img.complete) res(); else { img.onload = res; img.onerror = res; } }),
+    fetch("tiles/index.json").then((r) => r.json()),
   ]);
   state.data = data;
+  // high-density screens get the next zoom level's tiles at half size
+  const R = window.devicePixelRatio >= 1.5 ? 1 : 0;
+  new DrawingTiles("", { index, tileSize: 256 >> R, zoomOffset: R, minZoom: -5, maxZoom: 6,
+    minNativeZoom: -4 - R, maxNativeZoom: 4 - R, bounds: PAGE_BOUNDS, noWrap: true, keepBuffer: 3 }).addTo(map);
+  for (const g of Object.values(layers)) g.addTo(map);
+  fitPage();
   indexRoutes();
   populateTracks();
   renderStations();
   renderLegend();
   renderRoutes(); renderAnchors(); renderQA();
   $("#loading").remove();
-  zoomTo(0, 0, PAGE_W, PAGE_H, 0);
   await detectMode();
   await loadRequests();
 })();

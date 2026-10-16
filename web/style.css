@@ -91,26 +91,11 @@ td, th { text-align: left; padding: 3px 6px; border-bottom: 1px solid var(--line
 #legend .sw { display: inline-block; width: 22px; height: 6px; border-radius: 3px; margin-right: 6px; vertical-align: middle; }
 #legend div { margin: 4px 0; font-size: 13px; }
 
-#viewport { flex: 1; position: relative; overflow: hidden; background: #e9eaec; cursor: grab; touch-action: none; }
-#viewport.dragging { cursor: grabbing; }
+#viewport { flex: 1; position: relative; background: #e9eaec; }
+#viewport.leaflet-container { background: #e9eaec; font: inherit; }
 #viewport.picking { cursor: crosshair; }
-#stage { position: absolute; left: 0; top: 0; transform-origin: 0 0; will-change: transform; }
-#base { display: block; width: 6552px; height: 1440px; background: #fff; box-shadow: 0 1px 6px rgba(0,0,0,.15); user-select: none; }
-#overlay { position: absolute; left: 0; top: 0; width: 6552px; height: 1440px; overflow: visible; pointer-events: none; }
-#loading { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); background: var(--bg); }
-
-.route { fill: none; stroke: #8a2be2; stroke-opacity: .55; stroke-width: 1.6; }
-.anchor { fill: #fff; stroke: #8a2be2; stroke-width: .6; }
-.anchor.line { stroke: #b07ae6; }
-.qa { fill: none; stroke: var(--req-active); stroke-width: 1.2; }
-.req { fill: none; stroke-linecap: butt; stroke-linejoin: round; stroke-opacity: .55; }
-.req.sel { stroke-opacity: .85; }
-.req-end { stroke-width: 1.2; }
-.req-label { font-family: system-ui, sans-serif; font-weight: 600; paint-order: stroke; stroke: #fff; }
-.hover-dot { fill: var(--hover); stroke: #fff; stroke-width: .8; }
-.pick-dot { fill: var(--hover); stroke: #fff; stroke-width: .8; }
-.pick-line { fill: none; stroke: var(--hover); stroke-width: 5; stroke-opacity: .5; }
-.find-ring { fill: none; stroke: var(--hover); stroke-width: 1.5; }
+#loading { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); background: var(--bg); z-index: 1000; }
+.req-label span { font: 600 12px system-ui, sans-serif; white-space: nowrap; text-shadow: 0 0 3px #fff, 0 0 3px #fff, 0 0 3px #fff; }
 
 @media (max-width: 760px) {
   #panel { position: absolute; z-index: 5; height: calc(100% - 45px); width: min(380px, 100%); box-shadow: 2px 0 10px rgba(0,0,0,.2); }

@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Track Map</title>
+<link rel="stylesheet" href="vendor/leaflet/leaflet.css">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -107,20 +108,10 @@
   </aside>
 
   <div id="viewport" tabindex="0" aria-label="Track map">
-    <div id="stage">
-      <img id="base" src="map.svg" alt="System map drawing" draggable="false">
-      <svg id="overlay" xmlns="http://www.w3.org/2000/svg">
-        <g id="g-routes"></g>
-        <g id="g-anchors"></g>
-        <g id="g-qa"></g>
-        <g id="g-requests"></g>
-        <g id="g-pick"></g>
-        <g id="g-hover"></g>
-      </svg>
-    </div>
     <div id="loading">Loading map…</div>
   </div>
 </main>
+<script src="vendor/leaflet/leaflet.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

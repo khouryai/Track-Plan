@@ -1,14 +1,17 @@
 # Track Map
 
 A digital, database-backed version of the system track map (`source/System_Map_Print.pdf`).
-The map looks the same as the PDF because the base layer *is* the PDF: an
-exact vector conversion. Everything interactive sits on top of it, in the same
-coordinate frame, and is driven by data extracted automatically from the drawing.
+The map looks the same as the PDF because the base layer *is* the PDF, rendered
+into map tiles at up to 16 pixels per point (about 1150 dpi), so it stays sharp
+however far you zoom, including on high-density phone screens. Everything
+interactive sits on top of it in the same coordinate frame and is driven by
+data extracted automatically from the drawing.
 
 ## Website
 
 The viewer is deployed to GitHub Pages from `main` by
-`.github/workflows/pages.yml` (it publishes the `web/` folder):
+`.github/workflows/pages.yml`. The workflow renders the map tiles from the PDF
+(`pipeline/make_tiles.py`, about 2 minutes) and publishes the `web/` folder:
 **https://khouryai.github.io/Track-Plan/**
 
 A static host has no server, so on the website access requests are saved
@@ -19,7 +22,8 @@ server below; the same page then reads and writes through its API.
 ## Run locally with the database
 
 ```bash
-python3 server.py            # http://127.0.0.1:8000  (standard library only)
+python3 pipeline/make_tiles.py   # once: render web/tiles (needs poppler-utils, Pillow, numpy)
+python3 server.py                # http://127.0.0.1:8000  (standard library only)
 ```
 
 The server creates `db/trackmap.db` from `web/data/map.json` on first run.
@@ -40,7 +44,10 @@ The server creates `db/trackmap.db` from `web/data/map.json` on first run.
 `python3 pipeline/build.py` regenerates everything from the PDF (about 40 s; needs
 `pip install -r requirements.txt`, `poppler-utils` and the Liberation fonts).
 
-1. **Base map.** `pdftocairo -svg` turns the AutoCAD plot into `web/map.svg`. The
+1. **Base map.** `pipeline/make_tiles.py` renders the PDF with poppler into
+   256 px tiles for zoom levels -4 to 4 (1/16 to 16 pixels per point; blank
+   tiles are skipped), and the viewer (Leaflet) loads only the tiles on screen.
+   `pdftocairo -svg` also writes a vector copy to `web/map.svg`. The
    PDF names Arial and Swiss 721 but doesn't embed them, so `pipeline/fonts.conf`
    maps them to Liberation Sans, which has the same character widths. Compared
    pixel by pixel against Poppler's own render of the PDF, 99.1% of the ink
@@ -116,7 +123,7 @@ it a track and MP range and draw what comes back.
 ```
 source/   the original PDF
 pipeline/ extraction (pdfmap, labels, tracks, linref, build), glyph prototypes, fonts.conf, overrides
-web/      viewer (index.html, app.js, style.css), map.svg, data/map.json
+web/      viewer (index.html, app.js, style.css, vendor/leaflet), map.svg, data/map.json; tiles/ is generated
 db/       schema.sql (trackmap.db is generated, not committed)
 docs/     qa_report.md
 server.py
