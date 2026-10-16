@@ -199,3 +199,91 @@ def track_tags(prim):
             out.append(dict(n=lab, x=(r["x0"] + r["x1"]) / 2, y=(r["top"] + r["bottom"]) / 2, vert=vert,
                             bbox=[r["x0"], r["top"], r["x1"], r["bottom"]]))
     return out
+
+
+# ---------------------------------------------------------------- free text
+
+def free_text(prim):
+    """Horizontal stroke-glyph text that is not inside a milepost box, oval or
+    track tag: switch numbers (SW389, or SW stacked over 389), derails (DR53)
+    and facility codes (WXE, MXD).  Returns list of dict(text, bbox, conf)."""
+    import collections
+    boxes = [(c["x0"], c["top"], c["x1"], c["bottom"]) for c in pdfmap.find_containers(prim)]
+    boxes += [(r["x0"], r["top"], r["x1"], r["bottom"]) for r in prim["rects"]
+              if (14 < r["x1"] - r["x0"] < 18 and 4.5 < r["bottom"] - r["top"] < 7)
+              or (14 < r["bottom"] - r["top"] < 18 and 4.5 < r["x1"] - r["x0"] < 7)]
+    B = np.array(boxes)
+    free = []
+    for g in pdfmap.stroke_objects(prim):
+        if not 0 < g["lw"] <= 0.7 or g["bottom"] - g["top"] > 4.2 or g["x1"] - g["x0"] > 4.2:
+            continue
+        if ((B[:, 0] - 0.3 <= g["x0"]) & (B[:, 2] + 0.3 >= g["x1"]) &
+                (B[:, 1] - 0.3 <= g["top"]) & (B[:, 3] + 0.3 >= g["bottom"])).any():
+            continue
+        free.append(g)
+    parent = list(range(len(free)))
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    grid = collections.defaultdict(list)
+    for i, g in enumerate(free):
+        grid[(int(g["x0"] // 10), int(g["top"] // 10))].append(i)
+    for i, g in enumerate(free):
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                for j in grid[(int(g["x0"] // 10) + dx, int(g["top"] // 10) + dy)]:
+                    if j <= i:
+                        continue
+                    h = free[j]
+                    vo = min(g["bottom"], h["bottom"]) - max(g["top"], h["top"])
+                    if vo < 0.5 * min(g["bottom"] - g["top"], h["bottom"] - h["top"], 3.0):
+                        continue
+                    if max(h["x0"] - g["x1"], g["x0"] - h["x1"]) < 2.2:   # same word
+                        parent[find(i)] = find(j)
+    groups = collections.defaultdict(list)
+    for i, g in enumerate(free):
+        groups[find(i)].append(g)
+    words = []
+    for G in groups.values():
+        x0, x1 = min(g["x0"] for g in G), max(g["x1"] for g in G)
+        t, b = min(g["top"] for g in G), max(g["bottom"] for g in G)
+        if b - t < 2.5:
+            continue
+        c = dict(x0=x0 - 0.5, x1=x1 + 0.5, top=t - 1.5, bottom=b + 1.5, vert=False, kind="free")
+        chars, _ = pdfmap.segment_characters(c, G)
+        labs = [classify(ch["img"], align=True) for ch in chars]
+        if not labs:
+            continue
+        words.append(dict(text="".join(l.rstrip("~") for l, _ in labs),
+                          conf=round(float(min(s for _, s in labs)), 3), bbox=[x0, t, x1, b]))
+    # "SW" stacked over its number
+    used = set()
+    for w in words:
+        if w["text"] != "SW":
+            continue
+        x0, t, x1, b = w["bbox"]
+        below = [v for v in words if re.fullmatch(r"\d{2,4}", v["text"]) and id(v) not in used
+                 and 0 <= v["bbox"][1] - b < 3.0 and min(x1, v["bbox"][2]) - max(x0, v["bbox"][0]) > -1.5]
+        if below:
+            v = min(below, key=lambda v: v["bbox"][1] - b)
+            used.add(id(v))
+            w["text"] = "SW" + v["text"]
+            w["bbox"] = [min(x0, v["bbox"][0]), t, max(x1, v["bbox"][2]), v["bbox"][3]]
+            w["conf"] = min(w["conf"], v["conf"])
+    return [w for w in words if id(w) not in used and w["conf"] >= 0.9]
+
+
+def track_names(pdf_path=None):
+    """Track names written beside the lines in real text ("M3", "W1", "C2")."""
+    import pdfplumber
+    page = pdfplumber.open(pdf_path or pdfmap.PDF).pages[0]
+    out = []
+    for w in page.extract_words():
+        if re.fullmatch(r"[ACKLMRSWY]X?\d", w["text"]):
+            out.append(dict(name=w["text"], x=(w["x0"] + w["x1"]) / 2, y=(w["top"] + w["bottom"]) / 2,
+                            bbox=[w["x0"], w["top"], w["x1"], w["bottom"]]))
+    return out

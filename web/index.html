@@ -31,12 +31,27 @@
       <form id="req-form" autocomplete="off">
         <h2 id="req-form-title">New access request</h2>
         <input type="hidden" name="id">
-        <div class="row">
-          <label>Track<select name="track_id" required></select></label>
-          <label>From MP<input name="from_mp" type="number" step="0.001" required></label>
-          <label>To MP<input name="to_mp" type="number" step="0.001" required></label>
+        <h3>Work limits on the map</h3>
+        <div class="tools" role="group" aria-label="Map selection tools">
+          <button type="button" class="tool secondary" data-tool="box" title="Drag a box over a block of tracks">▭ Box select</button>
+          <button type="button" class="tool secondary" data-tool="path" title="Click a start point, then click along the track (through crossovers) to the end">⟿ Draw along track</button>
+          <button type="button" class="tool secondary" data-tool="piece" title="Click track pieces (crossovers, yard tracks...) to add or remove them">✚ Add / remove pieces</button>
         </div>
-        <button type="button" id="pick" class="secondary">Pick limits on map</button>
+        <p id="tool-hint" class="small"></p>
+        <div id="selection" class="selection" hidden>
+          <div class="sel-head"><b>Selected track</b><button type="button" id="sel-clear" class="link">Clear</button></div>
+          <ul id="sel-list"></ul>
+        </div>
+        <details id="typed-limits">
+          <summary>…or type a track and milepost range</summary>
+          <div class="row">
+            <label>Track<select name="track_id"><option value="">—</option></select></label>
+            <label>From MP<input name="from_mp" type="number" step="0.001"></label>
+            <label>To MP<input name="to_mp" type="number" step="0.001"></label>
+          </div>
+        </details>
+        <label>Location (station or train control room)
+          <select name="location"><option value="">— none —</option></select></label>
         <div class="row">
           <label>Start<input name="start_time" type="datetime-local"></label>
           <label>End<input name="end_time" type="datetime-local"></label>
@@ -98,6 +113,7 @@
     <section id="tab-layers" class="tab">
       <h2>Overlays</h2>
       <label class="check"><input type="checkbox" id="lyr-requests" checked> Access requests</label>
+      <label class="check"><input type="checkbox" id="lyr-segs"> All selectable track, by type</label>
       <label class="check"><input type="checkbox" id="lyr-routes"> Calibrated track centrelines</label>
       <label class="check"><input type="checkbox" id="lyr-anchors"> Milepost anchor points</label>
       <label class="check"><input type="checkbox" id="lyr-qa"> Labels needing review</label>

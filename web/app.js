@@ -3,63 +3,78 @@
 // straight from the vector PDF (pipeline/make_tiles.py), so it is sharp at
 // every zoom.  Overlays use the drawing's own coordinates: PDF points, origin
 // top-left, mapped to Leaflet CRS.Simple as latLng(-y, x).
+//
+// Two layers of track data come from the extraction (web/data/map.json):
+//   routes    milepost-calibrated running tracks (W1, M2, C1 ...): exact MPs
+//   segments  every piece of track on the drawing - running tracks, crossovers,
+//             yard leads, pocket and middle tracks - each with a name and the
+//             calibrated MP where it meets a running track.
+// Access requests can cover any of it: drawn along the track, picked piece by
+// piece, box-selected as a block, typed as track + MP range, and/or a location
+// (station or train control room).
 
 const PAGE_W = 6552, PAGE_H = 1440;
 const STATUS_COLOR = {
   requested: "#e08a00", approved: "#1f5fbf", active: "#d1242f", completed: "#6b7280", cancelled: "#9ca3af",
 };
 const HOVER = "#0a8f6a", ROUTE = "#8a2be2";
+const KIND_COLOR = { running: "#8a2be2", crossover: "#e0670b", yard: "#16a34a", track: "#0ea5e9" };
 const $ = (s) => document.querySelector(s);
+const r3 = (v) => Math.round(v * 1000) / 1000;
 
-const state = { data: null, requests: [], sel: null, pick: null };
+const state = { data: null, requests: [], sel: null, tool: null, draft: [], path: null };
 
-// ------------------------------------------------------------------ geometry
+// ------------------------------------------------------------------ calibrated routes
 
-let SEGS = [];          // flattened calibrated segments
-const GRID = 60, grid = new Map();
+let RSEGS = [];
+const GRID = 60, rgrid = new Map();
 
-function indexRoutes() {
-  SEGS = [];
-  for (const [track, pieces] of Object.entries(state.data.routes)) {
-    for (const pc of pieces) for (const lg of pc.legs) {
-      for (let i = 0; i < lg.pts.length - 1; i++) {
-        const [x0, y0] = lg.pts[i], [x1, y1] = lg.pts[i + 1];
-        SEGS.push({ track, x0, y0, x1, y1, m0: lg.mps[i], m1: lg.mps[i + 1] });
-      }
-    }
-  }
-  grid.clear();
-  SEGS.forEach((g, i) => {
-    const gx0 = Math.floor(Math.min(g.x0, g.x1) / GRID), gx1 = Math.floor(Math.max(g.x0, g.x1) / GRID);
-    const gy0 = Math.floor(Math.min(g.y0, g.y1) / GRID), gy1 = Math.floor(Math.max(g.y0, g.y1) / GRID);
-    for (let gx = gx0; gx <= gx1; gx++) for (let gy = gy0; gy <= gy1; gy++) {
+function gridAdd(g, i, x0, y0, x1, y1) {
+  for (let gx = Math.floor(Math.min(x0, x1) / GRID); gx <= Math.floor(Math.max(x0, x1) / GRID); gx++)
+    for (let gy = Math.floor(Math.min(y0, y1) / GRID); gy <= Math.floor(Math.max(y0, y1) / GRID); gy++) {
       const k = gx + "," + gy;
-      if (!grid.has(k)) grid.set(k, []);
-      grid.get(k).push(i);
+      if (!g.has(k)) g.set(k, []);
+      g.get(k).push(i);
     }
-  });
+}
+function gridNear(g, x, y, r) {
+  const out = new Set();
+  for (let gx = Math.floor((x - r) / GRID); gx <= Math.floor((x + r) / GRID); gx++)
+    for (let gy = Math.floor((y - r) / GRID); gy <= Math.floor((y + r) / GRID); gy++)
+      for (const i of g.get(gx + "," + gy) || []) out.add(i);
+  return out;
+}
+function projSeg(x, y, x0, y0, x1, y1) {
+  const dx = x1 - x0, dy = y1 - y0, L2 = dx * dx + dy * dy || 1e-9;
+  const t = Math.max(0, Math.min(1, ((x - x0) * dx + (y - y0) * dy) / L2));
+  const px = x0 + t * dx, py = y0 + t * dy;
+  return { t, px, py, d: Math.hypot(px - x, py - y) };
 }
 
-/** Nearest calibrated track point to (x, y) within r: {track, mp, x, y, d}. */
-function nearestTrackPoint(x, y, r) {
+function indexRoutes() {
+  RSEGS = []; rgrid.clear();
+  for (const [track, pieces] of Object.entries(state.data.routes))
+    for (const pc of pieces) for (const lg of pc.legs)
+      for (let i = 0; i < lg.pts.length - 1; i++) {
+        const [x0, y0] = lg.pts[i], [x1, y1] = lg.pts[i + 1];
+        RSEGS.push({ track, x0, y0, x1, y1, m0: lg.mps[i], m1: lg.mps[i + 1] });
+        gridAdd(rgrid, RSEGS.length - 1, x0, y0, x1, y1);
+      }
+}
+
+/** Nearest calibrated track point within r: {track, mp, x, y, d}. */
+function nearestTrackPoint(x, y, r, track) {
   let best = null;
-  const gx0 = Math.floor((x - r) / GRID), gx1 = Math.floor((x + r) / GRID);
-  const gy0 = Math.floor((y - r) / GRID), gy1 = Math.floor((y + r) / GRID);
-  const seen = new Set();
-  for (let gx = gx0; gx <= gx1; gx++) for (let gy = gy0; gy <= gy1; gy++) {
-    for (const i of grid.get(gx + "," + gy) || []) {
-      if (seen.has(i)) continue;
-      seen.add(i);
-      const g = SEGS[i], dx = g.x1 - g.x0, dy = g.y1 - g.y0, L2 = dx * dx + dy * dy || 1e-9;
-      const t = Math.max(0, Math.min(1, ((x - g.x0) * dx + (y - g.y0) * dy) / L2));
-      const px = g.x0 + t * dx, py = g.y0 + t * dy, d = Math.hypot(px - x, py - y);
-      if (d <= r && (!best || d < best.d)) best = { track: g.track, mp: g.m0 + t * (g.m1 - g.m0), x: px, y: py, d };
-    }
+  for (const i of gridNear(rgrid, x, y, r)) {
+    const g = RSEGS[i];
+    if (track && g.track !== track) continue;
+    const p = projSeg(x, y, g.x0, g.y0, g.x1, g.y1);
+    if (p.d <= r && (!best || p.d < best.d)) best = { track: g.track, mp: g.m0 + p.t * (g.m1 - g.m0), x: p.px, y: p.py, d: p.d };
   }
   return best;
 }
 
-/** Polylines covering milepost range [a, b] of a track (same rule as server.py). */
+/** Polylines covering milepost range [a, b] of a calibrated track (same rule as server.py). */
 function sliceTrack(track, a, b) {
   const lo = Math.min(a, b), hi = Math.max(a, b), out = [];
   for (const pc of state.data.routes[track] || []) for (const lg of pc.legs) {
@@ -77,12 +92,10 @@ function sliceTrack(track, a, b) {
   }
   return out;
 }
-
 function locate(track, mp) {
   const p = sliceTrack(track, mp, mp);
   return p.length ? { x: p[0][0][0], y: p[0][0][1] } : null;
 }
-
 function trackRange(track) { return state.data.tracks.find((t) => t.id === track); }
 
 function bboxOf(polys) {
@@ -91,10 +104,167 @@ function bboxOf(polys) {
   return [x0, y0, x1, y1];
 }
 
+// ------------------------------------------------------------------ all track segments
+
+let NET = [];
+const sgrid = new Map(), NODES = new Map();   // node id -> {x, y, adj: [{sid, other}]}
+
+function indexSegments() {
+  NET = state.data.segments;
+  sgrid.clear(); NODES.clear();
+  NET.forEach((s, sid) => {
+    s.cum = [0];
+    for (let i = 1; i < s.pts.length; i++) s.cum.push(s.cum[i - 1] + Math.hypot(s.pts[i][0] - s.pts[i - 1][0], s.pts[i][1] - s.pts[i - 1][1]));
+    s.L = s.cum[s.cum.length - 1];
+    for (let i = 0; i < s.pts.length - 1; i++) gridAdd(sgrid, sid * 10000 + i, ...s.pts[i], ...s.pts[i + 1]);
+    for (const [n, p] of [[s.a, s.pts[0]], [s.b, s.pts[s.pts.length - 1]]]) {
+      if (!NODES.has(n)) NODES.set(n, { x: p[0], y: p[1], adj: [] });
+    }
+    if (s.a !== s.b) {
+      NODES.get(s.a).adj.push({ sid, other: s.b });
+      NODES.get(s.b).adj.push({ sid, other: s.a });
+    }
+  });
+}
+
+/** Nearest point on any track segment within r: {sid, s, x, y, d}. */
+function segHit(x, y, r) {
+  let best = null;
+  for (const k of gridNear(sgrid, x, y, r)) {
+    const sid = Math.floor(k / 10000), i = k % 10000, s = NET[sid];
+    const [x0, y0] = s.pts[i], [x1, y1] = s.pts[i + 1];
+    const p = projSeg(x, y, x0, y0, x1, y1);
+    if (p.d <= r && (!best || p.d < best.d))
+      best = { sid, s: s.cum[i] + p.t * (s.cum[i + 1] - s.cum[i]), x: p.px, y: p.py, d: p.d };
+  }
+  return best;
+}
+
+function pointAt(s, d) {
+  d = Math.max(0, Math.min(s.L, d));
+  let i = 0;
+  while (i < s.cum.length - 2 && s.cum[i + 1] < d) i++;
+  const f = (d - s.cum[i]) / ((s.cum[i + 1] - s.cum[i]) || 1e-9);
+  return [s.pts[i][0] + f * (s.pts[i + 1][0] - s.pts[i][0]), s.pts[i][1] + f * (s.pts[i + 1][1] - s.pts[i][1])];
+}
+function subPoly(sid, d0, d1) {
+  const s = NET[sid], lo = Math.min(d0, d1), hi = Math.max(d0, d1);
+  const pts = [pointAt(s, lo)];
+  for (let i = 0; i < s.pts.length; i++) if (s.cum[i] > lo && s.cum[i] < hi) pts.push(s.pts[i]);
+  pts.push(pointAt(s, hi));
+  return d0 <= d1 ? pts : pts.reverse();
+}
+
+/** Shortest route along the track network between two points on segments. */
+function trackPath(A, B) {
+  if (A.sid === B.sid) return subPoly(A.sid, A.s, B.s);
+  const sa = NET[A.sid], sb = NET[B.sid];
+  const dist = new Map(), prev = new Map(), done = new Set();
+  dist.set(sa.a, A.s);
+  dist.set(sa.b, Math.min(dist.get(sa.b) ?? Infinity, sa.L - A.s));
+  for (;;) {
+    let u = null, du = Infinity;
+    for (const [n, d] of dist) if (!done.has(n) && d < du) { u = n; du = d; }
+    if (u === null) break;
+    done.add(u);
+    if (done.has(sb.a) && done.has(sb.b)) break;
+    for (const { sid, other } of NODES.get(u).adj) {
+      const nd = du + NET[sid].L;
+      if (nd < (dist.get(other) ?? Infinity)) { dist.set(other, nd); prev.set(other, { u, sid }); }
+    }
+  }
+  const viaA = (dist.get(sb.a) ?? Infinity) + B.s, viaB = (dist.get(sb.b) ?? Infinity) + (sb.L - B.s);
+  if (!isFinite(Math.min(viaA, viaB))) return null;
+  const endNode = viaA <= viaB ? sb.a : sb.b;
+  const chain = [];
+  for (let n = endNode; prev.has(n); n = prev.get(n).u) chain.unshift(prev.get(n));
+  const startNode = chain.length ? chain[0].u : endNode;
+  let pts = subPoly(A.sid, A.s, startNode === sa.a ? 0 : sa.L);
+  let at = startNode;
+  for (const { sid } of chain) {
+    const s = NET[sid];
+    const fwd = s.a === at;
+    pts = pts.concat((fwd ? s.pts : [...s.pts].reverse()).slice(1));
+    at = fwd ? s.b : s.a;
+  }
+  pts = pts.concat(subPoly(B.sid, endNode === sb.a ? 0 : sb.L, B.s).slice(1));
+  return pts;
+}
+
+/** Clip a polyline to a rectangle (Liang-Barsky per segment). */
+function clipPoly(pts, x0, y0, x1, y1) {
+  const out = [];
+  let cur = null;
+  for (let i = 0; i < pts.length - 1; i++) {
+    const [ax, ay] = pts[i], [bx, by] = pts[i + 1], dx = bx - ax, dy = by - ay;
+    let t0 = 0, t1 = 1, ok = true;
+    for (const [p, q] of [[-dx, ax - x0], [dx, x1 - ax], [-dy, ay - y0], [dy, y1 - ay]]) {
+      if (p === 0) { if (q < 0) { ok = false; break; } continue; }
+      const t = q / p;
+      if (p < 0) { if (t > t1) { ok = false; break; } if (t > t0) t0 = t; }
+      else { if (t < t0) { ok = false; break; } if (t < t1) t1 = t; }
+    }
+    if (!ok) { if (cur) { out.push(cur); cur = null; } continue; }
+    const P = [ax + t0 * dx, ay + t0 * dy], Q = [ax + t1 * dx, ay + t1 * dy];
+    if (!cur) cur = [P];
+    cur.push(Q);
+    if (t1 < 1) { out.push(cur); cur = null; }
+  }
+  if (cur) out.push(cur);
+  return out.filter((pl) => pl.length > 1 && Math.hypot(pl[pl.length - 1][0] - pl[0][0], pl[pl.length - 1][1] - pl[0][1]) > 0.5);
+}
+
+function samplePolys(polys, step = 1) {
+  const out = [];
+  for (const pl of polys) for (let i = 0; i < pl.length - 1; i++) {
+    const [ax, ay] = pl[i], [bx, by] = pl[i + 1], n = Math.max(1, Math.ceil(Math.hypot(bx - ax, by - ay) / step));
+    for (let k = 0; k <= n; k++) out.push([ax + (bx - ax) * k / n, ay + (by - ay) * k / n]);
+  }
+  return out;
+}
+
+function fmtEnd(e) { return e ? `${e.track} MP ${e.mp.toFixed(2)}` : null; }
+function segContext(seg) {
+  const [ea, eb] = seg.ends;
+  if (ea && eb && ea.track === eb.track && seg.kind !== "crossover")
+    return `${ea.track} MP ${Math.min(ea.mp, eb.mp).toFixed(2)}–${Math.max(ea.mp, eb.mp).toFixed(2)}`;
+  const [a, b] = seg.ends.map(fmtEnd);
+  if (a && b && a !== b) return `between ${a} and ${b}`;
+  if (a || b) return `from ${a || b}`;
+  return "";
+}
+
+/** What a selection covers: MP ranges on calibrated tracks plus the other named pieces. */
+function describeGeometry(polys) {
+  const runs = new Map(), others = new Map();
+  for (const [x, y] of samplePolys(polys, 1)) {
+    const rh = nearestTrackPoint(x, y, 1.5);
+    if (rh) {
+      const r = runs.get(rh.track) || [Infinity, -Infinity];
+      runs.set(rh.track, [Math.min(r[0], rh.mp), Math.max(r[1], rh.mp)]);
+      continue;
+    }
+    const sh = segHit(x, y, 1.5);
+    if (sh && !others.has(sh.sid)) others.set(sh.sid, NET[sh.sid]);
+  }
+  const limits = [...runs].sort((a, b) => a[0].localeCompare(b[0])).map(([t, [a, b]]) => ({ track: t, from_mp: r3(a), to_mp: r3(b) }));
+  const named = new Map();
+  for (const s of others.values()) {
+    const ctx = segContext(s), key = s.name + "|" + ctx;
+    if (!named.has(key)) named.set(key, { name: s.name, kind: s.kind, context: ctx });
+  }
+  return limits.concat([...named.values()].sort((a, b) => a.name.localeCompare(b.name)));
+}
+function limitText(l) {
+  if (l.track) return `${l.track} MP ${Number(l.from_mp).toFixed(3)} – ${Number(l.to_mp).toFixed(3)}`;
+  return l.name + (l.context ? ` (${l.context})` : "");
+}
+
 // ------------------------------------------------------------------ map
 
 const ll = (x, y) => L.latLng(-y, x);
 const llPoly = (pl) => pl.map(([x, y]) => ll(x, y));
+const toXY = (latlng) => [latlng.lng, -latlng.lat];
 const PAGE_BOUNDS = L.latLngBounds(ll(0, PAGE_H), ll(PAGE_W, 0));
 
 const map = L.map("viewport", {
@@ -102,6 +272,7 @@ const map = L.map("viewport", {
   zoomControl: false, attributionControl: false, maxBounds: PAGE_BOUNDS.pad(0.25), maxBoundsViscosity: 0.8,
 });
 const scale = () => map.getZoomScale(map.getZoom(), 0);   // screen px per PDF point
+const pickRadius = () => Math.max(1, 16 / scale());
 
 // Only non-blank tiles exist; blank ones are served as white without a request.
 const WHITE = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='1' height='1'%3E%3Crect width='1' height='1' fill='%23fff'/%3E%3C/svg%3E";
@@ -121,8 +292,8 @@ const DrawingTiles = L.TileLayer.extend({
 });
 
 const layers = {
-  routes: L.layerGroup(), anchors: L.layerGroup(), qa: L.layerGroup(),
-  requests: L.layerGroup(), pick: L.layerGroup(), hover: L.layerGroup(),
+  segs: L.layerGroup(), routes: L.layerGroup(), anchors: L.layerGroup(), qa: L.layerGroup(),
+  requests: L.layerGroup(), draft: L.layerGroup(), hover: L.layerGroup(),
 };
 
 function zoomTo(x0, y0, x1, y1, pad = 40) {
@@ -134,25 +305,146 @@ $("#zoom-in").onclick = () => map.zoomIn();
 $("#zoom-out").onclick = () => map.zoomOut();
 $("#zoom-fit").onclick = fitPage;
 $("#toggle-panel").onclick = () => { $("#panel").classList.toggle("hidden"); setTimeout(() => map.invalidateSize(), 0); };
-document.addEventListener("keydown", (e) => { if (e.key === "Escape") cancelPick(); });
 
 // ------------------------------------------------------------------ hover readout
 
-map.on("mousemove", (e) => {
-  const x = e.latlng.lng, y = -e.latlng.lat;
-  const hit = nearestTrackPoint(x, y, Math.max(1, 14 / scale()));
+function readoutAt(x, y) {
+  const r = pickRadius(), rh = nearestTrackPoint(x, y, r), sh = segHit(x, y, r);
+  if (rh && (!sh || rh.d <= sh.d + 1)) return { html: `<b>${rh.track}</b> MP <b>${rh.mp.toFixed(3)}</b>`, x: rh.x, y: rh.y, sid: sh && sh.sid };
+  if (sh) {
+    const s = NET[sh.sid], ctx = segContext(s);
+    return { html: `<b>${esc(s.name)}</b>${ctx ? " · " + esc(ctx) : ""}`, x: sh.x, y: sh.y, sid: sh.sid };
+  }
+  return null;
+}
+
+function showReadout(e) {
+  const [x, y] = toXY(e.latlng), hit = readoutAt(x, y);
   layers.hover.clearLayers();
-  if (!hit) { $("#readout").textContent = state.pick ? pickPrompt() : "Hover a track for its milepost"; return; }
-  $("#readout").innerHTML = `<b>${hit.track}</b> MP <b>${hit.mp.toFixed(3)}</b>` + (state.pick ? " — click to set " + (state.pick.stage === 0 ? "start" : "end") : "");
+  if (!hit) { $("#readout").textContent = toolPrompt() || "Hover a track for its milepost"; return; }
+  $("#readout").innerHTML = hit.html + (state.tool ? " — " + esc(toolPrompt(true)) : "");
+  if (hit.sid != null) L.polyline(llPoly(NET[hit.sid].pts), { color: HOVER, weight: 3, opacity: 0.6, interactive: false }).addTo(layers.hover);
   L.circleMarker(ll(hit.x, hit.y), { radius: 5, color: "#fff", weight: 1.5, fillColor: HOVER, fillOpacity: 1, interactive: false }).addTo(layers.hover);
-});
+}
+map.on("mousemove", showReadout);
 map.on("mouseout", () => layers.hover.clearLayers());
-map.on("click", (e) => onMapClick(e.latlng.lng, -e.latlng.lat));
+
+// ------------------------------------------------------------------ selection tools
+
+const HINTS = {
+  box: "Drag a box over the block of tracks. Everything inside becomes part of this request.",
+  path: "Click the start, then click along the track (through any crossover) to the end. Click the tool again or press Esc to finish.",
+  piece: "Click any piece of track - crossover, yard lead, middle track - to add it; click again to remove it.",
+};
+function toolPrompt(short) {
+  if (state.tool === "box") return short ? "drag to box-select" : HINTS.box;
+  if (state.tool === "path") return state.path ? (short ? "click to extend" : "Click the next point along the track") : (short ? "click to start" : "Click the start of the work limits");
+  if (state.tool === "piece") return short ? "click to add / remove" : HINTS.piece;
+  return "";
+}
+function setTool(t) {
+  state.tool = state.tool === t ? null : t;
+  state.path = null;
+  document.querySelectorAll(".tool").forEach((b) => b.classList.toggle("armed", b.dataset.tool === state.tool));
+  $("#tool-hint").textContent = state.tool ? HINTS[state.tool] : "";
+  map.getContainer().classList.toggle("boxing", !!state.tool);
+  if (state.tool === "box") map.dragging.disable(); else map.dragging.enable();
+  if (state.tool === "path") map.doubleClickZoom.disable(); else map.doubleClickZoom.enable();
+  renderDraft();
+}
+document.querySelectorAll(".tool").forEach((b) => (b.onclick = () => setTool(b.dataset.tool)));
+document.addEventListener("keydown", (e) => { if (e.key === "Escape" && state.tool) setTool(state.tool); });
+
+function draftGeometry() {
+  return state.draft.map((p) => (p.type === "seg" ? NET[p.sid].pts : p.pts));
+}
+
+map.on("click", (e) => {
+  const [x, y] = toXY(e.latlng);
+  if (!state.tool) return showReadout(e);   // touch screens have no hover: a tap shows the readout
+  if (state.tool === "piece") {
+    const sh = segHit(x, y, pickRadius());
+    if (!sh) return;
+    const i = state.draft.findIndex((p) => p.type === "seg" && p.sid === sh.sid);
+    if (i >= 0) state.draft.splice(i, 1); else state.draft.push({ type: "seg", sid: sh.sid });
+    onDraftChanged();
+  } else if (state.tool === "path") {
+    const sh = segHit(x, y, pickRadius());
+    if (!sh) return;
+    if (state.path) {
+      const pts = trackPath(state.path, sh);
+      if (!pts) return formMsg("Those two points are not connected by track on the drawing.", true);
+      state.draft.push({ type: "poly", pts });
+    }
+    state.path = sh;
+    onDraftChanged();
+  }
+});
+
+// box select: drag a rectangle (mouse or touch) while the tool is armed
+(() => {
+  const c = map.getContainer();
+  let start = null, rect = null;
+  c.addEventListener("pointerdown", (e) => {
+    if (state.tool !== "box" || e.button > 0 || e.target.closest(".leaflet-control")) return;
+    start = map.mouseEventToLatLng(e);
+    rect = L.rectangle(L.latLngBounds(start, start), { color: HOVER, weight: 2, dashArray: "6 4", fillOpacity: 0.08, interactive: false }).addTo(layers.draft);
+    try { c.setPointerCapture(e.pointerId); } catch (err) { /* pointer already released */ }
+    e.preventDefault();
+  });
+  c.addEventListener("pointermove", (e) => {
+    if (start) rect.setBounds(L.latLngBounds(start, map.mouseEventToLatLng(e)));
+  });
+  c.addEventListener("pointerup", (e) => {
+    if (!start) return;
+    const b = L.latLngBounds(start, map.mouseEventToLatLng(e));
+    start = null;
+    const [x0, y1] = toXY(b.getSouthWest()), [x1, y0] = toXY(b.getNorthEast());
+    if (x1 - x0 < 1 || y1 - y0 < 1) { renderDraft(); return; }
+    const parts = [];
+    for (const s of NET) for (const pl of clipPoly(s.pts, x0, y0, x1, y1)) parts.push({ type: "poly", pts: pl });
+    if (!parts.length) { formMsg("No track inside that box.", true); renderDraft(); return; }
+    state.draft.push(...parts);
+    setTool("box");   // one box per arming; press the tool again for another
+    onDraftChanged();
+  });
+  c.addEventListener("pointercancel", () => { start = null; renderDraft(); });
+})();
+
+$("#sel-clear").onclick = () => { state.draft = []; state.path = null; onDraftChanged(); };
+
+function typedGeometry() {
+  const f = form.elements, t = f.track_id.value, a = parseFloat(f.from_mp.value), b = parseFloat(f.to_mp.value);
+  return t && !isNaN(a) && !isNaN(b) ? sliceTrack(t, a, b) : [];
+}
+
+function onDraftChanged() {
+  const geom = draftGeometry().concat(typedGeometry());
+  const lims = describeGeometry(geom);
+  $("#selection").hidden = !geom.length;
+  $("#sel-list").replaceChildren(...lims.map((l) => { const li = document.createElement("li"); li.textContent = limitText(l); return li; }));
+  renderDraft();
+}
+
+function renderDraft() {
+  layers.draft.clearLayers();
+  for (const pl of draftGeometry().concat(typedGeometry()))
+    L.polyline(llPoly(pl), { color: HOVER, weight: reqWeight(false), opacity: 0.5, interactive: false }).addTo(layers.draft);
+  if (state.path) L.circleMarker(ll(state.path.x, state.path.y), { radius: 6, color: "#fff", weight: 1.5, fillColor: HOVER, fillOpacity: 1, interactive: false }).addTo(layers.draft);
+  const loc = locationById(form.elements.location.value);
+  if (loc) locationMarker(loc, HOVER).addTo(layers.draft);
+}
 
 // ------------------------------------------------------------------ overlays
 
-// request highlights: at least 8 px wide, growing with zoom to cover the drawn track
 const reqWeight = (sel) => Math.max(sel ? 11 : 8, Math.min(70, (sel ? 5.5 : 4.5) * scale()));
+
+function renderSegs() {
+  layers.segs.clearLayers();
+  if (!$("#lyr-segs").checked) return;
+  for (const s of NET)
+    L.polyline(llPoly(s.pts), { color: KIND_COLOR[s.kind] || "#0ea5e9", weight: 3, opacity: 0.55, interactive: false }).addTo(layers.segs);
+}
 
 function renderRoutes() {
   layers.routes.clearLayers();
@@ -182,15 +474,33 @@ function renderQA() {
   }
 }
 
+function locationById(id) { return state.data.locations.find((l) => l.id === id) || null; }
+function locationByName(name) { return state.data.locations.find((l) => l.name === name) || null; }
+function locationMarker(loc, col) {
+  return L.marker(ll(loc.x, loc.y), { interactive: false, icon: L.divIcon({ className: "loc-pin", html: `<span style="color:${col}">📍 ${esc(loc.name)}</span>`, iconSize: null, iconAnchor: [10, 28] }) });
+}
+
+function requestGeometry(r) {
+  if (Array.isArray(r.geometry) && r.geometry.length) return r.geometry;
+  return r.track_id && r.from_mp != null && r.to_mp != null ? sliceTrack(r.track_id, r.from_mp, r.to_mp) : [];
+}
+
 function openReq(r) { return r.status !== "completed" && r.status !== "cancelled"; }
 
+const cellCache = new WeakMap();
+function cells(r) {
+  if (!cellCache.has(r)) cellCache.set(r, new Set(samplePolys(requestGeometry(r), 1).map(([x, y]) => Math.round(x / 1.5) + "," + Math.round(y / 1.5))));
+  return cellCache.get(r);
+}
 function conflicts(r) {
   if (!openReq(r)) return [];
-  const t0 = r.start_time || "", t1 = r.end_time || "￿";
-  const lo = Math.min(r.from_mp, r.to_mp), hi = Math.max(r.from_mp, r.to_mp);
-  return state.requests.filter((o) => o.id !== r.id && openReq(o) && o.track_id === r.track_id
-    && Math.min(o.from_mp, o.to_mp) <= hi && Math.max(o.from_mp, o.to_mp) >= lo
-    && (o.start_time || "") <= t1 && (o.end_time || "￿") >= t0);
+  const t0 = r.start_time || "", t1 = r.end_time || "￿", mine = cells(r);
+  return state.requests.filter((o) => {
+    if (o.id === r.id || !openReq(o) || (o.start_time || "") > t1 || (o.end_time || "￿") < t0) return false;
+    if (r.location && r.location === o.location) return true;
+    for (const c of cells(o)) if (mine.has(c)) return true;
+    return false;
+  });
 }
 
 function visibleRequests() {
@@ -202,39 +512,41 @@ function renderRequests() {
   layers.requests.clearLayers();
   if (!$("#lyr-requests").checked) return;
   for (const r of visibleRequests()) {
-    const polys = sliceTrack(r.track_id, r.from_mp, r.to_mp);
-    if (!polys.length) continue;
+    const polys = requestGeometry(r);
     const col = STATUS_COLOR[r.status] || "#666", sel = state.sel === r.id;
-    const tip = `#${r.id} ${r.track_id} MP ${r.from_mp}–${r.to_mp} (${r.status})`;
+    const tip = `#${r.id}${r.description ? " " + r.description : ""} (${r.status})`;
     for (const pl of polys)
       L.polyline(llPoly(pl), { color: col, weight: reqWeight(sel), opacity: sel ? 0.8 : 0.55, lineCap: "butt" })
-        .bindTooltip(tip, { sticky: true }).on("click", () => selectRequest(r, false)).addTo(layers.requests);
-    for (const mp of [r.from_mp, r.to_mp]) {
-      const q = locate(r.track_id, mp);
-      if (q) L.circleMarker(ll(q.x, q.y), { radius: 5, color: col, weight: 2, fillColor: "#fff", fillOpacity: 1, interactive: false }).addTo(layers.requests);
+        .bindTooltip(esc(tip), { sticky: true }).on("click", () => selectRequest(r, false)).addTo(layers.requests);
+    const loc = r.location && locationByName(r.location);
+    if (loc) locationMarker(loc, col).addTo(layers.requests);
+    if (polys.length) {
+      const [x0, y0] = bboxOf(polys);
+      L.marker(ll(x0, y0), { interactive: false, icon: L.divIcon({ className: "req-label", html: `<span style="color:${col}">#${r.id}${r.request_no ? " " + esc(r.request_no) : ""}</span>`, iconSize: null, iconAnchor: [0, 22] }) })
+        .addTo(layers.requests);
     }
-    const [x0, y0] = bboxOf(polys);
-    L.marker(ll(x0, y0), { interactive: false, icon: L.divIcon({ className: "req-label", html: `<span style="color:${col}">#${r.id} ${esc(r.track_id)} ${r.from_mp}–${r.to_mp}</span>`, iconSize: null, iconAnchor: [0, 22] }) })
-      .addTo(layers.requests);
   }
 }
 
-map.on("zoomend", () => { renderRequests(); renderPick(); });
+map.on("zoomend", () => { renderRequests(); renderDraft(); });
 
 function selectRequest(r, zoom = true) {
   state.sel = r.id;
-  const polys = sliceTrack(r.track_id, r.from_mp, r.to_mp);
+  const polys = requestGeometry(r), loc = r.location && locationByName(r.location);
   if (zoom && polys.length) zoomTo(...bboxOf(polys), 120);
+  else if (zoom && loc) zoomTo(loc.x - 150, loc.y - 70, loc.x + 150, loc.y + 70, 0);
   renderRequestList(); renderRequests();
 }
 
-// ------------------------------------------------------------------ requests UI
+// ------------------------------------------------------------------ requests storage
 
 // Requests live in the database when server.py is running.  On a static host
 // (GitHub Pages) there is no API, so they are kept in this browser instead.
 let MODE = null;   // "server" | "local"
 const LS_KEY = "trackmap.requests.v1";
 let memStore = { next: 1, items: [] };
+const FIELDS = ["request_no", "track_id", "from_mp", "to_mp", "start_time", "end_time", "work_type", "requester",
+  "status", "notes", "location", "geometry", "limits", "description"];
 
 function readLocal() {
   try { const s = JSON.parse(localStorage.getItem(LS_KEY)); if (s && Array.isArray(s.items)) return s; } catch (e) { /* storage blocked */ }
@@ -248,20 +560,22 @@ function writeLocal(s) {
 function localApi(method, url, body) {
   const s = readLocal(), id = parseInt(url.split("/")[2], 10);
   const now = new Date().toISOString().slice(0, 19) + "Z";
-  const check = (r) => {
-    if (r.track_id !== undefined && !trackRange(r.track_id)) throw new Error(`unknown track ${r.track_id}`);
-    for (const k of ["from_mp", "to_mp"]) if (k in r && isNaN(parseFloat(r[k]))) throw new Error(`${k} must be a number`);
+  const check = (r, partial) => {
+    if (r.track_id && !trackRange(r.track_id)) throw new Error(`unknown track ${r.track_id}`);
+    if (!partial && !r.track_id && !(r.geometry && r.geometry.length) && !r.location)
+      throw new Error("give track limits on the map, a track and MP range, or a location");
   };
   if (method === "GET") return [...s.items].sort((a, b) => (a.start_time || "").localeCompare(b.start_time || "") || a.id - b.id);
   if (method === "POST") {
     check(body);
-    const r = { request_no: null, start_time: null, end_time: null, work_type: null, requester: null, notes: null, status: "requested",
+    const r = { request_no: null, track_id: null, from_mp: null, to_mp: null, start_time: null, end_time: null, work_type: null,
+      requester: null, notes: null, location: null, geometry: null, limits: null, description: null, status: "requested",
       ...body, id: s.next++, created_at: now, updated_at: null };
     s.items.push(r); writeLocal(s); return r;
   }
   const i = s.items.findIndex((r) => r.id === id);
   if (i < 0) throw new Error("no such request");
-  if (method === "PUT") { check(body); s.items[i] = { ...s.items[i], ...body, id, updated_at: now }; writeLocal(s); return s.items[i]; }
+  if (method === "PUT") { check(body, true); s.items[i] = { ...s.items[i], ...body, id, updated_at: now }; writeLocal(s); return s.items[i]; }
   if (method === "DELETE") { s.items.splice(i, 1); writeLocal(s); return { deleted: id }; }
   throw new Error("unsupported");
 }
@@ -309,7 +623,7 @@ async function importRequests(file) {
   let n = 0;
   for (const r of items) {
     const rec = {};
-    for (const k of ["request_no", "track_id", "from_mp", "to_mp", "start_time", "end_time", "work_type", "requester", "status", "notes"]) if (r[k] != null) rec[k] = r[k];
+    for (const k of FIELDS) if (r[k] != null) rec[k] = r[k];
     try { await api("POST", "api/requests", rec); n++; } catch (e) { /* skip invalid rows */ }
   }
   formMsg(`Imported ${n} of ${items.length} requests.`);
@@ -319,24 +633,28 @@ $("#export").onclick = exportRequests;
 $("#import").onclick = () => $("#import-file").click();
 $("#import-file").onchange = (e) => { if (e.target.files[0]) importRequests(e.target.files[0]); e.target.value = ""; };
 
+// ------------------------------------------------------------------ requests UI
+
 function fmtTime(t) { return t ? t.replace("T", " ") : "—"; }
+function esc(s) { return String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
 
 function renderRequestList() {
   const ul = $("#req-list"); ul.replaceChildren();
   const list = visibleRequests();
-  if (!list.length) { const li = document.createElement("li"); li.className = "m"; li.textContent = "No requests yet. Fill in the form or pick limits on the map."; li.style.cursor = "default"; ul.append(li); return; }
+  if (!list.length) { const li = document.createElement("li"); li.className = "m"; li.textContent = "No requests yet. Box-select a block of track, draw along a track, or pick a location."; li.style.cursor = "default"; ul.append(li); return; }
   for (const r of list) {
     const li = document.createElement("li");
     li.style.setProperty("--c", STATUS_COLOR[r.status]);
     if (state.sel === r.id) li.classList.add("sel");
-    const range = trackRange(r.track_id);
-    const outside = range && (Math.min(r.from_mp, r.to_mp) < range.from_mp - 1e-9 || Math.max(r.from_mp, r.to_mp) > range.to_mp + 1e-9);
+    const lims = Array.isArray(r.limits) && r.limits.length ? r.limits
+      : (r.track_id ? [{ track: r.track_id, from_mp: r.from_mp, to_mp: r.to_mp }] : []);
     const cf = conflicts(r);
-    li.innerHTML = `<div class="t">#${r.id}${r.request_no ? " · " + esc(r.request_no) : ""} — ${esc(r.track_id)} MP ${r.from_mp} – ${r.to_mp} <span class="pill" style="--c:${STATUS_COLOR[r.status]}">${r.status}</span></div>
+    li.innerHTML = `<div class="t">#${r.id}${r.request_no ? " · " + esc(r.request_no) : ""} <span class="pill" style="--c:${STATUS_COLOR[r.status]}">${r.status}</span></div>
+      ${r.location ? `<div class="m">📍 ${esc(r.location)}</div>` : ""}
+      ${lims.length ? `<ul class="lim">${lims.map((l) => `<li>${esc(limitText(l))}</li>`).join("")}</ul>` : ""}
       <div class="m">${esc(r.work_type || "")}${r.requester ? " · " + esc(r.requester) : ""}</div>
       <div class="m">${fmtTime(r.start_time)} → ${fmtTime(r.end_time)}</div>
-      ${outside ? `<div class="warn">Partly outside calibrated range ${range.from_mp}–${range.to_mp}</div>` : ""}
-      ${cf.length ? `<div class="warn">Overlaps ${cf.map((o) => "#" + o.id).join(", ")} (same track, MP and time)</div>` : ""}
+      ${cf.length ? `<div class="warn">Overlaps ${cf.map((o) => "#" + o.id).join(", ")} (same track or location, same time)</div>` : ""}
       <div class="btns"><button class="secondary" data-act="edit">Edit</button><button class="secondary" data-act="del">Delete</button></div>`;
     li.onclick = (e) => {
       const act = e.target.dataset && e.target.dataset.act;
@@ -348,31 +666,39 @@ function renderRequestList() {
   }
 }
 
-function esc(s) { return String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
-
 const form = $("#req-form");
 function formMsg(t, err) { const m = $("#form-msg"); m.textContent = t; m.className = "msg" + (err ? " err" : ""); }
 
 function editRequest(r) {
-  for (const k of ["id", "request_no", "track_id", "from_mp", "to_mp", "start_time", "end_time", "work_type", "requester", "status", "notes"])
+  for (const k of ["id", "request_no", "start_time", "end_time", "work_type", "requester", "status", "notes"])
     form.elements[k].value = r[k] ?? "";
+  const hasGeom = Array.isArray(r.geometry) && r.geometry.length;
+  state.draft = hasGeom ? r.geometry.map((pts) => ({ type: "poly", pts })) : [];
+  form.elements.track_id.value = !hasGeom && r.track_id ? r.track_id : "";
+  form.elements.from_mp.value = !hasGeom && r.from_mp != null ? r.from_mp : "";
+  form.elements.to_mp.value = !hasGeom && r.to_mp != null ? r.to_mp : "";
+  $("#typed-limits").open = !hasGeom && !!r.track_id;
+  const loc = r.location && locationByName(r.location);
+  form.elements.location.value = loc ? loc.id : "";
   $("#req-form-title").textContent = `Edit request #${r.id}`;
   $("#cancel-edit").hidden = false;
   showTab("requests");
   form.scrollIntoView({ behavior: "smooth" });
-  previewForm();
+  onDraftChanged();
 }
 function resetForm() {
   form.reset();
   form.elements.id.value = "";
   $("#req-form-title").textContent = "New access request";
   $("#cancel-edit").hidden = true;
-  state.pick = null; renderPick();
+  state.draft = []; state.path = null;
+  if (state.tool) setTool(state.tool);
+  onDraftChanged();
 }
 $("#cancel-edit").onclick = resetForm;
 
 async function deleteRequest(r) {
-  if (!confirm(`Delete request #${r.id} (${r.track_id} MP ${r.from_mp}–${r.to_mp})?`)) return;
+  if (!confirm(`Delete request #${r.id}?`)) return;
   try { await api("DELETE", `api/requests/${r.id}`); await loadRequests(); }
   catch (e) { formMsg(e.message, true); }
 }
@@ -381,88 +707,37 @@ form.addEventListener("submit", async (e) => {
   e.preventDefault();
   const f = Object.fromEntries(new FormData(form).entries());
   const id = f.id; delete f.id;
-  f.from_mp = parseFloat(f.from_mp); f.to_mp = parseFloat(f.to_mp);
-  if (!sliceTrack(f.track_id, f.from_mp, f.to_mp).length) {
+  const typed = typedGeometry();
+  if (f.track_id && (f.from_mp || f.to_mp) && !typed.length) {
     const r = trackRange(f.track_id);
     return formMsg(`${f.track_id} MP ${f.from_mp}–${f.to_mp} is outside the calibrated range${r ? ` (${r.from_mp}–${r.to_mp})` : ""}.`, true);
   }
+  const geometry = draftGeometry().concat(typed).map((pl) => pl.map(([x, y]) => [Math.round(x * 100) / 100, Math.round(y * 100) / 100]));
+  const limits = describeGeometry(geometry);
+  const loc = locationById(f.location);
+  if (!geometry.length && !loc) return formMsg("Select track on the map (box, draw or pieces), type a track and MP range, or choose a location.", true);
+  const first = limits.find((l) => l.track);
+  const rec = {
+    request_no: f.request_no || null, start_time: f.start_time || null, end_time: f.end_time || null,
+    work_type: f.work_type || null, requester: f.requester || null, status: f.status, notes: f.notes || null,
+    location: loc ? loc.name : null, geometry: geometry.length ? geometry : null, limits: limits.length ? limits : null,
+    track_id: first ? first.track : null, from_mp: first ? first.from_mp : null, to_mp: first ? first.to_mp : null,
+    description: [loc && loc.name].concat(limits.map(limitText)).filter(Boolean).join("; "),
+  };
   try {
-    const saved = id ? await api("PUT", `api/requests/${id}`, f) : await api("POST", "api/requests", f);
+    const saved = id ? await api("PUT", `api/requests/${id}`, rec) : await api("POST", "api/requests", rec);
     state.sel = saved.id;
     resetForm();
     formMsg(`Saved request #${saved.id}.`);
     await loadRequests();
   } catch (err) { formMsg(err.message, true); }
 });
-form.addEventListener("input", () => previewForm());
-
-function previewForm() {
-  const f = form.elements, a = parseFloat(f.from_mp.value), b = parseFloat(f.to_mp.value);
-  state.pick = state.pick && state.pick.stage < 2 ? state.pick : null;
-  layers.pick.clearLayers();
-  if (!f.track_id.value || isNaN(a) || isNaN(b)) return;
-  for (const pl of sliceTrack(f.track_id.value, a, b))
-    L.polyline(llPoly(pl), { color: HOVER, weight: reqWeight(false), opacity: 0.5, interactive: false }).addTo(layers.pick);
-}
-
-// pick limits on map
-function pickPrompt() { return state.pick.stage === 0 ? "Click the start of the work limits on a track" : `Click the end on ${state.pick.track}`; }
-$("#pick").onclick = () => {
-  if (state.pick && state.pick.stage < 2) return cancelPick();
-  state.pick = { stage: 0 };
-  $("#pick").classList.add("armed"); $("#pick").textContent = "Picking… (Esc to cancel)";
-  map.getContainer().classList.add("picking");
-  $("#readout").textContent = pickPrompt();
-};
-function cancelPick() {
-  state.pick = null;
-  $("#pick").classList.remove("armed"); $("#pick").textContent = "Pick limits on map";
-  map.getContainer().classList.remove("picking");
-  renderPick();
-}
-function onMapClick(x, y) {
-  if (!state.pick || state.pick.stage > 1) return;
-  const hit = nearestTrackPoint(x, y, Math.max(1, 20 / scale()));
-  if (!hit) return;
-  const r3 = (v) => Math.round(v * 1000) / 1000;
-  if (state.pick.stage === 0) {
-    state.pick = { stage: 1, track: hit.track, a: hit };
-    form.elements.track_id.value = hit.track;
-    form.elements.from_mp.value = r3(hit.mp);
-    form.elements.to_mp.value = "";
-    $("#readout").textContent = pickPrompt();
-  } else {
-    let mp = hit.mp;
-    if (hit.track !== state.pick.track) {   // project onto the first track
-      const h2 = nearestTrackPointOn(state.pick.track, x, y);
-      if (!h2) return;
-      mp = h2.mp;
-    }
-    form.elements.to_mp.value = r3(mp);
-    const p = state.pick;
-    cancelPick();
-    state.pick = { stage: 2, track: p.track };
-    formMsg("Limits set - fill in the details and save.");
-  }
-  renderPick();
-}
-function nearestTrackPointOn(track, x, y) {
-  let best = null;
-  for (const g of SEGS) {
-    if (g.track !== track) continue;
-    const dx = g.x1 - g.x0, dy = g.y1 - g.y0, L2 = dx * dx + dy * dy || 1e-9;
-    const t = Math.max(0, Math.min(1, ((x - g.x0) * dx + (y - g.y0) * dy) / L2));
-    const px = g.x0 + t * dx, py = g.y0 + t * dy, d = Math.hypot(px - x, py - y);
-    if (!best || d < best.d) best = { mp: g.m0 + t * (g.m1 - g.m0), x: px, y: py, d };
-  }
-  return best;
-}
-function renderPick() {
-  if (state.pick && state.pick.stage === 1) {
-    layers.pick.clearLayers();
-    L.circleMarker(ll(state.pick.a.x, state.pick.a.y), { radius: 6, color: "#fff", weight: 1.5, fillColor: HOVER, fillOpacity: 1, interactive: false }).addTo(layers.pick);
-  } else previewForm();
-}
+for (const n of ["track_id", "from_mp", "to_mp"]) form.elements[n].addEventListener("input", onDraftChanged);
+form.elements.location.addEventListener("change", () => {
+  const loc = locationById(form.elements.location.value);
+  if (loc) zoomTo(loc.x - 150, loc.y - 70, loc.x + 150, loc.y + 70, 0);
+  renderDraft();
+});
 
 // ------------------------------------------------------------------ find / layers
 
@@ -503,7 +778,7 @@ $("#station-filter").oninput = renderStations;
 
 function populateTracks() {
   const opts = state.data.tracks.map((t) => `<option value="${t.id}">${t.id} (MP ${t.from_mp}–${t.to_mp})</option>`).join("");
-  form.elements.track_id.innerHTML = opts;
+  form.elements.track_id.innerHTML = `<option value="">—</option>` + opts;
   $("#find-mp").elements.track.innerHTML = opts;
   const tb = $("#track-table tbody"); tb.replaceChildren();
   for (const t of state.data.tracks) {
@@ -512,17 +787,28 @@ function populateTracks() {
     tr.onclick = () => { const p = sliceTrack(t.id, t.from_mp, t.to_mp); if (p.length) zoomTo(...bboxOf(p), 60); };
     tb.append(tr);
   }
+  const groups = [["station", "Stations"], ["tcr", "Train control rooms (TCR)"], ["yard", "Yards"], ["platform", "Platforms"]];
+  form.elements.location.innerHTML = `<option value="">— none —</option>` + groups.map(([k, label]) => {
+    const items = state.data.locations.filter((l) => l.kind === k);
+    return items.length ? `<optgroup label="${label}">${items.map((l) => `<option value="${esc(l.id)}">${esc(l.name)}</option>`).join("")}</optgroup>` : "";
+  }).join("");
 }
 
-for (const id of ["lyr-routes", "lyr-anchors", "lyr-qa", "lyr-requests"])
-  $("#" + id).onchange = () => { renderRoutes(); renderAnchors(); renderQA(); renderRequests(); };
+for (const id of ["lyr-segs", "lyr-routes", "lyr-anchors", "lyr-qa", "lyr-requests"])
+  $("#" + id).onchange = () => { renderSegs(); renderRoutes(); renderAnchors(); renderQA(); renderRequests(); };
 $("#status-filter").onchange = () => { renderRequestList(); renderRequests(); };
 
 function renderLegend() {
+  const kindName = { running: "running track (milepost-calibrated)", crossover: "crossover", yard: "yard track", track: "other track (pocket, siding, middle…)" };
   $("#legend").innerHTML = "<h2>Request status</h2>" + Object.entries(STATUS_COLOR)
-    .map(([k, c]) => `<div><span class="sw" style="background:${c}"></span>${k}</div>`).join("");
+    .map(([k, c]) => `<div><span class="sw" style="background:${c}"></span>${k}</div>`).join("")
+    + "<h2>Track pieces</h2>" + Object.entries(KIND_COLOR)
+    .map(([k, c]) => `<div><span class="sw" style="background:${c}"></span>${kindName[k]}</div>`).join("");
   const d = state.data, n = (s) => d.labels.filter((l) => l.status === s).length;
+  const kinds = {};
+  for (const s of d.segments) kinds[s.kind] = (kinds[s.kind] || 0) + 1;
   $("#data-info").innerHTML = `Source: ${esc(d.source)} · extracted ${esc(d.generated.slice(0, 10))}<br>
+    ${d.segments.length} selectable track pieces (${kinds.running || 0} running, ${kinds.crossover || 0} crossovers, ${kinds.yard || 0} yard, ${kinds.track || 0} other) ·
     ${d.labels.length} milepost labels read · ${d.tracks.length} calibrated tracks · ${n("out_of_sequence") + n("unanchored") + n("unused")} labels flagged for review (see docs/qa_report.md)<br>
     <a href="map.svg" target="_blank" rel="noopener">Vector copy of the drawing (SVG)</a>`;
 }
@@ -542,10 +828,11 @@ function renderLegend() {
   for (const g of Object.values(layers)) g.addTo(map);
   fitPage();
   indexRoutes();
+  indexSegments();
   populateTracks();
   renderStations();
   renderLegend();
-  renderRoutes(); renderAnchors(); renderQA();
+  renderSegs(); renderRoutes(); renderAnchors(); renderQA();
   $("#loading").remove();
   await detectMode();
   await loadRequests();

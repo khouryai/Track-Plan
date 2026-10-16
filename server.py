@@ -27,7 +27,8 @@ WEB = os.path.join(ROOT, "web")
 DB = os.path.join(ROOT, "db", "trackmap.db")
 
 FIELDS = ["request_no", "track_id", "from_mp", "to_mp", "start_time", "end_time",
-          "work_type", "requester", "status", "notes"]
+          "work_type", "requester", "status", "notes", "location", "geometry", "limits", "description"]
+JSON_FIELDS = ("geometry", "limits")
 STATUSES = {"requested", "approved", "active", "completed", "cancelled"}
 
 
@@ -35,6 +36,14 @@ def db():
     con = sqlite3.connect(DB)
     con.row_factory = sqlite3.Row
     return con
+
+
+def row(r):
+    d = dict(r)
+    for k in JSON_FIELDS:
+        if d.get(k):
+            d[k] = json.loads(d[k])
+    return d
 
 
 # ------------------------------------------------------------ linear referencing
@@ -112,20 +121,37 @@ class Handler(SimpleHTTPRequestHandler):
         if not isinstance(data, dict):
             return None, "body must be a JSON object"
         rec = {k: data[k] for k in FIELDS if k in data}
-        if not partial:
-            for k in ("track_id", "from_mp", "to_mp"):
-                if rec.get(k) in (None, ""):
-                    return None, f"{k} is required"
-        if "track_id" in rec and not con.execute("SELECT 1 FROM tracks WHERE id=?", (rec["track_id"],)).fetchone():
+        if rec.get("track_id") and not con.execute("SELECT 1 FROM tracks WHERE id=?", (rec["track_id"],)).fetchone():
             return None, f"unknown track {rec['track_id']!r}"
         for k in ("from_mp", "to_mp"):
-            if k in rec:
+            if rec.get(k) is not None:
                 try:
                     rec[k] = float(rec[k])
                 except (TypeError, ValueError):
                     return None, f"{k} must be a number"
+        if rec.get("geometry") is not None:
+            g = rec["geometry"]
+            try:
+                ok = isinstance(g, list) and sum(len(pl) for pl in g) <= 200000 and all(
+                    isinstance(pl, list) and len(pl) >= 2 and all(len(p) == 2 and all(isinstance(v, (int, float)) for v in p) for p in pl)
+                    for pl in g)
+            except TypeError:
+                ok = False
+            if not ok:
+                return None, "geometry must be a list of polylines [[x, y], ...]"
+        if rec.get("limits") is not None and not isinstance(rec["limits"], list):
+            return None, "limits must be a list"
+        for k in ("location", "description", "notes", "request_no", "work_type", "requester"):
+            if rec.get(k) is not None and (not isinstance(rec[k], str) or len(rec[k]) > 4000):
+                return None, f"{k} must be text"
         if "status" in rec and rec["status"] not in STATUSES:
             return None, f"status must be one of {sorted(STATUSES)}"
+        if not partial and not (rec.get("geometry") or rec.get("location") or
+                                (rec.get("track_id") and rec.get("from_mp") is not None and rec.get("to_mp") is not None)):
+            return None, "give track limits (geometry), a track and MP range, or a location"
+        for k in JSON_FIELDS:
+            if k in rec and rec[k] is not None:
+                rec[k] = json.dumps(rec[k], separators=(",", ":"))
         return rec, None
 
     def do_GET(self):
@@ -140,7 +166,7 @@ class Handler(SimpleHTTPRequestHandler):
                 sql, args = "SELECT * FROM access_requests", []
                 if "track" in q:
                     sql, args = sql + " WHERE track_id = ?", [q["track"]]
-                return self.send_json([dict(r) for r in con.execute(sql + " ORDER BY start_time, id", args)])
+                return self.send_json([row(r) for r in con.execute(sql + " ORDER BY start_time, id", args)])
             if parts[1:] in (["locate"], ["segment"]):
                 try:
                     a = float(q["mp"] if parts[1] == "locate" else q["from"])
@@ -171,8 +197,8 @@ class Handler(SimpleHTTPRequestHandler):
             cur = con.execute(f"INSERT INTO access_requests({','.join(rec)}) VALUES ({','.join('?' * len(rec))})",
                               list(rec.values()))
             con.commit()
-            row = con.execute("SELECT * FROM access_requests WHERE id=?", (cur.lastrowid,)).fetchone()
-            return self.send_json(dict(row), HTTPStatus.CREATED)
+            r = con.execute("SELECT * FROM access_requests WHERE id=?", (cur.lastrowid,)).fetchone()
+            return self.send_json(row(r), HTTPStatus.CREATED)
         finally:
             con.close()
 
@@ -190,10 +216,10 @@ class Handler(SimpleHTTPRequestHandler):
                 con.execute(f"UPDATE access_requests SET {sets}, updated_at=strftime('%Y-%m-%dT%H:%M:%SZ','now') "
                             "WHERE id=?", list(rec.values()) + [int(parts[2])])
                 con.commit()
-            row = con.execute("SELECT * FROM access_requests WHERE id=?", (int(parts[2]),)).fetchone()
-            if row is None:
+            r = con.execute("SELECT * FROM access_requests WHERE id=?", (int(parts[2]),)).fetchone()
+            if r is None:
                 return self.error_json(HTTPStatus.NOT_FOUND, "no such request")
-            return self.send_json(dict(row))
+            return self.send_json(row(r))
         finally:
             con.close()
 
@@ -217,7 +243,14 @@ def main():
     ap.add_argument("--port", type=int, default=8000)
     ap.add_argument("--host", default="127.0.0.1")
     args = ap.parse_args()
-    if not os.path.exists(DB):
+    # create the database on first run, or upgrade an older one (requests are kept)
+    stale = not os.path.exists(DB)
+    if not stale:
+        con = sqlite3.connect(DB)
+        cols = {r[1] for r in con.execute("PRAGMA table_info(access_requests)")}
+        con.close()
+        stale = not {"geometry", "location", "limits"} <= cols
+    if stale:
         sys.path.insert(0, os.path.join(ROOT, "pipeline"))
         from dbload import write_db_from_json
         write_db_from_json()

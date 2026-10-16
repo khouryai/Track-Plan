@@ -30,14 +30,27 @@ The server creates `db/trackmap.db` from `web/data/map.json` on first run.
 
 ## Using the map
 
-- pan and zoom the drawing (mouse wheel, drag, pinch, arrow keys, `+` / `-`)
-- hover any track to read its **track and milepost** (e.g. `W1 MP 23.500`)
-- create **track access requests** by typing a track and MP range, or by clicking
-  **Pick limits on map** and clicking the two ends. Requests are drawn on the
-  track and colour-coded by status. Requests that overlap on the same track,
-  milepost range and time window are flagged.
-- go to a milepost or station (Find tab), and show the extracted centrelines,
-  milepost anchors and labels that need review (Layers tab)
+- pan and zoom the drawing (mouse wheel, drag, pinch, `+` / `-`); the drawing
+  stays sharp at every zoom
+- hover (or tap, on a phone) **any** track to identify it: running tracks show
+  their exact milepost (`W1 MP 23.500`); crossovers, yard leads, pocket and
+  middle tracks show their name and where they meet the running tracks
+  (`Crossover SW177/SW377 · between M1 MP 16.29 and M3 MP 16.28`)
+- create **track access requests** from any mix of:
+  - **Box select**: drag a rectangle over a block of tracks; every piece of
+    track inside becomes part of the request, listed by track and milepost
+    range (`M1 MP 16.039 – 16.350`, `M3 MP 16.020 – 16.381`) plus the
+    crossovers and yard tracks it includes
+  - **Draw along track**: click the start, then click along the route through
+    any crossover to the end
+  - **Add / remove pieces**: click individual crossovers or yard tracks
+  - a typed track and milepost range
+  - a **location**: any station, its **TCR (train control room)**, a yard or
+    platform (e.g. `Colma TCR (Train Control Room)`)
+- requests are drawn on the map colour-coded by status; requests that share
+  any track or the same location in an overlapping time window are flagged
+- go to a milepost or station (Find tab); show all selectable track by type,
+  calibrated centrelines, milepost anchors and labels that need review (Layers)
 
 ## How the data is extracted
 
@@ -65,11 +78,20 @@ The server creates `db/trackmap.db` from `web/data/map.json` on first run.
    short spurs are removed, and collinear gaps are bridged.
 4. **Which track is which.** The network is split into continuous *rails* by
    following the straightest path through each switch. Each rail is named from
-   three sources: explicit mileposts (`W1`), the small track-number tags drawn
-   beside the track (`1`, `2`), and line-level mileposts (`4.37C`). A milepost
-   whose leader stops on the wrong track is outvoted by its neighbours and the
-   tags.
-5. **Linear referencing.** Each label's leader line is traced to the track it
+   four sources: the track names written beside the lines (`M3`, `W1`), the
+   small track-number tags (`1`, `2`), explicit mileposts (`W1`) and line-level
+   mileposts (`4.37C`). Leaders often stop on the first track they meet; a
+   milepost that contradicts the written name or tag on that rail is carried
+   on along its leader to the next rail (this fixed, for example, M1 / M3 at
+   Daly City Yard).
+5. **Every other piece of track.** All 692 network segments (running tracks,
+   crossovers, yard leads, pocket and middle tracks) are named. Crossovers get
+   their two switch numbers: about 300 `SW###` labels are decoded from stroke
+   glyphs and matched one-to-one to junctions, scored by distance to the
+   junction and its diverging leg. Yard tracks get their written names (DTF01,
+   TF5). Each segment records the calibrated milepost where it meets a running
+   track.
+6. **Linear referencing.** Each label's leader line is traced to the track it
    points at. Line-level mileposts are projected onto every track of their
    line. Anchors that don't run in order along the rail are dropped. Between
    consecutive anchors, the milepost is interpolated by distance along the
@@ -102,7 +124,9 @@ The server creates `db/trackmap.db` from `web/data/map.json` on first run.
 | `route_anchors` | the milepost anchor points used for calibration |
 | `milepost_labels` | every label read off the drawing, with its status |
 | `stations` | station and yard names |
-| `access_requests` | **your operational data**: track, from/to MP, time window, work type, requester, status |
+| `track_segments` | every piece of track: name, kind (running / crossover / yard / track), switches, milepost at each end, geometry |
+| `locations` | stations, train control rooms (TCR), yards and platforms that requests can name |
+| `access_requests` | **your operational data**: track limits (geometry plus the MP ranges and pieces they cover), typed track/MP range, location, time window, work type, requester, status |
 
 Rebuilding the extracted data keeps the existing `access_requests`.
 

@@ -43,6 +43,12 @@ def write_db(data, log=print):
             for a in pc["anchors"]:
                 db.execute("INSERT INTO route_anchors(track_id,piece_id,mp,x,y,label_id,line_level) VALUES (?,?,?,?,?,?,?)",
                            (t, pid, a["mp"], a["x"], a["y"], a["label"], int(a["line_level"])))
+    db.executemany(
+        "INSERT INTO track_segments(id,name,kind,track_id,switches,end_a,end_b,length_pt,geometry) VALUES (?,?,?,?,?,?,?,?,?)",
+        [(g["id"], g["name"], g["kind"], g["track"], json.dumps(g["switches"]), json.dumps(g["ends"][0]),
+          json.dumps(g["ends"][1]), g["len"], json.dumps(g["pts"])) for g in data.get("segments", [])])
+    db.executemany("INSERT INTO locations(id,name,kind,x,y,near) VALUES (?,?,?,?,?,?)",
+                   [(l["id"], l["name"], l["kind"], l["x"], l["y"], l["near"]) for l in data.get("locations", [])])
     db.executemany("INSERT INTO stations(name,x,y,bbox) VALUES (?,?,?,?)",
                    [(s["name"], s["x"], s["y"], json.dumps(s["bbox"])) for s in data["stations"]])
     if keep_requests:

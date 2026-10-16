@@ -21,6 +21,7 @@ sys.path.insert(0, HERE)
 import labels as labelmod  # noqa: E402
 import linref  # noqa: E402
 import pdfmap  # noqa: E402
+import segments as segmod  # noqa: E402
 import tracks  # noqa: E402
 from dbload import write_db  # noqa: E402
 
@@ -47,7 +48,7 @@ def stations(prim):
         if not b["fill"]:
             continue
         w, h = b["x1"] - b["x0"], b["bottom"] - b["top"]
-        if not (8 < w < 80 and 8 < h < 80):
+        if not (8 < w < 140 and 8 < h < 80):
             continue
         cs = [c for c in prim["chars"] if c["x0"] >= b["x0"] - 0.5 and c["x1"] <= b["x1"] + 0.5
               and c["top"] >= b["top"] - 0.5 and c["bottom"] <= b["bottom"] + 0.5]
@@ -65,7 +66,8 @@ def stations(prim):
                 rows.setdefault(round(c["top"] / 2), []).append(c)
             lines = ["".join(c["text"] for c in sorted(v, key=lambda c: c["x0"])) for _, v in sorted(rows.items())]
         name = " ".join(l.strip() for l in lines if l.strip())
-        if len(name) < 3 or re.fullmatch(r"[A-Z0-9 ]{1,5}", name):
+        # skip track / interlocking codes in black boxes (K20, "Y 3", "1 Y C")
+        if len(name) < 3 or (re.search(r"\d", name) and not re.search(r"[a-z]", name)):
             continue
         key = (name, round(b["x0"]), round(b["top"]))
         if key in seen:
@@ -74,6 +76,13 @@ def stations(prim):
         out.append(dict(name=name, bbox=[round(b["x0"], 2), round(b["top"], 2), round(b["x1"], 2), round(b["bottom"], 2)],
                         x=round((b["x0"] + b["x1"]) / 2, 2), y=round((b["top"] + b["bottom"]) / 2, 2)))
     return out
+
+
+def text_words():
+    """Upright real-text words (yard track names such as DTF01, TF5)."""
+    import pdfplumber
+    page = pdfplumber.open(pdfmap.PDF).pages[0]
+    return [dict(text=w["text"], bbox=[w["x0"], w["top"], w["x1"], w["bottom"]]) for w in page.extract_words()]
 
 
 def apply_overrides(L):
@@ -121,9 +130,18 @@ def main():
     log(f"  {len(edges)} network edges, {sum(e['length'] for e in edges):.0f} pt of track")
     net = linref.Network(edges)
     log("solving milepost linear referencing ...")
-    anchors, routes, edge_track = linref.solve(net, L, tags, log=log)
+    names = labelmod.track_names()
+    anchors, routes, edge_track = linref.solve(net, L, tags, names, log=log)
     st = stations(prim)
     log(f"  {len(st)} station / yard names")
+    log("naming every track segment ...")
+    words = labelmod.free_text(prim)
+    segs = segmod.build_segments(edges, edge_track, routes, words, text_words())
+    kinds = {}
+    for g in segs:
+        kinds[g["kind"]] = kinds.get(g["kind"], 0) + 1
+    log(f"  {len(segs)} segments {kinds}; {sum(w['text'].startswith('SW') for w in words)} switch labels read")
+    locs = segmod.locations(st, routes)
 
     # ---- label status
     used, line_used, dropped = {}, set(), {}
@@ -183,7 +201,9 @@ def main():
         labels=out_labels,
         stations=st,
         tags=tags,
-        network=[[[round(x, 2), round(y, 2)] for x, y in e["pts"]] for e in edges],
+        segments=segs,
+        locations=locs,
+        switches=[dict(text=w["text"], bbox=[round(v, 2) for v in w["bbox"]]) for w in words if w["text"].startswith("SW")],
     )
     with open(os.path.join(WEB, "data", "map.json"), "w") as f:
         json.dump(data, f, separators=(",", ":"))

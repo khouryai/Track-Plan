@@ -1,58 +1,60 @@
 # Extraction QA report
 
-Source: `System_Map_Print.pdf` - generated 2026-10-16T17:43:56+00:00
+Source: `System_Map_Print.pdf` - generated 2026-10-16T19:33:17+00:00
 
 ## Summary
 
 - Milepost labels decoded: **682** (626 milepost boxes, 56 interface ovals)
 - Lowest glyph-match confidence: 0.971
-- Tracks with milepost-calibrated geometry: **24** (A1, A2, C1, C2, C3, C4, CX3, L1, L2, L3, M1, M2, M3, R1, R2, S1, S2, W1, W2, W3, W4, Y1, Y2, Y3)
-- Stations / yards named: 48
+- Tracks with milepost-calibrated geometry: **25** (A1, A2, C1, C2, C3, C4, CX3, L1, L2, L3, M1, M2, M3, R1, R2, S1, S2, W1, W2, W3, W4, Y1, Y2, Y3, Y4)
+- Stations / yards named: 51
 
 | status | count | meaning |
 |---|---|---|
-| anchored | 268 | track-specific milepost used to calibrate its track |
+| anchored | 269 | track-specific milepost used to calibrate its track |
 | line_level | 280 | line milepost (e.g. `4.37C`) projected onto each track of the line |
 | facility | 44 | milepost of a facility (vent room, substation...) with no track suffix |
-| out_of_sequence | 28 | **review** - conflicts with neighbouring mileposts, not used |
+| out_of_sequence | 25 | **review** - conflicts with neighbouring mileposts, not used |
 | unanchored | 9 | **review** - leader could not be traced to a track |
-| unused | 53 | **review** - decoded but not used (track has no calibrated route) |
+| unused | 55 | **review** - decoded but not used (track has no calibrated route) |
 | unreadable | 0 | **review** - text did not parse as a milepost |
 
 ## Track coverage
 
 | track | MP range | pieces | anchors (explicit + line-level) |
 |---|---|---|---|
-| A1 | 0.0-10.86, 11.01-23.98 | 2 | 25 + 46 |
+| A1 | 0.22-10.86, 11.01-23.98 | 2 | 22 + 46 |
 | A2 | 0.27-10.86, 11.02-23.98 | 2 | 18 + 43 |
 | C1 | 0.0-4.15, 4.32-28.73 | 2 | 29 + 73 |
 | C2 | 0.0-28.98 | 1 | 25 + 79 |
-| C3 | 2.08-2.65, 12.24-12.42 | 2 | 4 + 0 |
-| C4 | 2.08-2.31 | 1 | 2 + 0 |
+| C3 | 2.08-2.65, 12.24-12.42, 28.98-29.19 | 3 | 5 + 1 |
+| C4 | 2.04-2.64 | 1 | 3 + 3 |
 | CX3 | 1.84-2.31 | 1 | 2 + 0 |
-| L1 | 11.47-24.84 | 1 | 12 + 28 |
+| L1 | 11.15-11.47, 11.76-24.84 | 2 | 12 + 29 |
 | L2 | 11.68-24.53 | 1 | 3 + 31 |
-| L3 | 14.54-19.61 | 1 | 3 + 0 |
-| M1 | 0.0-16.35 | 1 | 36 + 40 |
-| M2 | 0.0-0.2, 0.25-16.24 | 2 | 18 + 39 |
-| M3 | 15.17-16.22 | 1 | 9 + 3 |
+| L3 | 14.12-19.61 | 1 | 3 + 3 |
+| M1 | 0.0-16.35 | 1 | 40 + 40 |
+| M2 | 0.0-16.24 | 1 | 16 + 41 |
+| M3 | 15.17-16.52 | 1 | 10 + 7 |
 | R1 | 2.45-12.99 | 1 | 4 + 38 |
 | R2 | 2.45-2.49, 3.14-12.99 | 2 | 4 + 39 |
 | S1 | 25.3-28.5 | 1 | 0 + 13 |
 | S2 | 25.35-28.5 | 1 | 0 + 12 |
-| W1 | 16.51-24.61 | 1 | 20 + 10 |
+| W1 | 16.6-24.61 | 1 | 20 + 9 |
 | W2 | 16.54-24.7 | 1 | 28 + 10 |
-| W3 | 16.79-16.98, 20.84-20.98, 24.13-24.35 | 3 | 7 + 2 |
+| W3 | 16.79-16.98, 20.84-20.98, 24.13-24.51 | 3 | 8 + 2 |
 | W4 | 24.46-24.61 | 1 | 2 + 0 |
-| Y1 | 0.17-0.44 | 1 | 1 + 1 |
-| Y2 | 0.58-0.99 | 1 | 3 + 1 |
-| Y3 | 0.07-0.99 | 1 | 2 + 4 |
+| Y1 | 0.17-1.0 | 1 | 3 + 1 |
+| Y2 | 0.17-0.45, 0.58-0.82 | 2 | 3 + 2 |
+| Y3 | 0.07-0.45, 0.75-0.99 | 2 | 2 + 4 |
+| Y4 | 0.75-0.99 | 1 | 1 + 2 |
 
 ## Out-of-sequence mileposts (check the drawing)
 
 | label | page position (pt) | tracks |
 |---|---|---|
 | `18.07A1` | x 5198, y 897 | A1 |
+| `23.56A1` | x 5697, y 897 | A1 |
 | `0.23A2` | x 3964, y 1024 | A2 |
 | `18.84A2` | x 5395, y 897 | A2 |
 | `19.15A2` | x 5558, y 897 | A2 |
@@ -65,21 +67,17 @@ Source: `System_Map_Print.pdf` - generated 2026-10-16T17:43:56+00:00
 | `25.90C2` | x 5663, y 146 | C2 |
 | `0.00L1` | x 3830, y 1076 | L1 |
 | `0.00L2` | x 3791, y 1076 | L2 |
-| `0.22M1` | x 3801, y 1064 | M1 |
-| `15.02M1` | x 2570, y 904 | M1 |
-| `15.66M1` | x 2376, y 1110 | M1 |
-| `15.92M1` | x 2274, y 1110 | M1 |
-| `16.00M1` | x 2244, y 1110 | M1 |
+| `16.24M1` | x 2123, y 904 | M1 |
 | `0.03M2` | x 3916, y 1064 | M2 |
+| `0.25M2` | x 3816, y 1076 | M2 |
+| `0.37M2` | x 3761, y 1114 | M2 |
 | `15.65M2` | x 2361, y 1110 | M2 |
 | `24.39W1` | x 235, y 904 | W1 |
 | `23.72W2` | x 612, y 1110 | W2 |
 | `24.36W3` | x 339, y 904 | W3 |
-| `0.83Y1` | x 1014, y 904 | Y1 |
 | `0.87Y1` | x 971, y 921 | Y1 |
 | `0.99Y1` | x 1040, y 904 | Y1 |
 | `0.82Y3` | x 783, y 1110 | Y3 |
-| `0.83Y4` | x 783, y 899 | Y4 |
 
 ## Mileposts whose leader could not be followed to a track
 
@@ -102,7 +100,6 @@ Source: `System_Map_Print.pdf` - generated 2026-10-16T17:43:56+00:00
 | `11.28A` | x 4689, y 904 | A |
 | `18.75A` | x 5341, y 1173 | A |
 | `18.85A` | x 5412, y 1173 | A |
-| `2.50C` | x 3765, y 333 | C |
 | `17.54C` | x 4582, y 376 | C |
 | `17.63C` | x 4613, y 376 | C |
 | `19.54C` | x 4776, y 186 | C |
@@ -123,10 +120,11 @@ Source: `System_Map_Print.pdf` - generated 2026-10-16T17:43:56+00:00
 | `1.46KX` | x 3763, y 763 | KX |
 | `1.51KX` | x 3763, y 739 | KX |
 | `1.65KX` | x 3763, y 688 | KX |
-| `11.15L` | x 4664, y 904 | L |
 | `15.8L` | x 5406, y 550 | L |
 | `18.93L` | x 5467, y 550 | L |
 | `19.19L` | x 5517, y 771 | L |
+| `14.54L3` | x 5377, y 771 | L3 |
+| `15.04M` | x 2583, y 904 | M |
 | `15.16M2` | x 2542, y 1110 | M2 |
 | `14.88ME` | x 2604, y 1110 | ME |
 | `14.99ME` | x 2585, y 1110 | ME |
@@ -151,4 +149,6 @@ Source: `System_Map_Print.pdf` - generated 2026-10-16T17:43:56+00:00
 | `28.97S` | x 6351, y 1120 | S |
 | `29.00S` | x 6360, y 897 | S |
 | `29.12S` | x 6381, y 1120 | S |
+| `16.51W` | x 2009, y 1110 | W |
 | `23.29W` | x 744, y 904 | W |
+| `0.83Y4` | x 783, y 899 | Y4 |

@@ -155,6 +155,9 @@ def numbered(t):
     return bool(TRACK_RE.match(t))
 
 
+linref_numbered = numbered
+
+
 def _leader_dirs(l):
     for ld in l.get("leaders") or []:
         if len(ld) >= 2:
@@ -368,7 +371,7 @@ def build_rails(net, max_turn=35.0):
 TAG_REACH = 450.0   # pt along a rail that a track-number tag speaks for
 
 
-def follow_tracks(net, votes, tags=()):
+def follow_tracks(net, votes, tags=(), names=()):
     """votes: list of (edge, s, track) from explicit mileposts; tags: list of
     (edge, s, number) from the drawn track-number tags.  Returns {edge: track}
     labelling every edge on a voted rail with the nearest consistent vote.
@@ -386,10 +389,13 @@ def follow_tracks(net, votes, tags=()):
         p0, fwd = off[ei]
         return p0 + (s if fwd else net.edges[ei]["length"] - s)
 
-    tag_rail = {}
+    tag_rail, name_rail = {}, {}
     for ei, s, n in tags:
         if ei in rail_of:
             tag_rail.setdefault(rail_of[ei], []).append((along(ei, s), n))
+    for ei, s, t in names:
+        if ei in rail_of:
+            name_rail.setdefault(rail_of[ei], []).append((along(ei, s), t))
     letters, numbers = {}, {}
     rejected = []
     for ei, s_, t in votes:
@@ -400,6 +406,12 @@ def follow_tracks(net, votes, tags=()):
         if m is None:                      # line-level milepost: letter only
             letters.setdefault(ri, []).append((x, t))
             continue
+        Nm = name_rail.get(ri)          # a track name written beside this rail wins
+        if Nm:
+            nx_, nt = min(Nm, key=lambda q: abs(q[0] - x))
+            if abs(nx_ - x) < TAG_REACH and nt != t:
+                rejected.append((ei, s_, t))
+                continue
         T = tag_rail.get(ri)
         if T:
             tx, tn = min(T, key=lambda q: abs(q[0] - x))
@@ -410,6 +422,11 @@ def follow_tracks(net, votes, tags=()):
         numbers.setdefault(ri, []).append((x, m.group(2)))
     for ri, T in tag_rail.items():
         numbers.setdefault(ri, []).extend(T)
+    for ri, Nm in name_rail.items():
+        for x, t in Nm:
+            m = TRACK_RE.match(t)
+            letters.setdefault(ri, []).append((x, m.group(1)))
+            numbers.setdefault(ri, []).append((x, m.group(2)))
     follow_tracks.rejected = rejected
     follow_tracks.rails, follow_tracks.rail_of, follow_tracks.tag_rail = rails, rail_of, tag_rail
     follow_tracks.along = along
@@ -459,7 +476,7 @@ def _monotone_filter(items):
     return kept, dropped
 
 
-def solve(net, labels, tags=(), log=print):
+def solve(net, labels, tags=(), names=(), log=print):
     anchors = anchor_labels(net, labels)
     tag_snaps = []
     for tg in tags:
@@ -467,6 +484,12 @@ def solve(net, labels, tags=(), log=print):
         if c and c["dist"] < 12:
             tag_snaps.append((c["edge"], c["s"], tg["n"]))
     log(f"  {len(tag_snaps)} of {len(tags)} track-number tags snapped to rails")
+    name_snaps = []
+    for tn in names:
+        c = net.snap(tn["x"], tn["y"])
+        if c and c["dist"] < 11:
+            name_snaps.append((c["edge"], c["s"], tn["name"]))
+    log(f"  {len(name_snaps)} of {len(names)} written track names snapped to rails")
     groups = {}
     for a in anchors:
         if a["ok"]:
@@ -483,8 +506,27 @@ def solve(net, labels, tags=(), log=print):
             for ln in a["tracks"]:
                 if re.fullmatch(r"[A-Z]", ln):
                     votes.append((a["edge"], a["s"], ln))
-    edge_track = follow_tracks(net, votes, tag_snaps)
-    log(f"  {len(follow_tracks.rejected)} milepost votes contradicted by track-number tags")
+    edge_track = follow_tracks(net, votes, tag_snaps, name_snaps)
+    # a label whose leader stops on the wrong rail (contradicted by the written
+    # track name or tag there) is carried on along its leader to the next rail
+    moved = 0
+    by_key = {(a["edge"], a["s"]): a for A in groups.values() for a in A}
+    for ei, s_, t in follow_tracks.rejected:
+        a = by_key.get((ei, s_))
+        if a is None:
+            continue
+        ri = follow_tracks.rail_of.get(ei)
+        other = {e for e in range(len(net.edges)) if follow_tracks.rail_of.get(e) != ri}
+        c = snap_label(net, labels[a["label"]], allowed=other)
+        if c and c["how"] != "nearest":
+            a.update({k: c[k] for k in ("edge", "s", "x", "y", "dist", "how")}, carried=True)
+            moved += 1
+    if moved:
+        votes = [(a["edge"], a["s"], t) for t, A in groups.items() for a in A] + \
+                [v for v in votes if not linref_numbered(v[2])]
+        edge_track = follow_tracks(net, votes, tag_snaps, name_snaps)
+    log(f"  {len(follow_tracks.rejected)} milepost votes contradicted by written track names / tags; "
+        f"{moved} carried on to the next rail")
     edges_of = {}
     for ei, t in edge_track.items():
         edges_of.setdefault(t, set()).add(ei)

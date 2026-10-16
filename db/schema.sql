@@ -66,13 +66,47 @@ CREATE TABLE stations (
     bbox  TEXT
 );
 
+-- Every piece of track on the drawing (running tracks, crossovers, yard and
+-- pocket tracks), with the calibrated milepost where each end meets a
+-- running track.  geometry is a JSON array of [x, y].
+CREATE TABLE track_segments (
+    id         INTEGER PRIMARY KEY,
+    name       TEXT NOT NULL,            -- 'M1', 'Crossover SW389/SW387', 'DTF02' ...
+    kind       TEXT NOT NULL,            -- running | crossover | yard | track
+    track_id   TEXT,
+    switches   TEXT,                     -- JSON list of switch labels beside it
+    end_a      TEXT,                     -- JSON {track, mp} or null
+    end_b      TEXT,
+    length_pt  REAL,
+    geometry   TEXT NOT NULL
+);
+
+-- Places an access request can name: every station and its train control
+-- room, yards and platforms.
+CREATE TABLE locations (
+    id    TEXT PRIMARY KEY,              -- 'stn:Colma', 'tcr:Colma', 'yard:Concord Yard'
+    name  TEXT NOT NULL,                 -- 'Colma TCR (Train Control Room)'
+    kind  TEXT NOT NULL,                 -- station | tcr | yard | platform
+    x     REAL NOT NULL,
+    y     REAL NOT NULL,
+    near  TEXT                           -- nearest calibrated milepost, e.g. 'M1 MP 13.95'
+);
+
 -- Track access requests: the operational data.  Preserved across rebuilds.
+-- A request covers track drawn on the map (geometry: JSON list of polylines in
+-- drawing coordinates, with limits: the MP ranges / named pieces it covers),
+-- a typed track + MP range, a location (station or train control room), or a
+-- combination.  track_id/from_mp/to_mp hold the first calibrated range.
 CREATE TABLE access_requests (
     id          INTEGER PRIMARY KEY,
     request_no  TEXT,
-    track_id    TEXT NOT NULL,
-    from_mp     REAL NOT NULL,
-    to_mp       REAL NOT NULL,
+    track_id    TEXT,
+    from_mp     REAL,
+    to_mp       REAL,
+    location    TEXT,                    -- e.g. 'Colma TCR (Train Control Room)'
+    geometry    TEXT,                    -- JSON [[[x, y], ...], ...]
+    limits      TEXT,                    -- JSON [{track, from_mp, to_mp} | {name, kind, context}]
+    description TEXT,
     start_time  TEXT,                    -- ISO 8601
     end_time    TEXT,
     work_type   TEXT,
