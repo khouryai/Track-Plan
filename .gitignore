@@ -3,3 +3,8 @@ db/*.db
 __pycache__/
 *.pyc
 web/tiles/
+db/*.db-*
+db/*.pdf
+db/*.tmp
+node_modules/
+tests/out/

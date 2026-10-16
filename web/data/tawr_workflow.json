@@ -1,0 +1,33 @@
+{
+  "_comment": "Who may do what to a TAWR, and from which status. Read by web/js/tawr.js (what the screen offers) and by server.py (what it allows). Change it here and both follow.",
+  "roles": {
+    "requester": "Requester",
+    "manager": "Track Allocation Manager",
+    "viewer": "Viewer"
+  },
+  "statuses": {
+    "draft": "Draft",
+    "submitted": "Submitted",
+    "approved": "Approved",
+    "rejected": "Rejected",
+    "superseded": "Superseded",
+    "consolidated": "Consolidated"
+  },
+  "live": ["draft", "submitted", "approved", "rejected"],
+  "actions": {
+    "submit": { "from": ["draft"], "to": "submitted", "roles": ["requester", "manager"], "label": "Submit for approval", "unblocked": true },
+    "withdraw": { "from": ["submitted"], "to": "draft", "roles": ["requester", "manager"], "label": "Withdraw" },
+    "approve": { "from": ["submitted"], "to": "approved", "roles": ["manager"], "label": "Approve", "unblocked": true },
+    "reject": { "from": ["submitted"], "to": "rejected", "roles": ["manager"], "label": "Reject", "note": true },
+    "reopen": { "from": ["rejected"], "to": "draft", "roles": ["requester", "manager"], "label": "Reopen as draft" },
+    "revise": { "from": ["approved"], "to": "superseded", "roles": ["requester", "manager"], "label": "Revise", "creates": "draft" },
+    "discard": { "from": ["draft", "rejected"], "to": null, "roles": ["requester", "manager"], "label": "Discard" },
+    "consolidate": { "from": ["draft", "submitted"], "to": "consolidated", "roles": ["manager"], "label": "Consolidate" },
+    "split": { "from": ["draft", "submitted", "rejected"], "to": null, "roles": ["manager"], "label": "Split back up" }
+  },
+  "edit": {
+    "draft": ["requester", "manager"],
+    "submitted": ["manager"]
+  },
+  "write": ["requester", "manager"]
+}
