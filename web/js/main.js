@@ -145,8 +145,11 @@ app.showTawrOnMap = (record) => {
 /** Weeks anybody might look at: the look-ahead's, and any with requests. */
 app.weeks = () => {
   const out = new Set([...T.weeksWithWork(app.la.model), ...app.tawrs.map((t) => t.week_start)]);
-  out.add(T.dueWeek(app.today));
-  return [...out].sort();
+  const due = T.dueWeek(app.today);
+  // This week to the week after the one due: the look-ahead's window, at least.
+  for (let w = T.mondayOf(app.today); w <= T.addDaysISO(due, 7); w = T.addDaysISO(w, 7)) out.add(w);
+  const from = T.addDaysISO(T.mondayOf(app.today), -28);
+  return [...out].filter((w) => w >= from).sort();
 };
 
 function pushOverlay() {

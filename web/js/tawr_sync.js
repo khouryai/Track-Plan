@@ -89,8 +89,12 @@ export async function syncWeek(app, week) {
   for (const group of groups) {
     const record = records.find((r) => r.group_key === group.key);
     if (!record) {
-      await S.createTawr(recordOf(app, group));
-      made++;
+      try {
+        await S.createTawr(recordOf(app, group));
+        made++;
+      } catch (err) {
+        if (err.status !== 409) throw err; // somebody else raised it a moment ago
+      }
     } else if (record.status === 'draft') {
       const fresh = freshValues(app, group);
       const merged = T.mergeRegenerated(record, fresh);
@@ -139,13 +143,21 @@ export function consolidation(app, records) {
   const groups = extract(app, week, { merges: [...(app.merges || []), merge] });
   const group = groups.find((g) => g.key === `merge:${id}`);
   if (!group) throw new Error('Those requests are no longer on the look-ahead this week. Update the drafts first.');
-  /* What anybody typed into the members is kept where every member agreed on
-     it; anything they disagree on takes the look-ahead's value. */
+  /* What somebody typed into a member by hand comes along — a schedule
+     number, a clearance answer — unless two members say different things, when
+     the look-ahead's value stands and the review names the field. What the
+     look-ahead decides (dates, hours, area, support) is read afresh. */
   const fresh = freshValues(app, group);
   const fields = { ...fresh };
+  const conflicts = [];
   for (const k of new Set(records.flatMap((r) => T.editedKeys(r.fields, r.generated)))) {
-    const vals = records.map((r) => JSON.stringify(r.fields?.[k] ?? null));
-    if (new Set(vals).size === 1 && !T.fromLookahead(k)) fields[k] = records[0].fields[k];
+    if (T.fromLookahead(k)) continue;
+    const said = new Set(records.filter((r) => T.editedKeys(r.fields, r.generated).includes(k)).map((r) => JSON.stringify(r.fields?.[k] ?? null)));
+    if (said.size === 1) {
+      const v = JSON.parse([...said][0]);
+      if (v == null) delete fields[k]; else fields[k] = v;
+    } else conflicts.push(k);
   }
-  return { merge, record: { ...recordOf(app, group, fresh), fields } };
+  const record = recordOf(app, group, fresh);
+  return { merge, record: { ...record, fields, source: { ...record.source, conflicts } } };
 }

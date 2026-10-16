@@ -588,7 +588,7 @@ export function pickLocation({ title, link = null }) {
   $('#typed-limits').open = false;
   document.querySelector('[data-tab=pick]').hidden = false;
   showTab('pick');
-  if (!$('#panel').classList.contains('hidden')) { /* already visible */ } else $('#panel').classList.remove('hidden');
+  $('#panel').classList.remove('hidden');
   renderPlaces();
   onDraftChanged();
   invalidate();

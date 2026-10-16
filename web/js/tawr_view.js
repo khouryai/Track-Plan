@@ -41,7 +41,6 @@ export function focus(id) { V.focus = id; }
 
 const live = (r) => !['superseded', 'consolidated'].includes(r.status);
 const label = (name) => T.FIELD_LABEL.get(name) || name;
-const roleName = (r) => S.store.workflow.roles[r] || r;
 const statusName = (s) => (s === 'none' ? 'Not raised' : S.store.workflow.statuses[s] || s);
 
 /* ── BART's blank form, once per session ───────────────────────────────── */
@@ -704,21 +703,30 @@ function renderSetup(host) {
     el('div', {}, [el('div', { class: 'settings-name', text: caption }), hint ? el('div', { class: 'small', text: hint }) : null]),
     el('div', { class: 'settings-control' }, [control]),
   ]));
-  const setting = (caption, key, { options = null, fallback = '', placeholder = '', check = null, hint = '' } = {}) => {
-    const current = s[key] ?? fallback;
+  /* `fallback` is what applies when nothing is saved; `prefill` is only a
+     suggestion in the box, still to be saved. */
+  const setting = (caption, key, { options = null, fallback = '', prefill = '', placeholder = '', check = null, hint = '' } = {}) => {
+    let current = s[key] ?? fallback;
     const input = options ? el('select', {}, options.map((o) => el('option', { value: o, text: o }))) : el('input', { type: 'text', placeholder });
-    input.value = current;
+    input.value = s[key] ?? (prefill || fallback);
     input.setAttribute('aria-label', caption);
     input.dataset.setting = key;
-    const btn = el('button', { type: 'button', class: 'mini', text: 'Save', disabled: true });
+    const btn = el('button', { type: 'button', class: 'mini', text: 'Save' });
     const sync = () => { btn.disabled = input.value.trim() === String(current ?? '').trim(); };
+    sync();
     input.addEventListener('input', sync);
     input.addEventListener('change', sync);
     btn.addEventListener('click', async () => {
       const v = input.value.trim();
       const problem = check?.(v);
       if (problem) { toast(problem, 'warn'); return; }
-      try { app.settings = await S.setSettings({ [key]: v }); toast(`${caption} saved.`, 'good'); btn.disabled = true; } catch (err) { toast(err.message, 'bad'); }
+      try {
+        app.settings = await S.setSettings({ [key]: v });
+        current = v;
+        sync();
+        await app.raise(); // the drafts carry the setup too
+        toast(`${caption} saved.`, 'good');
+      } catch (err) { toast(err.message, 'bad'); }
     });
     row(caption, hint, el('div', { class: 'inline' }, [input, btn]));
   };
@@ -737,7 +745,7 @@ function renderSetup(host) {
   ]));
 
   group('The requester, on every form');
-  setting('Requester\'s name on the form', 'requestor_name', { fallback: S.store.user?.role === 'requester' ? S.store.user.name : '', hint: 'The one person who raises the requests.' });
+  setting('Requester\'s name on the form', 'requestor_name', { prefill: S.store.user?.role === 'requester' ? S.store.user.name : '', hint: 'The one person who raises the requests.' });
   setting('Requester\'s cell phone', 'requestor_cell_phone');
   row('Requester\'s signature', 'Drawn once, here, and signed onto the requestor line of every request when it is downloaded. Drawn as lines, so it prints sharp.', signaturePad(s.requestor_signature));
 
@@ -824,7 +832,11 @@ function signaturePad(savedText) {
   clearBtn.addEventListener('click', () => { strokes = []; draw(); saveBtn.disabled = false; });
   saveBtn.addEventListener('click', async () => {
     const sig = strokes.length ? JSON.stringify({ width: PAD_W, height: PAD_H, strokes: strokes.filter((st) => st.length) }) : '';
-    try { V.app.settings = await S.setSettings({ requestor_signature: sig }); saveBtn.disabled = true; toast(sig ? 'Signature saved.' : 'Signature removed.', 'good'); } catch (err) { toast(err.message, 'bad'); }
+    try {
+      V.app.settings = await S.setSettings({ requestor_signature: sig });
+      saveBtn.disabled = true;
+      toast(sig ? 'Signature saved.' : 'Signature removed.', 'good');
+    } catch (err) { toast(err.message, 'bad'); }
   });
   requestAnimationFrame(draw);
   return el('div', { class: 'signature' }, [canvas, el('div', { class: 'inline' }, [clearBtn, saveBtn])]);

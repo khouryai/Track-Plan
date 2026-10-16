@@ -1,0 +1,33 @@
+name: Checks
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Playwright and Chromium
+        run: |
+          npm ci --no-audit --no-fund
+          npx playwright install --with-deps chromium
+      - name: Lint
+        run: npx --yes eslint@9 web/js tests eslint.config.js
+      - name: Look-ahead, links and TAWRs (Node)
+        run: node tests/test_tawr.mjs
+      - name: Server rules (Python)
+        run: python3 -m unittest tests/test_server.py -v
+      - name: The flow in a browser (static site and server.py)
+        run: node tests/smoke.mjs

@@ -287,6 +287,7 @@ class Http(unittest.TestCase):
         status, out, _ = self.call("POST", f"/api/tawrs/{t['id']}/approve", {}, cookie=cookie)
         self.assertEqual((status, out["status"]), (200, "approved"))
         # BART's form: uploaded by a writer, kept outside web/, not served as a static file
+        self.assertEqual(self.call("GET", "/api/tawr/template", cookie=rc)[0], 204)
         status, _, _ = self.call("PUT", "/api/tawr/template", raw=b"%PDF-1.4 test", cookie=rc, ctype="application/pdf")
         self.assertEqual(status, 200)
         self.assertEqual(self.call("GET", "/api/tawr/template", cookie=rc)[1], b"%PDF-1.4 test")

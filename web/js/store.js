@@ -469,12 +469,8 @@ export async function getTemplate() {
       });
     } catch { return null; }
   }
-  try {
-    return await http('GET', 'api/tawr/template', undefined, { bytes: true });
-  } catch (err) {
-    if (err.status === 404) return null;
-    throw err;
-  }
+  const bytes = await http('GET', 'api/tawr/template', undefined, { bytes: true });
+  return bytes.length ? bytes : null; // 204: not uploaded yet
 }
 
 export async function putTemplate(bytes) {

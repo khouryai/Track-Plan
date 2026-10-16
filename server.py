@@ -29,7 +29,7 @@ TAWRs (signed in; who may do what is web/data/tawr_workflow.json)
   POST   /api/tawrs/<id>/<action>            submit | withdraw | approve | reject | reopen | revise | discard
   POST   /api/tawrs/consolidate              {ids, merge, record, note}   (track allocation manager)
   POST   /api/tawrs/<id>/split                                             (track allocation manager)
-  GET/PUT /api/tawr/settings, /api/tawr/template (application/pdf)
+  GET/PUT /api/tawr/settings, /api/tawr/template (application/pdf; 204 until uploaded)
   GET/POST /api/tawr/descriptions, PUT/DELETE /api/tawr/descriptions/<id>
 
 Legacy access requests (reads open; changes need a requester or the manager)
@@ -290,8 +290,11 @@ class Handler(SimpleHTTPRequestHandler):
         if p == ["tawr", "template"]:
             if method == "GET":
                 data = ops.load_template(need())
-                if data is None:
-                    raise ops.Refused("BART's form has not been uploaded", 404)
+                if data is None:  # not uploaded yet: a state, not an error
+                    self.send_response(HTTPStatus.NO_CONTENT)
+                    self.send_header("Cache-Control", "no-store")
+                    self.end_headers()
+                    return None
                 return self.send_bytes(data, "application/pdf")
             if method == "PUT":
                 return self.send_json(ops.save_template(self.raw_body(), need(), WORKFLOW))

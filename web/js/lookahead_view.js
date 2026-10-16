@@ -67,6 +67,8 @@ export function busy() {
 
 export function leave() {
   if (V.editing) commitEdit();
+  // A hidden element forgets where it was scrolled to, so remember it now.
+  if (V.scroll) V.saved = { top: V.scroll.scrollTop, left: V.scroll.scrollLeft };
 }
 
 const model = () => V.app.la.model;
@@ -267,7 +269,8 @@ function weekSummary(week) {
 function draw() {
   const wrap = V.root.querySelector('.la-wrap');
   if (!wrap) return;
-  const keepScroll = V.scroll ? { top: V.scroll.scrollTop, left: V.scroll.scrollLeft } : null;
+  const keepScroll = V.saved || (V.scroll?.isConnected && V.scroll.offsetParent ? { top: V.scroll.scrollTop, left: V.scroll.scrollLeft } : null);
+  V.saved = null;
   const hadFocus = V.scroll && V.scroll.contains(document.activeElement);
   V.days = windowDays();
   V.rows = visibleRows();
@@ -377,7 +380,11 @@ function draw() {
   clear(wrap);
   wrap.append(scroll);
   V.scroll = scroll;
-  if (keepScroll) { scroll.scrollTop = keepScroll.top; scroll.scrollLeft = keepScroll.left; }
+  if (keepScroll) { scroll.scrollTop = keepScroll.top; scroll.scrollLeft = keepScroll.left; } else {
+    /* The first time: the TAWR week in view, with the week before it for context. */
+    const at = V.days.indexOf(V.app.week);
+    if (at > 7) scroll.scrollLeft = (at - 7) * DAY_WIDTH;
+  }
   clampSelection();
   paintSelection();
   if (hadFocus && !document.querySelector('.modal-back')) scroll.focus({ preventScroll: true });
@@ -566,6 +573,7 @@ function paint(color) {
   const days = selectedDays();
   if (!days.length) { toast('Select days on an activity row first.', 'warn'); return; }
   commit(days.map(({ row, day }) => ({ op: 'cell', row_id: row.id, day, color, text: LA.getCell(model(), row.id, day)?.text || '' })));
+  V.scroll?.focus({ preventScroll: true }); // keep typing into the grid after pressing a colour
 }
 
 function addCode(code, delta) {
@@ -576,6 +584,7 @@ function addCode(code, delta) {
     const cell = LA.getCell(model(), row.id, day);
     return { op: 'cell', row_id: row.id, day, color: cell?.color || null, text: LA.addCode(cell?.text || '', code, delta) };
   }));
+  V.scroll?.focus({ preventScroll: true });
 }
 
 function clearSelection() {

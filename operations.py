@@ -19,10 +19,12 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
-OPS_DB = os.path.join(ROOT, "db", "operations.db")
+# TRACKPLAN_OPS_DB and TRACKPLAN_TEMPLATE put both somewhere else — the tests
+# use them so a run never touches the real database.
+OPS_DB = os.environ.get("TRACKPLAN_OPS_DB") or os.path.join(ROOT, "db", "operations.db")
 SCHEMA = os.path.join(ROOT, "db", "operations.sql")
 WORKFLOW_PATH = os.path.join(ROOT, "web", "data", "tawr_workflow.json")
-TEMPLATE_PATH = os.path.join(ROOT, "db", "tawr_template.pdf")
+TEMPLATE_PATH = os.environ.get("TRACKPLAN_TEMPLATE") or os.path.join(ROOT, "db", "tawr_template.pdf")
 
 ROLES = ("requester", "manager", "viewer")
 SESSION_DAYS = 14
