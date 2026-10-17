@@ -350,6 +350,9 @@ export async function consolidate(ids, merge, record, note = null) {
     if (new Set(rows.map((r) => r.week_start)).size !== 1 || new Set(rows.map((r) => r.shift)).size !== 1) {
       throw new Refused('only requests in the same week and shift can be consolidated', 409);
     }
+    if (new Set(rows.map((r) => r.source?.kind)).size !== 1) {
+      throw new Refused('a TCR request and a track request cannot be consolidated — they are different categories of work', 409);
+    }
     const from = store.workflow.actions.consolidate.from;
     for (const r of rows) if (!from.includes(r.status)) throw new Refused(`#${r.id} is ${r.status}; only drafts and submitted requests can be consolidated`, 409);
     const stamp = nowIso();

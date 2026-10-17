@@ -21,7 +21,7 @@
  * Imports: links, ui.
  */
 
-import { samplePolys, bboxOf, limitText, hasLink, linkArea, shortLocationName } from './links.js';
+import { samplePolys, bboxOf, limitText, limitsText, hasLink, linkArea, shortLocationName, sharedSpot } from './links.js';
 import { el, esc, toast } from './ui.js';
 
 const L = window.L;
@@ -40,7 +40,14 @@ const KIND_COLOR = { running: '#8a2be2', crossover: '#e0670b', yard: '#16a34a', 
 const $ = (s) => document.querySelector(s);
 const r3 = (v) => Math.round(v * 1000) / 1000;
 
-const state = { data: null, tool: null, draft: [], path: null, pick: null, overlay: null, selected: null };
+const state = {
+  data: null, tool: null, draft: [], path: null, pick: null, overlay: null, selected: null,
+  // The track plan's own view of the week: which statuses to draw, conflicts only, the conflict in focus.
+  statuses: new Set(['draft', 'submitted', 'approved', 'rejected']), conflictsOnly: false, conflict: null,
+};
+const SHOWN_STATUSES = ['draft', 'submitted', 'approved', 'rejected'];
+const CONFLICT = '#d1242f';
+const GLOW = '#14d3a0'; // bright whatever the status, so a grey draft glows as clearly as a blue approval
 
 // ------------------------------------------------------------------ calibrated routes
 
@@ -346,6 +353,7 @@ function setTool(t) {
   if (state.tool === 'box') map.dragging.disable(); else map.dragging.enable();
   if (state.tool === 'path') map.doubleClickZoom.disable(); else map.doubleClickZoom.enable();
   renderDraft();
+  renderOverlay(); // an armed tool takes the clicks; the overlay only shows
 }
 
 function draftGeometry() {
@@ -361,7 +369,16 @@ function onDraftChanged() {
   const geom = draftGeometry().concat(typedGeometry());
   const lims = describeGeometry(geom);
   $('#selection').hidden = !geom.length;
-  $('#sel-list').replaceChildren(...lims.map((l) => el('li', { text: limitText(l) })));
+  /* What the request will say: the limits, leftmost to rightmost on each line.
+     The pieces inside them are listed underneath, small, for checking. */
+  const named = lims.filter((l) => !l.track);
+  $('#sel-list').replaceChildren(...[
+    ...(limitsText(lims) ? limitsText(lims).split('; ').map((t) => el('li', { class: 'sel-limits', text: t })) : []),
+    named.length && lims.some((l) => l.track)
+      ? el('li', { class: 'small sel-inside', text: `Inside the limits: ${named.map((l) => l.name).join(', ')}` }) : null,
+    lims.some((l) => l.track) && lims.filter((l) => l.track).length > 1
+      ? el('li', { class: 'small sel-inside', text: `Per track: ${lims.filter((l) => l.track).map((l) => limitText(l, { dash: '–' })).join(' · ')}` }) : null,
+  ].filter(Boolean));
   renderDraft();
 }
 
@@ -460,42 +477,155 @@ function renderPlaces() {
 
 /* ── What the look-ahead puts on the map ───────────────────────────────── */
 
+const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const dayName = (iso) => { const d = new Date(`${iso}T00:00:00Z`); return `${DAYS[d.getUTCDay()]} ${d.getUTCDate()} ${MONTHS[d.getUTCMonth()]}`; };
+const cap = (t) => String(t || '').charAt(0).toUpperCase() + String(t || '').slice(1);
+
+/** The conflicts the overlay was given, that involve this request. */
+const conflictsOf = (t) => (state.overlay?.conflicts || []).filter((c) => c.a.id === t.id || c.b.id === t.id);
+
+/** What hovering a request says: the place, the days, and each activity with its party and limits. */
+function tawrTip(t) {
+  const src = t.source || {};
+  const rows = (src.activities || []).map((a) => `<div class="tip-act"><b>${esc([a.activityId, a.title].filter(Boolean).join(' · '))}</b>`
+    + `${a.party ? `<br>Party to action: ${esc(a.party)}` : ''}`
+    + `${a.link ? `<br>Limits: ${esc(linkArea(a.link))}` : ''}</div>`).join('');
+  const days = (src.days || []).map((d) => `${dayName(d.date)} ${d.start || '?'}–${d.end || '?'}`).join(', ');
+  const clash = conflictsOf(t).map((c) => {
+    const other = c.a.id === t.id ? c.b : c.a;
+    return `<div class="tip-clash">Conflicts with #${other.id} ${esc(other.location_name)} — ${esc(c.when.map((w) => dayName(w.date)).join(', '))}</div>`;
+  }).join('');
+  return `<div class="tip-head">TAWR #${t.id} · ${esc(cap(t.status))}</div>`
+    + `<div><b>${esc(t.location_name)}</b> · ${esc(cap(t.shift))} shift</div>`
+    + `<div>Limits: ${esc(src.area || t.location_name)}</div>`
+    + `<div>${esc(days)}</div>${rows}${clash}`;
+}
+
+function activityTip(a) {
+  return `<div class="tip-head">Look-ahead activity</div>`
+    + `<div><b>${esc([a.activity_id, a.description].filter(Boolean).join(' · ') || a.title)}</b></div>`
+    + `${a.party ? `<div>Party to action: ${esc(a.party)}</div>` : ''}`
+    + `<div>Limits: ${esc(linkArea(a.link))}</div>`
+    + `${a.days?.length ? `<div>This week: ${esc(a.days.map((d) => `${dayName(d.date)}${d.shift ? ` (${d.shift})` : ''}`).join(', '))}</div>` : ''}`;
+}
+
+const tipOptions = { sticky: true, direction: 'top', className: 'map-tip', opacity: 1, offset: [0, -10] };
+
+/** The requests drawn: the statuses picked, or only those in a conflict. */
+function shownTawrs() {
+  const o = state.overlay;
+  if (!o) return [];
+  const clashing = new Set((o.conflicts || []).flatMap((c) => [c.a.id, c.b.id]));
+  return (o.tawrs || []).filter((t) => state.statuses.has(t.status) && (!state.conflictsOnly || clashing.has(t.id)));
+}
+
+/** The requests glowing: the one selected, or both sides of the conflict in focus. */
+function glowing() {
+  const c = state.conflict;
+  return new Set(c ? [c.a.id, c.b.id] : state.selected ? [state.selected] : []);
+}
+
 function renderOverlay() {
   layers.tawrs.clearLayers();
   layers.activities.clearLayers();
   const o = state.overlay;
   if (!o) return;
+  const quiet = Boolean(state.pick || state.tool); // picking: the overlay is for looking, not clicking
   if ($('#lyr-activities').checked) {
     for (const a of o.activities || []) {
       if (!hasLink(a.link)) continue;
       for (const pl of a.link.geometry || []) {
-        L.polyline(llPoly(pl), { color: ACTIVITY, weight: 3, opacity: 0.85, dashArray: '6 5', interactive: true })
-          .bindTooltip(esc(`${a.title} — ${linkArea(a.link)}`), { sticky: true }).addTo(layers.activities);
+        L.polyline(llPoly(pl), { color: ACTIVITY, weight: 3, opacity: 0.85, dashArray: '6 5', interactive: !quiet })
+          .bindTooltip(activityTip(a), tipOptions).addTo(layers.activities);
       }
       const loc = a.link.location_id && locationById(a.link.location_id);
       if (loc && !(a.link.geometry || []).length) locationMarker(loc, ACTIVITY, shortLocationName(loc.name)).addTo(layers.activities);
     }
   }
   if (!$('#lyr-tawrs').checked) return;
-  for (const t of o.tawrs || []) {
+  const shown = shownTawrs();
+  const glow = glowing();
+  const clashing = new Set((o.conflicts || []).flatMap((c) => [c.a.id, c.b.id]));
+  for (const t of shown) {
     const place = t.source?.place || {};
     const col = STATUS_COLOR[t.status] || '#666';
-    const sel = state.selected === t.id;
-    const tip = `TAWR #${t.id} ${t.location_name} · ${t.shift} · ${t.status}`;
+    const lit = glow.has(t.id);
     for (const pl of place.geometry || []) {
-      L.polyline(llPoly(pl), { color: col, weight: reqWeight(sel), opacity: sel ? 0.85 : 0.5, lineCap: 'butt' })
-        .bindTooltip(esc(tip), { sticky: true }).on('click', () => selectTawr(t)).addTo(layers.tawrs);
+      if (lit) {
+        // The glow: a wide, soft line under the request, breathing.
+        L.polyline(llPoly(pl), { color: GLOW, weight: reqWeight(true) * 2.6, opacity: 0.45, lineCap: 'round', interactive: false, className: 'tawr-glow' }).addTo(layers.tawrs);
+      }
+      const line = L.polyline(llPoly(pl), {
+        color: col, weight: reqWeight(lit), opacity: lit ? 0.95 : 0.55, lineCap: 'butt', interactive: !quiet,
+        className: `tawr-line st-${t.status}${lit ? ' tawr-lit' : ''}`,
+      }).bindTooltip(tawrTip(t), tipOptions);
+      if (!quiet) line.on('click', () => selectTawr(t));
+      line.addTo(layers.tawrs);
+      if (clashing.has(t.id)) {
+        L.polyline(llPoly(pl), { color: CONFLICT, weight: 2, opacity: 0.95, dashArray: '4 4', interactive: false, className: 'tawr-clash-edge' }).addTo(layers.tawrs);
+      }
     }
     for (const p of place.places || []) {
       const loc = locationById(p.id);
-      if (loc) locationMarker(loc, col, `#${t.id} ${shortLocationName(loc.name)}`).addTo(layers.tawrs);
+      if (!loc) continue;
+      const m = L.marker(ll(loc.x, loc.y), {
+        interactive: !quiet,
+        icon: L.divIcon({ className: `loc-pin${lit ? ' loc-pin-lit' : ''}`, html: `<span style="color:${col}">#${t.id} ${esc(shortLocationName(loc.name))}</span>`, iconSize: null, iconAnchor: [10, 28] }),
+      }).bindTooltip(tawrTip(t), { ...tipOptions, sticky: false });
+      if (!quiet) m.on('click', () => selectTawr(t));
+      m.addTo(layers.tawrs);
     }
   }
+  /* Conflicts: where two requests want the same track, or room, at the same time. */
+  const ids = new Set(shown.map((t) => t.id));
+  for (const c of o.conflicts || []) {
+    if (!ids.has(c.a.id) || !ids.has(c.b.id)) continue;
+    const spot = conflictSpot(c);
+    if (!spot) continue;
+    const focus = state.conflict === c;
+    const m = L.marker(ll(spot.x, spot.y), {
+      interactive: !quiet,
+      icon: L.divIcon({ className: `clash-pin${focus ? ' clash-pin-lit' : ''}`, html: '<span>!</span>', iconSize: [22, 22], iconAnchor: [11, 11] }),
+    }).bindTooltip(`<div class="tip-head tip-clash">Conflict</div><div>#${c.a.id} ${esc(c.a.location_name)} and #${c.b.id} ${esc(c.b.location_name)}</div>`
+      + c.when.map((w) => `<div>${esc(dayName(w.date))}: ${esc(w.a)} and ${esc(w.b)}</div>`).join(''), { ...tipOptions, sticky: false });
+    if (!quiet) m.on('click', () => focusConflict(c));
+    m.addTo(layers.tawrs);
+  }
+}
+
+/** Where to draw a conflict: the track the two share, or the room. */
+function conflictSpot(c) {
+  const ga = c.a.source?.place?.geometry || [];
+  const gb = c.b.source?.place?.geometry || [];
+  const shared = sharedSpot(ga, gb);
+  if (shared) return shared;
+  const pa = new Set((c.a.source?.place?.places || []).map((p) => p.id));
+  const room = (c.b.source?.place?.places || []).find((p) => pa.has(p.id));
+  const loc = room && locationById(room.id);
+  if (loc) return { x: loc.x, y: loc.y - 18, bbox: [loc.x - 150, loc.y - 70, loc.x + 150, loc.y + 70] };
+  const g = ga.length ? ga : gb;
+  if (!g.length) return null;
+  const b = bboxOf(g);
+  return { x: (b[0] + b[2]) / 2, y: (b[1] + b[3]) / 2, bbox: b };
 }
 
 function selectTawr(t, zoom = false) {
   state.selected = t.id;
+  state.conflict = null;
   if (zoom) showPlace(t.source?.place);
+  renderOverlay();
+  renderOnMapList();
+}
+
+function focusConflict(c) {
+  state.conflict = c;
+  state.selected = null;
+  const spot = conflictSpot(c);
+  if (spot) {
+    const [x0, y0, x1, y1] = spot.bbox;
+    zoomTo(x0, y0, x1, y1, 120);
+  }
   renderOverlay();
   renderOnMapList();
 }
@@ -515,8 +645,12 @@ export function showLink(link) {
   return showPlace({ geometry: link.geometry || [], places: link.location_id ? [{ id: link.location_id }] : [] });
 }
 
+/** Show one request, glowing — "Show on track plan" from its card. */
 export function showTawr(t) {
+  state.statuses.add(t.status); // a request asked for is never filtered out of sight
+  state.conflictsOnly = false;
   selectTawr(t, true);
+  return true;
 }
 
 function renderOnMapList() {
@@ -531,14 +665,50 @@ function renderOnMapList() {
     sel.value = o.week;
     host.append(el('label', {}, ['Week', sel]));
   }
-  host.append(el('h2', { text: 'TAWRs this week' }));
-  if (!o.tawrs?.length) host.append(el('p', { class: 'small', text: 'None yet. They are raised from the look-ahead in the TAWRs view.' }));
+
+  /* The status filter: which of the week's requests are drawn. */
+  const all = o.tawrs || [];
+  const count = (s) => all.filter((t) => t.status === s).length;
+  const chips = el('div', { class: 'status-filter', role: 'group', 'aria-label': 'Show TAWRs by status' }, SHOWN_STATUSES.map((s) => el('button', {
+    type: 'button', class: `chip${state.statuses.has(s) ? ' on' : ''}`, dataset: { status: s }, style: `--c:${STATUS_COLOR[s]}`,
+    'aria-pressed': String(state.statuses.has(s)), title: `${state.statuses.has(s) ? 'Hide' : 'Show'} ${s} requests`,
+    onClick: () => {
+      if (state.statuses.has(s)) state.statuses.delete(s); else state.statuses.add(s);
+      if (state.selected && !shownTawrs().some((t) => t.id === state.selected)) state.selected = null;
+      renderOverlay(); renderOnMapList();
+    },
+  }, [el('span', { class: 'chip-dot' }), `${cap(s)} `, el('b', { text: String(count(s)) })])));
+  const only = el('input', { type: 'checkbox', dataset: { action: 'conflicts-only' }, onChange: (e) => { state.conflictsOnly = e.target.checked; renderOverlay(); renderOnMapList(); } });
+  only.checked = state.conflictsOnly;
+  host.append(el('h2', { text: 'Show' }), chips, el('label', { class: 'check' }, [only, ' Only requests in a conflict']));
+
+  /* Conflicts first: they are what needs doing. */
+  const clashes = o.conflicts || [];
+  host.append(el('h2', { class: clashes.length ? 'clash-head' : '', text: `Conflicts this week (${clashes.length})` }));
+  if (!clashes.length) host.append(el('p', { class: 'small', text: 'No two requests want the same track or room at the same time.' }));
+  const cl = el('ul', { class: 'req-list clash-list' });
+  for (const c of clashes) {
+    const li = el('li', { class: state.conflict === c ? 'sel' : '', style: `--c:${CONFLICT}`, dataset: { conflict: `${c.a.id}-${c.b.id}` } }, [
+      el('div', { class: 't', text: `#${c.a.id} ${c.a.location_name}  ↔  #${c.b.id} ${c.b.location_name}` }),
+      el('div', { class: 'm', text: c.when.map((w) => `${dayName(w.date)}: ${w.a} / ${w.b}`).join(' · ') }),
+      el('div', { class: 'm', text: `${cap(c.a.status)} and ${c.b.status} · ${c.a.shift === c.b.shift ? `both ${c.a.shift} shift — can be consolidated` : `${c.a.shift} and ${c.b.shift} shifts overlap`}` }),
+    ]);
+    li.addEventListener('click', () => focusConflict(c));
+    cl.append(li);
+  }
+  host.append(cl);
+
+  const shown = shownTawrs();
+  host.append(el('h2', { text: `TAWRs this week (${shown.length} of ${all.length})` }));
+  if (!all.length) host.append(el('p', { class: 'small', text: 'None yet. They are raised from the look-ahead in the TAWRs view.' }));
   const ul = el('ul', { class: 'req-list' });
-  for (const t of o.tawrs || []) {
-    const li = el('li', { class: state.selected === t.id ? 'sel' : '', style: `--c:${STATUS_COLOR[t.status]}` }, [
-      el('div', { class: 't' }, [`#${t.id} ${t.location_name} `, el('span', { class: 'pill', style: `--c:${STATUS_COLOR[t.status]}`, text: t.status })]),
-      el('div', { class: 'm', text: `${t.shift} shift · ${(t.source?.days || []).length} day(s)` }),
-      t.source?.area ? el('div', { class: 'm', text: t.source.area }) : null,
+  const clashing = new Set(clashes.flatMap((c) => [c.a.id, c.b.id]));
+  for (const t of shown) {
+    const li = el('li', { class: glowing().has(t.id) ? 'sel' : '', style: `--c:${STATUS_COLOR[t.status]}`, dataset: { tawr: t.id } }, [
+      el('div', { class: 't' }, [`#${t.id} ${t.location_name} `, el('span', { class: 'pill', style: `--c:${STATUS_COLOR[t.status]}`, text: t.status }),
+        clashing.has(t.id) ? el('span', { class: 'pill', style: `--c:${CONFLICT}`, text: 'conflict' }) : null]),
+      el('div', { class: 'm', text: `${cap(t.shift)} shift · ${(t.source?.days || []).map((d) => dayName(d.date)).join(', ')}` }),
+      el('div', { class: 'm', text: (t.source?.activities || []).map((a) => [a.title, a.party && `(${a.party})`].filter(Boolean).join(' ')).join('; ') }),
       el('div', { class: 'btns' }, [el('button', { type: 'button', class: 'secondary', text: 'Open', onClick: (e) => { e.stopPropagation(); o.onOpenTawr?.(t); } })]),
     ]);
     li.addEventListener('click', () => selectTawr(t, true));
@@ -550,21 +720,43 @@ function renderOnMapList() {
   if (!linked.length) host.append(el('p', { class: 'small', text: 'No activity in this week is linked yet. Right-click a Location cell on the look-ahead and choose Select on track plan.' }));
   const al = el('ul', { class: 'plain act-list' });
   for (const a of linked) {
-    al.append(el('li', { onClick: () => showLink(a.link) }, [el('b', { text: a.title }), el('div', { class: 'small', text: linkArea(a.link) })]));
+    al.append(el('li', { onClick: () => showLink(a.link) }, [
+      el('b', { text: a.title }),
+      a.party ? el('div', { class: 'small', text: `Party to action: ${a.party}` }) : null,
+      el('div', { class: 'small', text: linkArea(a.link) }),
+    ]));
   }
   host.append(al);
 }
 
 /**
- * What the map shows of the look-ahead: `{ weeks, week, tawrs, activities,
- * onWeek(week), onOpenTawr(record) }`.
+ * What the map shows of the look-ahead: `{ weeks, week, tawrs, conflicts,
+ * activities, onWeek(week), onOpenTawr(record) }`.
  */
 export function setOverlay(o) {
+  if (state.overlay && o.week !== state.overlay.week) { state.selected = null; state.conflict = null; }
   state.overlay = o;
   if (state.selected && !(o.tawrs || []).some((t) => t.id === state.selected)) state.selected = null;
+  if (state.conflict) {
+    const same = (o.conflicts || []).find((c) => c.a.id === state.conflict.a.id && c.b.id === state.conflict.b.id);
+    state.conflict = same || null;
+  }
   if (!map) return;
   renderOverlay();
   renderOnMapList();
+}
+
+/**
+ * The map has just been shown: size it to its box and fit the whole sheet —
+ * or, where something particular was asked for, zoom to that instead
+ * (`focus` answers true when it zoomed).
+ */
+export function enter(focus = null) {
+  if (!map) return;
+  setTimeout(() => {
+    map.invalidateSize();
+    if (!(focus && focus())) fitPage();
+  }, 0);
 }
 
 // ------------------------------------------------------------------ linking an activity
@@ -591,8 +783,7 @@ export function pickLocation({ title, link = null }) {
   $('#panel').classList.remove('hidden');
   renderPlaces();
   onDraftChanged();
-  invalidate();
-  if (link && !showLink(link)) fitPage();
+  renderOverlay(); // drawn quiet while picking: hover shows, clicks go to the tools
   return new Promise((resolve) => { pickResolve = resolve; });
 }
 
@@ -605,6 +796,7 @@ function endPick(result) {
   showTab('onmap');
   renderPlaces();
   onDraftChanged();
+  renderOverlay();
   const r = pickResolve;
   pickResolve = null;
   if (r) r(result);

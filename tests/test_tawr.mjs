@@ -52,7 +52,7 @@ function sample() {
     la.blankRow('activity', { id: 'ixl', sort: 2, activity_id: 'A100', description: 'IXL SIM Testing', location: 'Colma TCR', sswp: '660', work_hours: '0700-1500',
       link: { location_id: COLMA_TCR.id, location_name: COLMA_TCR.name, location_kind: 'tcr', limits: [M1(13.9, 14.1)], geometry: geomM1(13.9, 14.1) } }),
     la.blankRow('resource', { id: 'ixl-r', parent_id: 'ixl', sort: 3 }),
-    la.blankRow('activity', { id: 'dcs', sort: 4, description: 'DCS Testing', location: 'colma tcr', work_hours: '0900-1700' }),
+    la.blankRow('activity', { id: 'dcs', sort: 4, description: 'DCS Testing', location: 'colma tcr', party: 'BART', work_hours: '0900-1700' }),
     la.blankRow('activity', { id: 'cable', sort: 5, description: 'Cable pull', location: '',
       link: { limits: [M1(14.0, 14.5)], geometry: geomM1(14.0, 14.5) } }),
     la.blankRow('activity', { id: 'night', sort: 6, description: 'Night tie-in', location: 'Colma TCR', work_hours: '' }),
@@ -118,49 +118,72 @@ console.log('\nTrack plan links');
   check('a TCR is matched by its short name', L.resolveLocationText('Colma TCR', MAP.locations)?.id === 'tcr:Colma');
   check('a station by its name alone', L.resolveLocationText('colma', MAP.locations)?.id === 'stn:Colma');
   check('never by a fragment', L.resolveLocationText('Colm', MAP.locations) === null);
-  const link = { location_id: 'tcr:Colma', location_name: COLMA_TCR.name, limits: [M1(13.9, 14.1), { name: 'Crossover SW177/SW377', kind: 'crossover', context: '' }] };
-  check('the Location column says the place and the first limit', L.linkLabel(link) === 'Colma TCR · M1 MP 13.900–14.100 +1', L.linkLabel(link));
-  check('the Area says everything, in plain hyphens', L.linkArea(link) === 'Colma TCR; M1 MP 13.900-14.100; Crossover SW177/SW377', L.linkArea(link));
-  check('a place keys by its station or TCR', L.linkKey(link) === 'loc:tcr:Colma');
-  check('track limits alone key by the limits', L.linkKey({ limits: [M1(1, 2)] }) === 'trk:M1 MP 1.000-2.000');
+  const W = (t, a, b) => ({ track: t, from_mp: a, to_mp: b });
+  const block = [W('W1', 23.9, 24.446), W('W3', 23.747, 24.1), W('W2', 23.8, 24.2), { name: 'Crossover SW177/SW377', kind: 'crossover', context: '' }];
+  check('a block of track is its limits, leftmost to rightmost, every track named', L.limitsText(block) === 'W1+W2+W3 MP 23.747–24.446', L.limitsText(block));
+  check('the crossovers inside the limits are not in the words', !/Crossover/.test(L.limitsText(block)));
+  check('each line keeps its own mileposts', L.limitsText([M1(16.0, 16.35), { track: 'M2', from_mp: 16.1, to_mp: 16.3 }, W('W1', 16.6, 16.9)], { dash: '-' }) === 'M1+M2 MP 16.000-16.350; W1 MP 16.600-16.900');
+  check('only yard tracks picked: their names', L.limitsText([{ name: 'DTF02', kind: 'yard' }]) === 'DTF02');
+  const link = { location_id: 'tcr:Colma', location_name: COLMA_TCR.name, location_kind: 'tcr', limits: [M1(13.9, 14.1), { name: 'Crossover SW177/SW377', kind: 'crossover', context: '' }], geometry: geomM1(13.9, 14.1) };
+  check('the Location column says the room and the limits', L.linkLabel(link) === 'Colma TCR · M1 MP 13.900–14.100', L.linkLabel(link));
+  const parts = L.linkParts(link);
+  check('a TCR and track are two parts, never one', parts.map((p) => p.kind).join() === 'tcr,track');
+  check('the room keys by the TCR', L.partKey(parts[0]) === 'loc:tcr:Colma');
+  check('the track keys by its limits', L.partKey(parts[1]) === 'trk:M1 MP 13.900-14.100');
+  check('the room part carries no track, the track part no room', !parts[0].limits.length && !parts[0].geometry.length && !parts[1].location_id);
+  check('a station picked with track only says where the track is', L.linkParts({ location_id: 'stn:Colma', location_name: 'Colma Station', location_kind: 'station', limits: [M1(1, 2)] }).map((p) => p.kind).join() === 'track');
+  check('a station alone is a part of its own', L.linkParts({ location_id: 'stn:Colma', location_name: 'Colma Station', location_kind: 'station' })[0].kind === 'place');
   check('limits on one track that overlap become one', JSON.stringify(L.unionLinks([{ limits: [M1(1, 2)] }, { limits: [M1(1.5, 3)] }]).limits) === JSON.stringify([M1(1, 3)]));
+  check('activities on neighbouring tracks accumulate into one span', L.unionArea([{ limits: [W('W1', 23.9, 24.2)] }, { limits: [W('W2', 23.75, 24.0)] }]) === 'W1+W2 MP 23.750-24.200');
   check('overlapping mileposts overlap', L.linksOverlap({ limits: [M1(1, 2)] }, { limits: [M1(1.9, 3)] }));
   check('separate ones do not', !L.linksOverlap({ limits: [M1(1, 2)] }, { limits: [M1(2.1, 3)] }));
   check('shared drawing overlaps', L.linksOverlap({ geometry: [[[0, 0], [10, 0]]] }, { geometry: [[[5, 0], [5, 10]]] }));
+  check('a room and track never overlap', !L.linksOverlap(parts[0], parts[1]));
+  const spot = L.sharedSpot([[[0, 0], [10, 0]]], [[[5, 0], [8, 0]]]);
+  check('where two pieces of drawing meet is found, to the drawing\'s grid', spot && spot.x >= 5 && spot.x <= 7 && spot.y === 0 && spot.bbox[0] >= 3.5 && spot.bbox[2] <= 8.5, JSON.stringify(spot));
+  check('and nothing where they do not', L.sharedSpot([[[0, 0], [10, 0]]], [[[0, 50], [10, 50]]]) === null);
 }
 
 console.log('\nOne week read into requests');
 const { groups } = T.extractWeek(sample(), MON, opts());
 const byKey = (k) => groups.find((g) => g.key === k);
 const colmaDay = byKey('loc:tcr:Colma|day');
+const ixlTrack = byKey('trk:M1 MP 13.900-14.100|day');
 {
   check('linked and typed activities at one TCR on one shift are one request',
     colmaDay?.activities.map((a) => a.title).join() === 'IXL SIM Testing,DCS Testing', colmaDay?.activities.map((a) => a.title).join());
+  check('an activity linked to a TCR and track makes a track request too', ixlTrack?.activities.map((a) => a.title).join() === 'IXL SIM Testing');
+  check('no request carries both a room and track', groups.every((g) => !(g.place.places.length && g.place.limits.length)));
+  check('each request says its kind', colmaDay.kind === 'tcr' && ixlTrack.kind === 'track');
   check('the typed one says it was typed', colmaDay.activities.find((a) => a.row === 'dcs').how === 'typed');
   check('the same place at night is a second request', byKey('loc:tcr:Colma|night')?.days.length === 2);
-  check('the Area comes from the track plan', colmaDay.area === 'Colma TCR; M1 MP 13.900-14.100', colmaDay.area);
-  check('its geometry is carried for the map', colmaDay.place.geometry.length === 1);
+  check('the TCR request\'s Area is the room', colmaDay.area === 'Colma TCR', colmaDay.area);
+  check('the track request\'s Area is the limits', ixlTrack.area === 'M1 MP 13.900-14.100', ixlTrack.area);
+  check('the track request carries the geometry for the map', ixlTrack.place.geometry.length === 1 && !colmaDay.place.geometry.length);
   check('hours combine to the earliest start and latest finish', colmaDay.days[0].start === '0700' && colmaDay.days[0].end === '1700');
   check('a day with no hours on the sheet uses the shift', byKey('loc:tcr:Colma|night').days[0].start === '2200' && byKey('loc:tcr:Colma|night').days[0].fromShift);
-  const x = colmaDay.support.find((s) => s.code === 'X');
-  check('support adds across activities on the busiest day', x?.count === 2, JSON.stringify(colmaDay.support));
-  check('a witness is never on the form', !colmaDay.support.some((s) => s.code === 'WIT'));
+  check('support typed on a TCR-and-track activity is asked for once, with the track', ixlTrack.support.find((s) => s.code === 'X')?.count === 2, JSON.stringify(ixlTrack.support));
+  check('and the TCR request says where it went', colmaDay.flags.some((f) => f.kind === 'support_on_track' && /IXL SIM Testing/.test(f.message)));
+  check('the TCR request keeps what only it asks for', colmaDay.support.map((s) => s.code).join() === 'X,TCE,ROC', colmaDay.support.map((s) => s.code).join());
+  check('a witness is never on the form', !ixlTrack.support.some((s) => s.code === 'WIT'));
   check('ROC goes on the OCC line', colmaDay.support.find((s) => s.code === 'ROC')?.line === 'occ');
+  check('the party to action is carried', colmaDay.activities.find((a) => a.row === 'dcs').party === 'BART');
   check('the crew is read off the Resource row', colmaDay.activities[0].crew.join() === 'Rosa,Victor');
   check('expanded wording is used', colmaDay.description.startsWith('IXL SIM Testing — functional testing'));
-  check('SSWP numbers are carried', colmaDay.sswp.join() === '660');
+  check('SSWP numbers are carried', colmaDay.sswp.join() === '660' && ixlTrack.sswp.join() === '660');
   check('a cancelled day asks for nothing', !groups.some((g) => g.activities.some((a) => a.row === 'gone')));
   check('next week is not this week\'s', colmaDay.days.every((d) => d.date <= day(6)));
   const myst = groups.find((g) => g.activities.some((a) => a.row === 'myst'));
   check('a location not linked to the track plan blocks the request', T.blockers(myst).some((f) => f.kind === 'location_unlinked'));
   const odd = groups.find((g) => g.shift === 'unmapped');
   check('an unmapped colour blocks the request', T.blockers(odd).some((f) => f.kind === 'colour_unmapped'));
-  check('a clean request has no blockers', T.blockers(colmaDay).length === 0);
+  check('a clean request has no blockers', T.blockers(colmaDay).length === 0 && T.blockers(ixlTrack).length === 0);
   const cable = groups.find((g) => g.activities.some((a) => a.row === 'cable'));
   check('a struck-out code is not asked for', !cable.support.some((s) => s.code === 'WIT'));
-  check('overlapping places in one shift are named to each other',
-    colmaDay.overlaps.some((o) => o.key === cable.key) && cable.overlaps.some((o) => o.key === colmaDay.key));
-  check('with the days they share', colmaDay.overlaps.find((o) => o.key === cable.key).days.join() === day(1));
+  check('overlapping track in one shift is named to each other',
+    ixlTrack.overlaps.some((o) => o.key === cable.key) && cable.overlaps.some((o) => o.key === ixlTrack.key));
+  check('with the days they share', ixlTrack.overlaps.find((o) => o.key === cable.key).days.join() === day(1));
+  check('a TCR request is never offered to consolidate with track', !colmaDay.overlaps.length);
   const far = groups.find((g) => g.activities.some((a) => a.row === 'far'));
   check('a place that does not overlap is not', far.overlaps.length === 0);
   check('no overlap across shifts', !byKey('loc:tcr:Colma|night').overlaps.length);
@@ -169,30 +192,58 @@ const colmaDay = byKey('loc:tcr:Colma|day');
 console.log('\nConsolidating');
 {
   const cable = groups.find((g) => g.activities.some((a) => a.row === 'cable'));
-  const merges = [{ id: 'm1', week_start: MON, keys: [colmaDay.key, cable.key] }];
+  const merges = [{ id: 'm1', week_start: MON, keys: [ixlTrack.key, cable.key] }];
   const merged = T.extractWeek(sample(), MON, opts({ merges })).groups;
   const one = merged.find((g) => g.key === 'merge:m1');
-  check('two requests become one', one && !merged.some((g) => g.key === colmaDay.key || g.key === cable.key));
-  check('it lists every activity', one.activities.length === 3);
-  check('its Area joins the places, ranges merged', one.area === 'Colma TCR; M1 MP 13.900-14.500', one.area);
+  check('two track requests become one', one && !merged.some((g) => g.key === ixlTrack.key || g.key === cable.key));
+  check('it lists every activity', one.activities.length === 2);
+  check('its Area is the limits accumulated', one.area === 'M1 MP 13.900-14.500', one.area);
+  check('it is still a track request', one.kind === 'track');
   check('support is recounted across both', one.support.find((s) => s.code === 'X').count === 2);
-  check('it remembers what it was made of', one.members.join() === [colmaDay.key, cable.key].join());
+  check('it remembers what it was made of', one.members.join() === [ixlTrack.key, cable.key].join());
   check('and overlaps nothing left', one.overlaps.length === 0);
+  check('the TCR request is left alone', merged.some((g) => g.key === colmaDay.key));
+  const mixed = T.extractWeek(sample(), MON, opts({ merges: [{ id: 'm4', week_start: MON, keys: [colmaDay.key, ixlTrack.key] }] })).groups;
+  check('a TCR and track are never consolidated, even if asked', mixed.some((g) => g.key === ixlTrack.key) && mixed.find((g) => g.key === 'merge:m4').kind === 'tcr');
   const later = T.extractWeek(sample(), MON, opts({ merges: [{ id: 'm2', week_start: MON, keys: [colmaDay.key, 'loc:gone|day'] }] })).groups;
   check('a member gone from the sheet is said', later.find((g) => g.key === 'merge:m2').flags.some((f) => f.kind === 'merge_partial'));
-  const wrongWeek = T.extractWeek(sample(), MON, opts({ merges: [{ id: 'm3', week_start: day(7), keys: [colmaDay.key, cable.key] }] })).groups;
-  check('a consolidation belongs to its week', wrongWeek.some((g) => g.key === colmaDay.key));
+  const wrongWeek = T.extractWeek(sample(), MON, opts({ merges: [{ id: 'm3', week_start: day(7), keys: [ixlTrack.key, cable.key] }] })).groups;
+  check('a consolidation belongs to its week', wrongWeek.some((g) => g.key === ixlTrack.key));
+}
+
+console.log('\nConflicts on the track');
+{
+  const rec = (id, g, status = 'submitted') => ({ id, status, shift: g.shift, week_start: g.weekStart, location_name: g.locationName, source: { days: g.days, activities: g.activities } });
+  const cable = groups.find((g) => g.activities.some((a) => a.row === 'cable'));
+  const far = groups.find((g) => g.activities.some((a) => a.row === 'far'));
+  const night = byKey('loc:tcr:Colma|night');
+  const list = [rec(1, colmaDay), rec(2, ixlTrack), rec(3, cable, 'draft'), rec(4, far), rec(5, night)];
+  const found = T.conflicts(list);
+  check('the same track at the same time is a conflict', found.some((c) => c.a.id === 2 && c.b.id === 3));
+  check('with the day and both requests\' hours', found.find((c) => c.a.id === 2 && c.b.id === 3).when.map((w) => `${w.date} ${w.a} ${w.b}`).join() === `${day(1)} 0700–1500 0700–1500`);
+  check('the same room at different times is not', !found.some((c) => [c.a.id, c.b.id].includes(5)));
+  check('a room and track are not', !found.some((c) => c.a.id === 1 && c.b.id === 2));
+  check('track that does not overlap is not', !found.some((c) => [c.a.id, c.b.id].includes(4)));
+  const nightTrack = { id: 6, status: 'approved', shift: 'night', week_start: MON, location_name: 'M1', source: { days: [{ date: day(0), start: '2200', end: '0600' }], activities: [{ link: { limits: [M1(13.95, 14.05)] } }] } };
+  const blanket = { id: 7, status: 'submitted', shift: 'possession', week_start: MON, location_name: 'M1', source: { days: [{ date: day(1), start: '0000', end: '0800' }], activities: [{ link: { limits: [M1(14.0, 14.2)] } }] } };
+  check('a Blanket from midnight meets the night shift before it', T.conflicts([nightTrack, blanket]).length === 1);
+  check('a superseded request conflicts with nothing', T.conflicts([{ ...nightTrack, status: 'superseded' }, blanket]).length === 0);
 }
 
 console.log('\nThe form values');
 {
-  const v = T.formValues(colmaDay, { settings: { person_in_charge_name: 'Pat Lee' }, profile: { requestor_name: 'Alex Morgan', cell_phone: '555-0100' } });
+  const v = T.formValues(colmaDay, { settings: { person_in_charge_name: 'Pat Lee', category_tcr: 'F', category_track: 'A' }, profile: { requestor_name: 'Alex Morgan', cell_phone: '555-0100' } });
   check('each day is a row, with its date the way the form wants it', v.row1_date === '11/02/2026' && v.row1_day === 'MON' && v.row3_date === '11/04/2026');
   check('the Area is on every row', v.row1_area === colmaDay.area && v.row3_area === colmaDay.area);
   check('the requester is the one on the form', v.requestor_name === 'Alex Morgan' && v.requestor_cell_phone === '555-0100');
-  check('Technical Support (Systems) says what and how many', v.maint_systems_tech_support_details === '2 x EIC, TCE', v.maint_systems_tech_support_details);
+  check('Technical Support (Systems) says what and how many', v.maint_systems_tech_support_details === 'EIC, TCE', v.maint_systems_tech_support_details);
   check('OCC support has its line', v.trans_occ_support_details === 'ROC');
   check('SSWP goes on the bottom line', v.trans_adverse_impact_blanket_details === 'SSWP# 660');
+  check('a TCR request is not work in the track zone, and takes the TCR category', v.work_in_track_zone_no === true && !v.work_in_track_zone_yes && v.category_of_work === 'F');
+  const t = T.formValues(ixlTrack, { settings: { category_tcr: 'F', category_track: 'A' } });
+  check('a track request is work in the track zone, and takes the track category', t.work_in_track_zone_yes === true && !t.work_in_track_zone_no && t.category_of_work === 'A');
+  check('its Area is the limits', t.row1_area === 'M1 MP 13.900-14.100' && t.maint_systems_tech_support_details === '2 x EIC');
+  check('without a category for its kind, the default', T.categoryFor('track', { category_default: 'C' }) === 'C' && T.categoryFor('tcr', {}) === 'F');
   const edited = { fields: { ...v, row1_time_start: '0600' }, generated: v };
   const fresh = { ...v, row1_time_end: '1800' };
   const m = T.mergeRegenerated(edited, fresh);

@@ -593,6 +593,10 @@ def consolidate(con, ids, merge, record, actor, workflow, note=None):
         shifts = {r["shift"] for r in rows}
         if len(weeks) != 1 or len(shifts) != 1:
             raise Refused("only requests in the same week and shift can be consolidated", 409)
+        # A TCR and track are different categories of work: never one request.
+        kinds = {json.loads(r["source"] or "{}").get("kind") for r in rows}
+        if len(kinds) != 1:
+            raise Refused("a TCR request and a track request cannot be consolidated — they are different categories of work", 409)
         for r in rows:
             if r["status"] not in rule["from"]:
                 raise Refused(f"#{r['id']} is {r['status']}; only drafts and submitted requests can be consolidated", 409)
@@ -652,7 +656,7 @@ def split(con, tid, actor, workflow):
 SETTING_KEYS = {
     "requestor_name", "requestor_cell_phone", "requestor_signature",
     "person_in_charge_name", "person_in_charge_cell_phone", "project_rep_name", "project_rep_cell_phone",
-    "category_default", "hours_day", "hours_swing", "hours_night", "hours_possession", "auto_lead_days",
+    "category_default", "category_tcr", "category_track", "hours_day", "hours_swing", "hours_night", "hours_possession", "auto_lead_days",
     "template_info",
 }
 

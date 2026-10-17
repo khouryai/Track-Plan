@@ -26,10 +26,16 @@
  * request being submitted or approved.
  *
  * What Track-Plan adds: the **place is the track plan link**, so the Area is
- * written from it ("Colma TCR; M1 MP 13.950-14.100"), and two requests in one
- * week and shift whose places overlap on the drawing are named to each other
- * (`overlaps`) so the track allocation manager can **consolidate** them into
- * one (`merges`) before they go to BART — no repetition.
+ * written from it, and two requests in one week and shift whose places overlap
+ * on the drawing are named to each other (`overlaps`) so the track allocation
+ * manager can **consolidate** them into one (`merges`) before they go to BART —
+ * no repetition.
+ *
+ * **A TCR and track are never one request** — different categories of work. An
+ * activity linked to both makes two requests, one per part of its link
+ * (`linkParts`): "Colma TCR", and "W1+W2+W3 MP 23.747-24.446", the track limits
+ * accumulated from the leftmost milepost to the rightmost. Its BART support is
+ * asked for once, on the track request, and the TCR request says so.
  *
  * Pure: no DOM, no network, so `tests/test_tawr.mjs` runs it in Node.
  *
@@ -41,9 +47,11 @@ import {
   cellTokens, isCancelMeaning, resourceNames,
 } from './lookahead.js';
 import {
-  hasLink, linkKey, linkForLocation, resolveLocationText, unionLinks, unionArea, linksOverlap,
-  shortLocationName, limitText,
+  hasLink, linkForLocation, resolveLocationText, unionLinks, unionArea, linksOverlap,
+  shortLocationName, limitsText, linkParts, partKey, partArea, PART_KINDS,
 } from './links.js';
+
+export { PART_KINDS };
 
 export { shiftOfMeaning };
 
@@ -409,6 +417,9 @@ export function extractWeek(model, weekStart, {
     if (!title) return; // a row of paint with no description is not an activity
     const rawLocation = String(row.location || '').trim();
     const { link, how } = placeOf(row, locations);
+    const parts = link ? linkParts(link) : [null];
+    // The support typed on the day is asked for once: with the track, where there is track.
+    const supportPart = parts.find((p) => p?.kind === 'track') || parts[0];
     const resources = resourcesOf(model, row.id);
 
     /* The paint says the shift. The workbook sometimes paints the Resource row
@@ -424,47 +435,55 @@ export function extractWeek(model, weekStart, {
       const meaning = entry?.meaning || null;
       if (isCancelMeaning(meaning)) continue; // a cancelled day asks for nothing
       const shift = shiftOfMeaning(meaning) || 'unmapped';
-      const key = `${linkKey(link) || `raw:${fold(rawLocation)}`}|${shift}`;
-      if (!raw.has(key)) {
-        raw.set(key, {
-          key, weekStart, shift, members: [key], mergeId: null,
-          activities: new Map(), days: new Map(), unmappedColours: new Set(),
-        });
+      for (const part of parts) {
+        const key = `${part ? partKey(part) : `raw:${fold(rawLocation)}`}|${shift}`;
+        if (!raw.has(key)) {
+          raw.set(key, {
+            key, weekStart, shift, kind: part?.kind || 'unlinked', members: [key], mergeId: null,
+            activities: new Map(), days: new Map(), unmappedColours: new Set(), supportElsewhere: new Map(),
+          });
+        }
+        const group = raw.get(key);
+        if (shift === 'unmapped') group.unmappedColours.add(String(c.color).toUpperCase());
+        if (!group.activities.has(row.id)) {
+          group.activities.set(row.id, {
+            row: row.id, order, title, activityId: String(row.activity_id || '').trim(),
+            party: String(row.party || '').trim(), sswp: String(row.sswp || '').trim(),
+            hoursText: String(row.work_hours || '').trim(), rawLocation, link: part, how, days: [], crew: new Set(),
+          });
+        }
+        const act = group.activities.get(row.id);
+        act.days.push(date);
+        for (const r of resources) for (const n of resourceNames(cellsOf(r.id).get(date)?.text || '')) act.crew.add(n);
+        if (!group.days.has(date)) group.days.set(date, []);
+        const counts = new Map();
+        for (const t of cellTokens(cellsOf(row.id).get(date)?.text || '')) {
+          if (!t.cancelled) counts.set(t.code, (counts.get(t.code) || 0) + 1);
+        }
+        if (part !== supportPart && counts.size) {
+          group.supportElsewhere.set(title, partArea(supportPart));
+          counts.clear();
+        }
+        group.days.get(date).push({ row: row.id, hoursText: act.hoursText, counts });
       }
-      const group = raw.get(key);
-      if (shift === 'unmapped') group.unmappedColours.add(String(c.color).toUpperCase());
-      if (!group.activities.has(row.id)) {
-        group.activities.set(row.id, {
-          row: row.id, order, title, activityId: String(row.activity_id || '').trim(),
-          sswp: String(row.sswp || '').trim(), hoursText: String(row.work_hours || '').trim(),
-          rawLocation, link, how, days: [], crew: new Set(),
-        });
-      }
-      const act = group.activities.get(row.id);
-      act.days.push(date);
-      for (const r of resources) for (const n of resourceNames(cellsOf(r.id).get(date)?.text || '')) act.crew.add(n);
-      if (!group.days.has(date)) group.days.set(date, []);
-      const counts = new Map();
-      for (const t of cellTokens(cellsOf(row.id).get(date)?.text || '')) {
-        if (!t.cancelled) counts.set(t.code, (counts.get(t.code) || 0) + 1);
-      }
-      group.days.get(date).push({ row: row.id, hoursText: act.hoursText, counts });
     }
   });
 
   /* Consolidations: the requests the track allocation manager made one. Only
-     within a shift — a form row is one day's start and finish. */
+     within a shift — a form row is one day's start and finish — and within a
+     kind: a TCR and track are never one request. */
   for (const m of merges || []) {
     if (m.week_start !== weekStart) continue;
     const present = (m.keys || []).filter((k) => raw.has(k));
     if (!present.length) continue;
+    const first = raw.get(present[0]);
     const into = {
-      key: `merge:${m.id}`, weekStart, shift: raw.get(present[0]).shift, members: [], mergeId: m.id,
-      activities: new Map(), days: new Map(), unmappedColours: new Set(),
+      key: `merge:${m.id}`, weekStart, shift: first.shift, kind: first.kind, members: [], mergeId: m.id,
+      activities: new Map(), days: new Map(), unmappedColours: new Set(), supportElsewhere: new Map(),
     };
     for (const k of present) {
       const g = raw.get(k);
-      if (g.shift !== into.shift) continue;
+      if (g.shift !== into.shift || g.kind !== into.kind) continue;
       raw.delete(k);
       into.members.push(k);
       for (const [id, a] of g.activities) {
@@ -473,6 +492,7 @@ export function extractWeek(model, weekStart, {
       }
       for (const [date, entries] of g.days) into.days.set(date, [...(into.days.get(date) || []), ...entries]);
       for (const h of g.unmappedColours) into.unmappedColours.add(h);
+      for (const [t, where] of g.supportElsewhere) into.supportElsewhere.set(t, where);
     }
     into.missing = (m.keys || []).filter((k) => !into.members.includes(k));
     raw.set(into.key, into);
@@ -480,11 +500,12 @@ export function extractWeek(model, weekStart, {
 
   const out = [...raw.values()].map((g) => finish(g, { register, expanded, shiftHours }));
 
-  /* Requests whose places overlap, in the same shift: offered for consolidation. */
+  /* Requests whose places overlap, in the same shift and of the same kind:
+     offered for consolidation. */
   const cache = new WeakMap();
   for (const a of out) {
     for (const b of out) {
-      if (a === b || a.shift !== b.shift) continue;
+      if (a === b || a.shift !== b.shift || a.kind !== b.kind) continue;
       const touch = a.activities.some((x) => b.activities.some((y) => linksOverlap(x.link, y.link, cache)));
       if (!touch) continue;
       const shared = a.days.map((d) => d.date).filter((d) => b.days.some((e) => e.date === d));
@@ -517,6 +538,10 @@ function finish(g, { register, expanded, shiftHours }) {
   if (g.shift === 'unmapped') {
     flags.push({ kind: 'colour_unmapped', blocking: true,
       message: `Painted in a colour the legend does not know (${[...g.unmappedColours].map((h) => `#${h}`).join(', ')}). Say what it is in Setup → Legend, or repaint it.` });
+  }
+  for (const [title, where] of g.supportElsewhere || []) {
+    flags.push({ kind: 'support_on_track', blocking: false,
+      message: `The BART support typed for "${title}" is asked for on its track request (${where}), not here — a TCR and track are separate requests. Add it in Review if the room needs its own.` });
   }
   if (g.missing?.length) {
     flags.push({ kind: 'merge_partial', blocking: false,
@@ -600,7 +625,7 @@ function finish(g, { register, expanded, shiftHours }) {
   const unlinked = [...new Set(activities.filter((a) => !a.link).map((a) => a.rawLocation).filter(Boolean))];
   const named = place.places.map((p) => shortLocationName(p.name));
   const locationName = named.length ? named.join(' / ')
-    : place.limits.length ? limitText(place.limits[0], { dash: '–' }) + (place.limits.length > 1 ? ` +${place.limits.length - 1}` : '')
+    : place.limits.length ? limitsText(place.limits, { dash: '–' })
       : unlinked[0] || '(no location)';
   const area = [unionArea(links), ...unlinked].filter(Boolean).join('; ') || locationName;
 
@@ -608,13 +633,14 @@ function finish(g, { register, expanded, shiftHours }) {
     key: g.key,
     weekStart: g.weekStart,
     shift: g.shift,
+    kind: g.kind,
     members: g.members,
     mergeId: g.mergeId,
     locationName,
     area,
     place: { places: place.places, limits: place.limits, geometry: place.geometry },
     activities: activities.map((a) => ({
-      row: a.row, title: a.title, activityId: a.activityId, sswp: a.sswp, hoursText: a.hoursText,
+      row: a.row, title: a.title, activityId: a.activityId, party: a.party, sswp: a.sswp, hoursText: a.hoursText,
       rawLocation: a.rawLocation, link: a.link, how: a.how, days: a.days, crew: [...a.crew].sort(),
     })),
     days,
@@ -637,6 +663,12 @@ export function weeksWithWork(model) {
 
 /* ── The form ──────────────────────────────────────────────────────────── */
 
+/** Setup's Category of Work for a kind of request; F unless somebody said otherwise. */
+export function categoryFor(kind, settings = {}) {
+  const own = kind === 'track' ? settings.category_track : kind === 'tcr' ? settings.category_tcr : null;
+  return String(own || settings.category_default || 'F');
+}
+
 const supportText = (items) => items.map((s) => (s.count > 1 ? `${s.count} x ${s.label}` : s.label)).join(', ');
 
 /**
@@ -646,18 +678,22 @@ const supportText = (items) => items.map((s) => (s.count > 1 ? `${s.count} x ${s
  * in charge, project representative); `profile` is the administrator raising
  * it — their name and cell phone go in as the requestor, and their signature is
  * drawn at export, not stored as a field. What the look-ahead cannot say is set
- * to the answer agreed for it: the three Yes/No questions No, Category of Work
- * F, power N/A. Everything left out stays blank for a person to fill.
+ * to the answer agreed for it: clearance verification and first-train
+ * inspection No, power N/A. The kind of request decides the rest — a track
+ * request is work in the track zone and takes Setup's category for track work,
+ * a TCR request is not and takes the one for TCR work (`categoryFor`).
+ * Everything left out stays blank for a person to fill.
  *
  * @param {object} group
  * @param {{ settings?: Object<string, any>, profile?: Object<string, any> }} [options]
  */
 export function formValues(group, { settings = {}, profile = {} } = {}) {
+  const track = group.kind === 'track';
   const v = {
-    work_in_track_zone_no: true,
+    [track ? 'work_in_track_zone_yes' : 'work_in_track_zone_no']: true,
     clearance_verification_no: true,
     track_inspection_first_train_no: true,
-    category_of_work: String(settings.category_default || 'F'),
+    category_of_work: categoryFor(group.kind, settings),
     work_description: group.description,
     requestor_name: String(profile.requestor_name || ''),
     requestor_cell_phone: String(profile.cell_phone || ''),
@@ -741,7 +777,8 @@ export function blockers(group) {
 /** "TAWR 2026-10-19 Train Control Room Day.pdf" — safe on every file system. */
 export function tawrFileName({ weekStart, locationName, shift }) {
   const name = `TAWR ${weekStart} ${locationName} ${tawrShiftLabel(shift)}`;
-  return `${name.replace(/[\\/:*?"<>|]+/g, '-').replace(/\s+/g, ' ').trim()}.pdf`;
+  // Plain characters only: a dash or a quote some file system or browser refuses is a download called "download".
+  return `${name.replace(/[\u2010-\u2015]/g, '-').replace(/[^\x20-\x7e]+/g, '').replace(/[\\/:*?"<>|]+/g, '-').replace(/\s+/g, ' ').trim()}.pdf`;
 }
 
 /* ── The request's life ─────────────────────────────────────────────────── */
@@ -813,6 +850,54 @@ export function repetitions(records) {
       const la = (a.source?.activities || []).map((x) => x.link).filter(Boolean);
       const lb = (b.source?.activities || []).map((x) => x.link).filter(Boolean);
       if (la.some((x) => lb.some((y) => linksOverlap(x, y, cache)))) out.push({ a, b, days });
+    }
+  }
+  return out;
+}
+
+/* ── Conflicts on the track ─────────────────────────────────────────────── */
+
+const LIVE = ['draft', 'submitted', 'approved', 'rejected'];
+
+/**
+ * When a request has the track (or the room), day by day, as instants:
+ * `[{ date, from, to, hours }]`. A night shift runs past midnight into the
+ * next day; a day without hours is taken as the whole day — an unknown time
+ * conflicts with everything rather than nothing.
+ */
+export function occupancy(record) {
+  return (record.source?.days || []).map((d) => {
+    const base = msOf(d.date);
+    const read = parseHours(`${d.start}-${d.end}`);
+    if (!read) return { date: d.date, from: base, to: base + DAY_MS, hours: 'all day' };
+    const end = read.end <= read.start ? read.end + 1440 : read.end;
+    return { date: d.date, from: base + read.start * 60000, to: base + end * 60000, hours: `${d.start}–${d.end}` };
+  });
+}
+
+/**
+ * Requests that want the same track (or the same room) at the same time: live
+ * requests whose places overlap on the drawing and whose hours overlap,
+ * whatever their shift — a Blanket from midnight meets the night shift before
+ * it. Each pair once: `{ a, b, when: [{ date, a: hours, b: hours }] }`.
+ */
+export function conflicts(records) {
+  const live = (records || []).filter((r) => LIVE.includes(r.status));
+  const out = [];
+  const cache = new WeakMap();
+  const parts = (r) => (r.source?.activities || []).map((x) => x.link).filter(Boolean);
+  for (let i = 0; i < live.length; i++) {
+    for (let j = i + 1; j < live.length; j++) {
+      const a = live[i];
+      const b = live[j];
+      const when = [];
+      for (const x of occupancy(a)) {
+        for (const y of occupancy(b)) {
+          if (x.from < y.to && y.from < x.to) when.push({ date: x.date, a: x.hours, b: y.hours });
+        }
+      }
+      if (!when.length) continue;
+      if (parts(a).some((x) => parts(b).some((y) => linksOverlap(x, y, cache)))) out.push({ a, b, when });
     }
   }
   return out;

@@ -29,7 +29,7 @@ import * as LA from './lookahead.js';
 import { linkLabel, linkArea, hasLink, resolveLocationText } from './links.js';
 import * as T from './tawr.js';
 import * as S from './store.js';
-import { el, clear, toast, contextMenu, openModal, confirmDialog, dayLabel, saveFile, csvField } from './ui.js';
+import { el, esc, clear, toast, contextMenu, openModal, confirmDialog, dayLabel, saveFile, csvField } from './ui.js';
 import { STATUS_COLOR } from './map.js';
 
 const META = LA.FIELDS.length;
@@ -701,10 +701,17 @@ function cellMenu(r, c, x, y) {
   if (!V.sel || !inSel(r, c)) select(r, c);
   if (c === LOC && row.kind === 'activity') { locationMenu(row, x, y); return; }
   if (!writer()) {
-    if (row.kind === 'activity' && hasLink(row.link)) contextMenu(x, y, [{ label: 'Show on track plan', onClick: () => V.app.showOnMap(row.link) }]);
+    contextMenu(x, y, [
+      { id: 'copy', label: 'Copy', hint: 'Ctrl+C', onClick: () => copySelection() },
+      row.kind === 'activity' && hasLink(row.link) ? { label: 'Show on track plan', onClick: () => V.app.showOnMap(row.link) } : null,
+    ].filter(Boolean));
     return;
   }
-  const items = [];
+  const items = [
+    { id: 'copy', label: 'Copy', hint: 'Ctrl+C — shift colours too', onClick: () => copySelection() },
+    { id: 'paste', label: 'Paste', hint: clip ? 'Ctrl+V — what was copied here' : 'Copy something first', disabled: !clip, onClick: () => pasteBlock(clip?.block) },
+    '-',
+  ];
   if (c >= META && row.kind === 'activity') {
     for (const e of V.app.la.legend.filter((x2) => (x2.role || 'shift') === 'shift')) items.push({ label: `Paint ${e.meaning}`, onClick: () => paint(e.argb) });
     items.push({ label: 'No colour', onClick: () => paint(null) }, '-');
@@ -731,46 +738,150 @@ function inSel(r, c) {
 
 /* ── Copy and paste ───────────────────────────────────────────────────── */
 
-function copyText() {
+/*
+ * A day is its colour as much as its text, so a copy carries both. The system
+ * clipboard gets plain text and an HTML table with each day's background, which
+ * Excel and Outlook keep; pasting back in here uses the block itself while the
+ * clipboard still holds what was copied, and reads the colours out of the HTML
+ * otherwise (a block copied from Excel). A colour the legend does not know is
+ * never painted — it is left off and said.
+ */
+let clip = null; // { block, text }: the last block copied here
+
+function copyBlock() {
   const s = selRect();
-  if (!s) return '';
-  const lines = [];
+  if (!s) return null;
+  const block = [];
   for (let r = s.r0; r <= s.r1; r++) {
     const row = V.rows[r];
-    const out = [];
+    const line = [];
     for (let c = s.c0; c <= s.c1; c++) {
-      if (c < META) out.push(row.kind === 'section' ? (c === 1 ? row.description : '') : row.kind === 'resource' ? (c === 1 ? 'Resource' : '') : row[LA.FIELDS[c].key] || '');
-      else out.push(LA.getCell(model(), row.id, V.days[c - META])?.text || '');
+      if (c < META) {
+        line.push({ meta: row.kind === 'section' ? (c === 1 ? row.description : '') : row.kind === 'resource' ? (c === 1 ? 'Resource' : '') : row[LA.FIELDS[c].key] || '' });
+      } else {
+        const cell = LA.getCell(model(), row.id, V.days[c - META]);
+        line.push({ color: cell?.color || null, text: cell?.text || '' });
+      }
     }
-    lines.push(out.join('\t'));
+    block.push(line);
   }
-  return lines.join('\n');
+  return block;
 }
 
-function pasteText(text) {
-  if (!V.cur || !writer()) return;
-  const grid = String(text).replace(/\r/g, '').replace(/\n$/, '').split('\n').map((l) => l.split('\t'));
+const blockText = (block) => block.map((line) => line.map((x) => ('meta' in x ? x.meta : x.text)).join('\t')).join('\n');
+
+function blockHtml(block) {
+  const td = (x) => {
+    if ('meta' in x) return `<td>${esc(x.meta)}</td>`;
+    const style = x.color ? ` style="background-color:#${x.color};${LA.isDark(x.color) ? 'color:#FFFFFF;' : ''}"` : '';
+    return `<td${style}>${esc(x.text)}</td>`;
+  };
+  return `<table>${block.map((line) => `<tr>${line.map(td).join('')}</tr>`).join('')}</table>`;
+}
+
+function copySelection(clipboardData = null) {
+  const block = copyBlock();
+  if (!block) return;
+  clip = { block, text: blockText(block) };
+  if (clipboardData) {
+    clipboardData.setData('text/plain', clip.text);
+    clipboardData.setData('text/html', blockHtml(block));
+  } else {
+    try { navigator.clipboard?.writeText(clip.text)?.catch(() => {}); } catch { /* the block is kept here either way */ }
+  }
+  const n = block.length * block[0].length;
+  toast(`Copied ${n} cell${n === 1 ? '' : 's'}, shift colours included.`, 'info', 1800);
+}
+
+/** "#ffff00", "rgb(255, 255, 0)" → "FFFF00"; anything else → null. */
+function hexOf(css) {
+  const t = String(css || '').trim();
+  let m = t.match(/^#?([0-9a-f]{6})$/i);
+  if (m) return m[1].toUpperCase();
+  m = t.match(/^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i);
+  if (m) return m.slice(1, 4).map((v) => Number(v).toString(16).padStart(2, '0')).join('').toUpperCase();
+  return null;
+}
+
+/** A pasted HTML table as a block, colours read off each cell (inline, or Excel's class styles). */
+function blockFromHtml(html) {
+  const doc = new DOMParser().parseFromString(html, 'text/html'); // builds a document that runs nothing
+  const classes = new Map();
+  for (const st of doc.querySelectorAll('style')) {
+    for (const m of st.textContent.matchAll(/\.([\w-]+)\s*\{([^}]*)\}/g)) {
+      const bg = m[2].match(/background(?:-color)?\s*:\s*([^;]+)/i);
+      if (bg && hexOf(bg[1])) classes.set(m[1], hexOf(bg[1]));
+    }
+  }
+  const rows = [...doc.querySelectorAll('tr')];
+  if (!rows.length) return null;
+  return rows.map((tr) => [...tr.cells].map((td) => {
+    const own = hexOf(td.style.backgroundColor) || hexOf(td.getAttribute('bgcolor'));
+    const byClass = [...td.classList].map((k) => classes.get(k)).find(Boolean) || null;
+    const color = own || byClass;
+    return { color: color === 'FFFFFF' ? null : color, text: td.textContent.replace(/\s+/g, ' ').trim() };
+  }));
+}
+
+/**
+ * Lay a block down from the selected cell — or, where more is selected than
+ * was copied, repeat it across the selection, so one painted day copied fills
+ * a week.
+ */
+function pasteBlock(block) {
+  if (!V.cur || !writer() || !block?.length) return;
+  const s = selRect();
+  const h = block.length;
+  const w = block[0].length;
+  const r0 = s && (s.r1 - s.r0 + 1 > h || s.c1 - s.c0 + 1 > w) ? s.r0 : V.cur.r;
+  const c0 = s && (s.r1 - s.r0 + 1 > h || s.c1 - s.c0 + 1 > w) ? s.c0 : V.cur.c;
+  const rows = s && (s.r1 - s.r0 + 1 > h) ? s.r1 - s.r0 + 1 : h;
+  const cols = s && (s.c1 - s.c0 + 1 > w) ? s.c1 - s.c0 + 1 : w;
+  const shifts = new Set(V.app.la.legend.filter((e) => (e.role || 'shift') === 'shift').map((e) => String(e.argb).toUpperCase()));
+  const unknown = new Set();
   const ops = [];
-  grid.forEach((cols, i) => {
-    const r = V.cur.r + i;
+  for (let i = 0; i < rows; i++) {
+    const r = r0 + i;
     const row = V.rows[r];
-    if (!row) return;
-    cols.forEach((value, j) => {
-      const c = V.cur.c + j;
-      if (!editable(r, c) || c >= META + V.days.length) return;
+    if (!row) break;
+    for (let j = 0; j < cols; j++) {
+      const c = c0 + j;
+      if (c >= META + V.days.length) break;
+      const x = block[i % h][j % w];
+      if (!editable(r, c)) continue;
+      const value = 'meta' in x ? x.meta : x.text;
       if (c >= META) {
         const day = V.days[c - META];
         const cell = LA.getCell(model(), row.id, day);
-        ops.push({ op: 'cell', row_id: row.id, day, color: cell?.color || null, text: row.kind === 'activity' ? LA.normaliseSupportIfCodes(value) : value.trim() });
+        let color = cell?.color || null;
+        if ('color' in x && row.kind === 'activity') {
+          if (!x.color) color = null;
+          else if (shifts.has(x.color)) color = x.color;
+          else unknown.add(x.color);
+        }
+        ops.push({ op: 'cell', row_id: row.id, day, color, text: row.kind === 'activity' ? LA.normaliseSupportIfCodes(value) : String(value).trim() });
       } else if (row.kind === 'section') {
-        if (c === 1) ops.push({ op: 'row', id: row.id, set: { description: value.trim() } });
+        if (c === 1) ops.push({ op: 'row', id: row.id, set: { description: String(value).trim() } });
       } else {
         const key = LA.FIELDS[c].key;
-        ops.push({ op: 'row', id: row.id, set: key === 'location' && hasLink(row.link) ? { location: value.trim(), link: null } : { [key]: value.trim() } });
+        ops.push({ op: 'row', id: row.id, set: key === 'location' && hasLink(row.link) ? { location: String(value).trim(), link: null } : { [key]: String(value).trim() } });
       }
-    });
-  });
+    }
+  }
   commit(ops);
+  if (unknown.size) toast(`Not in the legend, so not painted: ${[...unknown].map((h2) => `#${h2}`).join(', ')}. Add it in TAWRs → Setup → Legend to use it.`, 'warn');
+}
+
+const same = (a, b) => String(a).replace(/\r/g, '').trim() === String(b).replace(/\r/g, '').trim();
+
+function pasteFrom(clipboardData) {
+  const text = clipboardData.getData('text/plain');
+  const html = clipboardData.getData('text/html');
+  if (clip && same(clip.text, text)) { pasteBlock(clip.block); return; }
+  const fromHtml = html ? blockFromHtml(html) : null;
+  if (fromHtml) { pasteBlock(fromHtml); return; }
+  const grid = String(text).replace(/\r/g, '').replace(/\n$/, '').split('\n').map((l) => l.split('\t').map((t) => ({ text: t })));
+  pasteBlock(grid);
 }
 
 /* ── Events ───────────────────────────────────────────────────────────── */
@@ -815,12 +926,12 @@ function wire(scroll, table) {
   scroll.addEventListener('keydown', onKey);
   scroll.addEventListener('copy', (e) => {
     if (V.editing) return;
-    e.clipboardData.setData('text/plain', copyText());
+    copySelection(e.clipboardData);
     e.preventDefault();
   });
   scroll.addEventListener('paste', (e) => {
     if (V.editing) return;
-    pasteText(e.clipboardData.getData('text/plain'));
+    pasteFrom(e.clipboardData);
     e.preventDefault();
   });
 }

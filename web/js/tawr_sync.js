@@ -49,6 +49,7 @@ export function freshValues(app, group) {
 /** What a record keeps of the group it was read from, for the cards, the review and the map. */
 export function sourceOf(group, conflicts = []) {
   return {
+    kind: group.kind,
     activities: group.activities,
     days: group.days,
     support: group.support,
