@@ -33,6 +33,8 @@ export const store = {
   user: null,
   setupNeeded: false,
   workflow: null,
+  /** Signing out: a request refused meanwhile is this, not a session that lapsed. */
+  leaving: false,
 };
 
 /* ══════════════════════════════════════════════════════════════════════════
@@ -76,7 +78,7 @@ async function http(method, url, body, { raw = null, type = 'application/json', 
   });
   if (bytes && res.ok) return new Uint8Array(await res.arrayBuffer());
   const j = await res.json().catch(() => ({}));
-  if (res.status === 401 && store.user) {
+  if (res.status === 401 && store.user && !store.leaving) {
     store.user = null;
     window.dispatchEvent(new CustomEvent('tp:signed-out'));
   }
@@ -189,7 +191,12 @@ export async function setupFirst(username, name, password) {
 }
 export async function logout() {
   if (local()) { store.user = null; try { localStorage.removeItem(ACTING_KEY); } catch { /* */ } return; }
-  await http('POST', 'api/logout', {});
+  store.leaving = true;
+  try {
+    await http('POST', 'api/logout', {});
+  } finally {
+    store.leaving = false;
+  }
   store.user = null;
 }
 export const listUsers = () => http('GET', 'api/users');

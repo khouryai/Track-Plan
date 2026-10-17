@@ -455,7 +455,9 @@ try {
         body: JSON.stringify({ username: 'rae', name: 'Rae Requester', role: 'requester', password: 'requester-pass' }),
       })).status);
       check('the manager adds the requester', made === 201);
-      await page.click('#who button'); // sign out
+      // Sign out, and wait for the page it reloads to: the old one may still be
+      // finishing a raise, and a sign-in box opened there is thrown away.
+      await Promise.all([page.waitForEvent('load'), page.click('#who button')]);
       await page.waitForSelector('.modal [data-action=signin]');
       await page.locator('.modal input').nth(0).fill('rae');
       await page.locator('.modal input').nth(1).fill('requester-pass');
@@ -474,7 +476,7 @@ try {
       await page.click('nav.views [data-view=lookahead]');
       await page.waitForSelector('.la-grid');
       check('the look-ahead is kept by the server', await rowOf(page, 'IXL SIM Testing').count() === 1);
-      await page.click('#who button');
+      await Promise.all([page.waitForEvent('load'), page.click('#who button')]);
       await page.waitForSelector('.modal [data-action=signin]');
       await page.locator('.modal input').nth(0).fill('tam');
       await page.locator('.modal input').nth(1).fill('manager-pass');
