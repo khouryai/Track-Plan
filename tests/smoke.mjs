@@ -229,20 +229,25 @@ async function flow(page, { mode }) {
   await page.locator('#onmap .clash-list li').first().click();
   await page.waitForTimeout(200);
   check('picking a conflict makes both requests glow', await page.locator('#viewport path.tawr-glow').count() >= 2);
-  /* Hover a point on the drawn line itself — a point inside its bounding box
-     need not be on the stroke — trying a few along it in case a pin covers one. */
-  const line = page.locator('#viewport path.tawr-line').first();
-  for (const at of [0.3, 0.5, 0.7, 0.15, 0.85]) {
-    const pt = await line.evaluate((p, f) => {
-      const q = p.getPointAtLength(p.getTotalLength() * f);
+  /* Hover a point where a request's line is what is actually under the mouse:
+     on its stroke, inside the map, not under a pin, a panel or a toast. The
+     line may run far off-screen after the zoom to the conflict, so the points
+     are tested rather than assumed. */
+  const pt = await page.evaluate(() => {
+    for (const p of document.querySelectorAll('#viewport path.tawr-line')) {
+      const len = p.getTotalLength();
       const m = p.getScreenCTM();
-      return { x: q.x * m.a + q.y * m.c + m.e, y: q.x * m.b + q.y * m.d + m.f };
-    }, at);
-    await page.mouse.move(pt.x, pt.y, { steps: 4 });
-    if (await page.locator('.leaflet-tooltip.map-tip').isVisible()) break;
-    await page.waitForTimeout(150);
-    if (await page.locator('.leaflet-tooltip.map-tip').isVisible()) break;
-  }
+      for (let i = 1; i < 40; i++) {
+        const q = p.getPointAtLength((len * i) / 40);
+        const x = q.x * m.a + q.y * m.c + m.e;
+        const y = q.x * m.b + q.y * m.d + m.f;
+        if (document.elementFromPoint(x, y) === p) return { x, y };
+      }
+    }
+    return null;
+  });
+  check('a request line is in view to hover', Boolean(pt));
+  await page.mouse.move(pt.x, pt.y, { steps: 4 });
   await page.waitForSelector('.leaflet-tooltip.map-tip', { timeout: 5000 });
   const tipText = await page.textContent('.leaflet-tooltip.map-tip');
   await shot(page, `${mode}-2b-hover`);
