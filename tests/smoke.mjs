@@ -351,6 +351,27 @@ async function copyPaste(page, { mode }) {
   check('the clipboard carries the colours for Excel too', /background-color:#FFFF00/.test(html), html.slice(0, 120));
 }
 
+async function sampleData(page, { mode }) {
+  console.log(`\n${mode}: sample data`);
+  await page.click('nav.views [data-view=lookahead]');
+  await page.click('[data-action=sample]');
+  await page.click('.modal [data-action=sample-confirm]');
+  await rowOf(page, 'Cable trough installation').waitFor();
+  check('four weeks of W and M line work arrive, linked', await page.locator('tr.la-activity td.loc-linked').count() === 16);
+  await page.evaluate(() => { document.querySelector('.la-scroll').scrollLeft = 0; });
+  await shot(page, `${mode}-5a-sample-lookahead`);
+  check('the look-ahead shows them from the coming Monday', (await page.locator('.la-week').first().getAttribute('data-week')) === '2026-10-19');
+  // Acting as the manager here, the badge counts what is submitted; count the drafts themselves.
+  await page.waitForFunction(() => (JSON.parse(localStorage.getItem('trackplan.ops.v1') || '{}').tawrs || []).filter((t) => t.status === 'draft').length === 21, null, { timeout: 20000 });
+  check('every week\'s TAWRs are raised from it — 21 over four weeks', true);
+  await page.click('nav.views [data-view=map]');
+  await page.waitForSelector('#onmap .status-filter');
+  check('the week due shows its conflicts on the track plan', /Conflicts this week \(2\)/.test(await page.textContent('#onmap')) && await page.locator('.clash-pin').count() === 2);
+  await page.selectOption('#onmap select', '2026-11-09');
+  check('another week, another conflict', /Conflicts this week \(1\)/.test(await page.textContent('#onmap')));
+  await shot(page, `${mode}-5-sample-map`);
+}
+
 async function fitted(page) {
   return page.evaluate(() => {
     const img = document.querySelector('#viewport img.leaflet-image-layer, #viewport .leaflet-tile-container');
@@ -393,6 +414,7 @@ try {
     await manage(page, { mode: 'static site' });
     await copyPaste(page, { mode: 'static site' });
     await importBook(page, { mode: 'static site' });
+    await sampleData(page, { mode: 'static site' });
     check('no console errors (static site)', !errors.length, errors.join(' | '));
     await context.close();
     srv.close();

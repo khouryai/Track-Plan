@@ -84,6 +84,17 @@ data extracted automatically from the drawing.
    signature; *Download approved* puts the week's forms in one .zip, and the
    *Submittal register (CSV)* lists them.
 
+**Sample data.** *Look-ahead → Sample data…* loads four weeks of W and M line
+work from the coming Monday — cable trough and signal cable on the W line,
+foundations, rail and tie replacement, ATC loop cable, trench and conduit;
+IXL simulation and DCS checks in the San Bruno, Millbrae, Daly City and Balboa
+Park TCRs, track circuit, switch machine, CBTC radio and integrated system
+testing — every location linked to the track plan, and the TAWRs raised from it.
+Five conflicts are planted in it (`web/js/sample.js` says where): two on one
+shift that can be consolidated, a day shift and a swing shift on W1, two
+shifts in the Daly City TCR at once, and a night shift running into a Blanket
+on M2. On the static site it can clear the browser's TAWRs for a clean start.
+
 The *Track plan* view opens fitted to the whole sheet and shows the week's
 TAWRs drawn where they are, coloured by status, with every linked activity.
 Hovering a request or an activity shows its party to action, description,
@@ -296,7 +307,8 @@ server.py, operations.py
 | `main.js` | loads everything, switches between the three views |
 | `lookahead.js` | the look-ahead's rows, cells and ops (undo), the legend and support codes, the workbook import |
 | `links.js` | a track plan link: its label, Area, key, and whether two overlap |
-| `tawr.js` | a week of the look-ahead read into TAWRs; the form's values; the workflow table's rules |
+| `tawr.js` | a week of the look-ahead read into TAWRs; conflicts; the form's values; the workflow table's rules |
+| `sample.js` | four weeks of sample W and M line work, conflicts included |
 | `tawr_sync.js` | drafts raised and kept in step with the look-ahead; consolidations |
 | `store.js` | the server's API, or this browser's storage, behind one interface |
 | `map.js` | the map, Select on track plan, TAWRs drawn on it |

@@ -491,6 +491,17 @@ export async function putTemplate(bytes) {
   return http('PUT', 'api/tawr/template', undefined, { raw: bytes, type: 'application/pdf' });
 }
 
+/** On the static site: forget every TAWR and consolidation in this browser (sample data, a fresh start). */
+export function clearLocalTawrs() {
+  if (!local()) throw new Refused('only the copy in this browser can be cleared');
+  requireWrite();
+  const s = readLocal();
+  s.tawrs = [];
+  s.merges = [];
+  s.nextTawr = 1;
+  writeLocal(s);
+}
+
 // ── backing up the browser's copy
 export function exportLocal() {
   return JSON.stringify(readLocal(), null, 1);

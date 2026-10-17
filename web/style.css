@@ -224,7 +224,8 @@ details .row { margin-top: 6px; }
 .loc-empty .loc-text { color: #9aa0a8; font-style: italic; }
 .loc-unlinked .loc-text { color: var(--bad); text-decoration: underline dotted; }
 .loc-linked .loc-text { color: #0b5d46; font-weight: 600; }
-.loc-tawr { float: right; font-size: 10px; color: #fff; background: var(--c); border-radius: 8px; padding: 0 5px; margin-top: 3px; }
+.loc-tawr { position: absolute; right: 3px; top: 50%; transform: translateY(-50%); font-size: 10px; color: #fff; background: var(--c); border-radius: 8px; padding: 0 5px; }
+.la-m2.has-tawr { padding-right: 36px; }
 
 /* ── TAWRs ───────────────────────────────────────────────────────────── */
 .subtabs { display: flex; gap: 4px; margin-bottom: 8px; }

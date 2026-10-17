@@ -22,7 +22,7 @@ export default [
     languageOptions: {
       ecmaVersion: 2022,
       sourceType: 'module',
-      globals: { process: 'readonly', Buffer: 'readonly', console: 'readonly', setTimeout: 'readonly', URL: 'readonly', document: 'readonly', getComputedStyle: 'readonly', fetch: 'readonly', DataTransfer: 'readonly', Event: 'readonly' },
+      globals: { process: 'readonly', Buffer: 'readonly', console: 'readonly', setTimeout: 'readonly', URL: 'readonly', document: 'readonly', getComputedStyle: 'readonly', fetch: 'readonly', DataTransfer: 'readonly', Event: 'readonly', localStorage: 'readonly' },
     },
     rules: { 'no-undef': 'error', 'no-unused-vars': ['error', { args: 'none', caughtErrors: 'none' }] },
   },

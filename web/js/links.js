@@ -50,6 +50,30 @@ export function cellSet(polys) {
   return new Set(samplePolys(polys, 1).map(([x, y]) => `${Math.round(x / 1.5)},${Math.round(y / 1.5)}`));
 }
 
+/**
+ * The drawing's polylines covering milepost range [a, b] of a calibrated
+ * track — the same rule as server.py's `/api/segment`. `routes` is map.json's.
+ */
+export function sliceRoute(routes, track, a, b) {
+  const lo = Math.min(a, b); const hi = Math.max(a, b); const out = [];
+  for (const pc of routes?.[track] || []) {
+    for (const lg of pc.legs) {
+      let cur = null;
+      for (let i = 0; i < lg.pts.length - 1; i++) {
+        const p0 = lg.pts[i]; const p1 = lg.pts[i + 1]; const m0 = lg.mps[i]; const m1 = lg.mps[i + 1];
+        const c0 = Math.max(Math.min(m0, m1), lo); const c1 = Math.min(Math.max(m0, m1), hi);
+        if (c0 > c1) { if (cur) { out.push(cur); cur = null; } continue; }
+        const at = (m) => { const f = m1 === m0 ? 0 : (m - m0) / (m1 - m0); return [p0[0] + f * (p1[0] - p0[0]), p0[1] + f * (p1[1] - p0[1])]; };
+        const [s, e] = m0 <= m1 ? [c0, c1] : [c1, c0];
+        if (!cur) cur = [at(s)];
+        cur.push(at(e));
+      }
+      if (cur) out.push(cur);
+    }
+  }
+  return out;
+}
+
 export function bboxOf(polys) {
   let x0 = Infinity; let y0 = Infinity; let x1 = -Infinity; let y1 = -Infinity;
   for (const pl of polys || []) for (const [x, y] of pl) {

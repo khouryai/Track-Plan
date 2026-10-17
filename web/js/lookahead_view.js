@@ -31,6 +31,7 @@ import * as T from './tawr.js';
 import * as S from './store.js';
 import { el, esc, clear, toast, contextMenu, openModal, confirmDialog, dayLabel, saveFile, csvField } from './ui.js';
 import { STATUS_COLOR } from './map.js';
+import { sampleLookahead, sampleStart } from './sample.js';
 
 const META = LA.FIELDS.length;
 const LOC = LA.FIELDS.findIndex((f) => f.key === 'location');
@@ -219,6 +220,7 @@ function toolbar() {
   bar.append(el('div', { class: 'la-group la-right' }, [
     el('label', { class: 'check' }, [quiet, ' Only rows with work these weeks']),
     writer() ? el('button', { type: 'button', class: 'secondary mini', dataset: { action: 'import' }, text: 'Import 4WLA (.xlsx)…', onClick: importWorkbook }) : null,
+    writer() ? el('button', { type: 'button', class: 'secondary mini', dataset: { action: 'sample' }, text: 'Sample data…', title: 'Four weeks of W and M line work, with conflicts, from the coming Monday', onClick: loadSample }) : null,
     el('button', { type: 'button', class: 'secondary mini', text: 'CSV', title: 'The weeks on screen as a CSV', onClick: exportCsv }),
     writer() ? el('span', { class: 'la-status la-status-saved', role: 'status', text: 'All changes saved' }) : el('span', { class: 'small', text: 'Read only' }),
   ]));
@@ -371,6 +373,8 @@ function draw() {
       writer() ? el('button', { type: 'button', class: 'mini', text: 'Add the first activity', onClick: () => insertRow('activity') }) : null,
       writer() ? ' or ' : null,
       writer() ? el('button', { type: 'button', class: 'secondary mini', text: 'Import the 4WLA workbook', onClick: importWorkbook }) : null,
+      writer() ? ' or ' : null,
+      writer() ? el('button', { type: 'button', class: 'secondary mini', text: 'Load sample data', onClick: loadSample }) : null,
     ])]));
   }
   table.append(body);
@@ -406,6 +410,7 @@ function locationCell(td, row, tawr) {
   const resolved = !linked && typed ? resolveLocationText(typed, V.app.locations) : null;
   const state = linked ? 'linked' : resolved ? 'typed' : typed ? 'unlinked' : 'empty';
   td.classList.add(`loc-${state}`);
+  if (tawr) td.classList.add('has-tawr');
   const text = typed || (linked ? linkLabel(row.link) : '');
   td.append(...[
     el('button', {
@@ -1041,6 +1046,60 @@ function importDialog(name, read) {
           V.app.lookaheadChanged();
           const linked = m.rows.filter((r) => r.kind === 'activity' && resolveLocationText(r.location, V.app.locations)).length;
           toast(`Imported ${report.activities} activities, ${report.sections} sections, ${report.resources} Resource rows and ${report.cells} days. ${linked} location${linked === 1 ? '' : 's'} recognised; link the rest on the track plan.`, 'good', 9000);
+        },
+      },
+    ],
+  });
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   Sample data
+   ═══════════════════════════════════════════════════════════════════════ */
+
+/**
+ * Four weeks of W and M line work from the coming Monday (`sample.js`),
+ * linked to the track plan, conflicts included — for showing the workflow
+ * end to end. It replaces the look-ahead; on the static site the TAWRs can be
+ * cleared with it, for a clean start.
+ */
+function loadSample() {
+  const start = sampleStart(V.app.today);
+  const existing = model().rows.length;
+  const local = S.store.mode === 'local';
+  const fresh = el('input', { type: 'checkbox' });
+  fresh.checked = true;
+  openModal({
+    title: 'Load sample data',
+    body: el('div', { class: 'form-grid' }, [
+      el('p', { text: `Four weeks from ${dayLabel(start)}: construction and testing and commissioning on the W line and the M line, each location linked to the track plan, with a few conflicts for the track allocation manager to sort out. TAWRs are raised from it by themselves.` }),
+      existing ? el('p', { class: 'msg err', text: `This replaces the ${existing} rows on the look-ahead now.` }) : null,
+      local ? el('label', { class: 'check' }, [fresh, ' Clear the TAWRs in this browser too, for a clean start'])
+        : el('p', { class: 'small', text: 'TAWRs already raised stay; drafts no longer on the look-ahead can be discarded.' }),
+    ]),
+    actions: [
+      { label: 'Cancel' },
+      {
+        label: 'Load sample', kind: 'primary', id: 'sample-confirm',
+        onClick: async () => {
+          const sample = sampleLookahead(V.app.today, V.app.data);
+          // The sample paints with BART's colours: make sure the legend has them.
+          const have = new Set(V.app.la.legend.map((e) => String(e.argb).toUpperCase()));
+          const legend = [...V.app.la.legend, ...LA.DEFAULT_LEGEND.filter((e) => !have.has(e.argb))];
+          try {
+            if (local && fresh.checked) S.clearLocalTawrs();
+            await S.replaceLookahead(sample.rows, sample.cells, legend);
+          } catch (err) { toast(err.message, 'bad'); return; }
+          await V.app.reloadLookahead();
+          await V.app.reloadTawrs();
+          V.undo = [];
+          V.redo = [];
+          V.from = sample.start;
+          V.saved = null;
+          V.scroll = null;
+          render(V.root, V.app);
+          toast(`Sample loaded: ${sample.rows.filter((r) => r.kind === 'activity').length} activities over four weeks from ${dayLabel(sample.start)}. Raising the TAWRs…`, 'good', 6000);
+          await V.app.raise({ say: true });
+          if (V.app.view === 'lookahead') draw();
         },
       },
     ],

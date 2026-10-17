@@ -24,6 +24,7 @@ const T = await import(path.join(ROOT, 'web/js/tawr.js'));
 const L = await import(path.join(ROOT, 'web/js/links.js'));
 const pdf = await import(path.join(ROOT, 'web/js/tawr_pdf.js'));
 const zip = await import(path.join(ROOT, 'web/js/zip.js'));
+const SAMPLE = await import(path.join(ROOT, 'web/js/sample.js'));
 const { readZip } = await import(path.join(ROOT, 'web/js/xlsx.js'));
 const MAP = JSON.parse(fs.readFileSync(path.join(ROOT, 'web/data/map.json'), 'utf8'));
 const WORKFLOW = JSON.parse(fs.readFileSync(path.join(ROOT, 'web/data/tawr_workflow.json'), 'utf8'));
@@ -273,6 +274,42 @@ console.log('\nThe workflow');
   const rec = (id, days, link) => ({ id, status: 'approved', shift: 'day', week_start: MON, source: { days: days.map((date) => ({ date })), activities: [{ link }] } });
   const reps = T.repetitions([rec('a', [day(0)], { limits: [M1(1, 2)] }), rec('b', [day(0), day(1)], { limits: [M1(1.5, 3)] }), rec('c', [day(2)], { limits: [M1(1, 2)] })]);
   check('two approved requests for the same track on the same day are a repetition', reps.length === 1 && reps[0].days.join() === day(0));
+}
+
+console.log('\nThe sample data');
+{
+  const { start, rows, cells } = SAMPLE.sampleLookahead('2026-10-17', MAP);
+  check('it starts on the coming Monday', start === '2026-10-19' && SAMPLE.sampleStart('2026-10-19') === '2026-10-19');
+  check('and covers four weeks', cells.every((c) => c.day >= start && c.day <= la.addDaysISO(start, 27)) && cells.some((c) => c.day >= la.addDaysISO(start, 21)));
+  const acts = rows.filter((r) => r.kind === 'activity');
+  check('construction and testing and commissioning', acts.some((r) => r.activity_id.startsWith('C-')) && acts.some((r) => r.activity_id.startsWith('T-')));
+  check('on the W line and the M line only', acts.every((r) => (r.link.limits || []).every((l) => /^[WM]/.test(l.track))) && acts.some((r) => /W\d/.test(r.location)) && acts.some((r) => /M\d/.test(r.location)));
+  check('every location linked to the track plan, with the drawing\'s geometry for track', acts.every((r) => L.hasLink(r.link)) && acts.filter((r) => r.link.limits.length).every((r) => r.link.geometry.length));
+  check('every milepost inside its track\'s calibrated range', acts.every((r) => r.link.limits.every((l) => {
+    const t = MAP.tracks.find((x) => x.id === l.track);
+    return t && l.from_mp >= t.from_mp && l.to_mp <= t.to_mp;
+  })));
+  const model = la.makeModel(rows, cells);
+  let id = 1;
+  const found = [];
+  const kinds = new Set();
+  for (let w = 0; w < 4; w++) {
+    const week = la.addDaysISO(start, 7 * w);
+    const groups = T.extractWeek(model, week, { legend: la.DEFAULT_LEGEND, codes: la.DEFAULT_CODES, locations: MAP.locations }).groups;
+    for (const g of groups) kinds.add(g.kind);
+    check(`week ${w + 1} raises requests with nothing blocking them`, groups.length >= 4 && groups.every((g) => !T.blockers(g).length));
+    const recs = groups.map((g) => ({ id: id++, status: 'draft', shift: g.shift, week_start: week, location_name: g.locationName, source: { days: g.days, activities: g.activities } }));
+    for (const c of T.conflicts(recs)) found.push({ week: w + 1, c });
+  }
+  check('TCR requests and track requests both', kinds.has('tcr') && kinds.has('track'));
+  check('five conflicts, planted', found.length === 5, found.map((f) => `${f.week}:${f.c.a.location_name}/${f.c.b.location_name}`).join(' '));
+  check('some on one shift, which can be consolidated', found.filter((f) => f.c.a.shift === f.c.b.shift).length === 2);
+  check('some across shifts, which cannot', found.filter((f) => f.c.a.shift !== f.c.b.shift).length === 3);
+  check('one in a train control room', found.some((f) => /Daly City TCR/.test(f.c.a.location_name) && /Daly City TCR/.test(f.c.b.location_name)));
+  check('one where the night shift runs into a Blanket', found.some((f) => [f.c.a.shift, f.c.b.shift].sort().join() === 'night,possession'));
+  const cancelled = T.extractWeek(model, la.addDaysISO(start, 7), { legend: la.DEFAULT_LEGEND, codes: la.DEFAULT_CODES, locations: MAP.locations }).groups
+    .find((g) => g.activities.some((a) => a.activityId === 'C-M304'));
+  check('a cancelled day asks for nothing', cancelled.days.length === 1);
 }
 
 console.log('\nThe 4WLA workbook');
