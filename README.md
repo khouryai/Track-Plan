@@ -1,11 +1,93 @@
-# Track Map
+# Track Plan
 
-A digital, database-backed version of the system track map (`source/System_Map_Print.pdf`).
+A digital, database-backed version of the system track map (`source/System_Map_Print.pdf`),
+and the planning that happens on it: the **four-week look-ahead (4WLA)**, each
+activity **linked to where it is on the track plan**, and the **track access work
+requests (TAWRs)** raised from both, approved by the Track Allocation Manager and
+downloaded as BART's own form.
+
 The map looks the same as the PDF because the base layer *is* the PDF, rendered
 into map tiles at up to 16 pixels per point (about 1150 dpi), so it stays sharp
 however far you zoom, including on high-density phone screens. Everything
 interactive sits on top of it in the same coordinate frame and is driven by
 data extracted automatically from the drawing.
+
+## The workflow
+
+```
+ Look-ahead                   Track plan                    TAWRs
+ ──────────                   ──────────                    ─────
+ activity, painted by    ──►  right-click its Location ──►  one request per place and shift
+ shift, BART support          → Select on track plan:       per week, raised by itself ahead
+ typed in each day            TCR / station / block of      of the deadline (17 days before
+ ("X.WIT")                    track → the Location cell     the Monday), Area from the link
+                              and the TAWR's Area           │
+                                                            ├─ Requester: review, submit
+                                                            └─ Track Allocation Manager:
+                                                               consolidate overlaps, approve
+                                                               or reject → BART's form (PDF)
+```
+
+1. **Fill in the look-ahead** (*Look-ahead* view). The same 4WLA as in Excel:
+   Activity ID, Description, Location, SSWP#, Party to Action, Work Hours, then a
+   column per day for four or five weeks. Paint a day in its shift colour (Day,
+   Swing, Night, Blanket, Cancellation) and type the BART support it needs in the
+   cell — `X` an EIC, `WIT` a witness, `TCE`, `ROC`, `X.WIT` both, `~WIT` a
+   witness cancelled. A Resource row under an activity names the crew. It
+   behaves like a spreadsheet: drag to select, Alt+1…5 to paint, Enter to edit,
+   Delete, Ctrl+Z / Ctrl+Y, copy and paste. An existing 4WLA workbook can be
+   imported (*Import 4WLA (.xlsx)*): the calendar sheet is found by its row of
+   weekday letters, the workbook's own colour key is read, and a colour nobody has
+   named is asked about, never guessed.
+2. **Link each activity's location** — right-click its Location cell (or press
+   the pin) → *Select on track plan…*. The map opens on that activity: choose a
+   station, its **TCR (train control room)**, a yard or a platform (or click a blue
+   pin), and/or a **block of track** — box-select it, draw along it through
+   crossovers, add pieces, or type a track and milepost range. *Use this location*
+   writes it into the Location cell (`Colma TCR · W2 MP 16.600–16.900`) and the
+   activity's TAWR takes its Area from it (`Colma TCR; W2 MP 16.600-16.900`). A
+   location typed exactly as a station or TCR is recognised; anything else is
+   marked, and its TAWR cannot be submitted until it is linked.
+3. **The TAWRs raise themselves.** The week whose requests are due next is
+   highlighted on the look-ahead (*TAWR week*). Every week due within the lead
+   time (Setup, default 7 days before the deadline) gets its drafts without
+   anybody asking: one per place and shift, its days, combined hours (or the
+   shift's), the BART support on its busiest day, SSWP numbers and the work
+   description. Drafts follow the look-ahead as it changes and keep anything typed
+   into them by hand.
+4. **The requester reviews and submits** (*TAWRs* view): every field of BART's
+   form can be checked in *Review*; *Submit for approval* (one, or several picked
+   at once).
+5. **The Track Allocation Manager decides.** Requests whose places **overlap** on
+   the drawing — the same TCR, or track in common — in the same week and shift are
+   named to each other; *Consolidate* makes them one request (Area and support
+   recombined, hand edits kept), and *Split back up* undoes it. Then *Approve* or
+   *Reject* (with a reason the requester sees), one by one or in bulk. An approved
+   request is final: changing it is a *Revise*, which keeps the approved version
+   as superseded. If two approved requests still repeat each other, the page says
+   so before anything is downloaded.
+6. **Submittal**: *Download PDF* fills BART's own fillable form (uploaded once in
+   Setup, never committed or published) and signs it with the requester's
+   signature; *Download approved* puts the week's forms in one .zip, and the
+   *Submittal register (CSV)* lists them.
+
+The *Track plan* view shows the week's TAWRs drawn where they are, coloured by
+status, and every linked activity, so overlaps can be seen as well as read.
+
+### Roles
+
+| | Requester | Track Allocation Manager | Viewer |
+|---|---|---|---|
+| Edit the look-ahead, link locations, Setup | yes | yes | — |
+| Raise, review and submit drafts; withdraw; reopen a rejected one; revise | yes | yes | — |
+| Approve, reject, consolidate, split | — | yes | — |
+| Add and change accounts (server) | — | yes | — |
+| Read everything | yes | yes | yes |
+
+Who may do what is one table, `web/data/tawr_workflow.json`. The page only offers
+what it allows; **`server.py` enforces it** (`operations.py`) — a requester
+cannot approve however the request is made, an approved request cannot be
+changed, a viewer cannot write.
 
 ## Website
 
@@ -14,19 +96,39 @@ The viewer is deployed to GitHub Pages from `main` by
 (`pipeline/make_tiles.py`, about 2 minutes) and publishes the `web/` folder:
 **https://khouryai.github.io/Track-Plan/**
 
-A static host has no server, so on the website access requests are saved
-**in the viewer's browser** (localStorage). Use *Export JSON* / *Import JSON* to
-share or back them up. To keep requests in the shared SQLite database, run the
-server below; the same page then reads and writes through its API.
+A static host has no server, so on the website the look-ahead and the TAWRs are
+kept **in the viewer's browser** (localStorage, and IndexedDB for BART's form),
+and the person says which role they are acting in. Nothing on a static site can
+check that choice — use it to try the workflow, or for one person. *TAWRs → Setup
+→ Back up* moves the browser's copy elsewhere. For a requester and a Track
+Allocation Manager working together, run the server.
 
-## Run locally with the database
+## Run with the server (accounts, shared data)
 
 ```bash
 python3 pipeline/make_tiles.py   # once: render web/tiles (needs poppler-utils, Pillow, numpy)
 python3 server.py                # http://127.0.0.1:8000  (standard library only)
 ```
 
-The server creates `db/trackmap.db` from `web/data/map.json` on first run.
+Without tiles the viewer falls back to the vector copy of the drawing
+(`web/map.svg`), softer when zoomed but fine for development.
+
+The first visit makes the first account, which is the **Track Allocation
+Manager**; the manager adds the requester (and any viewers) under *Accounts*, or:
+
+```bash
+python3 server.py --add-user rae --name "Rae Requester" --role requester
+```
+
+Passwords are stored as PBKDF2 hashes, sessions as hashed tokens in an
+HttpOnly cookie, and every change must carry `X-Requested-With: trackplan`, so
+a page on another site cannot act for a signed-in browser. Put the server behind
+HTTPS (a reverse proxy) for use beyond one machine.
+
+The server creates `db/trackmap.db` (the map) from `web/data/map.json` and
+`db/operations.db` (accounts, look-ahead, TAWRs) on first run. The map database
+is rebuilt by the extraction; the operations database never is. BART's blank form
+is kept at `db/tawr_template.pdf` — outside `web/`, ignored by git.
 
 ## Using the map
 
@@ -36,19 +138,18 @@ The server creates `db/trackmap.db` from `web/data/map.json` on first run.
   their exact milepost (`W1 MP 23.500`); crossovers, yard leads, pocket and
   middle tracks show their name and where they meet the running tracks
   (`Crossover SW177/SW377 · between M1 MP 16.29 and M3 MP 16.28`)
-- create **track access requests** from any mix of:
+- when linking an activity's location, pick any mix of:
+  - a **place**: a station, its **TCR (train control room)**, a yard or platform
+    (the list, or a blue pin on the map)
   - **Box select**: drag a rectangle over a block of tracks; every piece of
-    track inside becomes part of the request, listed by track and milepost
+    track inside becomes part of the location, listed by track and milepost
     range (`M1 MP 16.039 – 16.350`, `M3 MP 16.020 – 16.381`) plus the
     crossovers and yard tracks it includes
   - **Draw along track**: click the start, then click along the route through
     any crossover to the end
   - **Add / remove pieces**: click individual crossovers or yard tracks
   - a typed track and milepost range
-  - a **location**: any station, its **TCR (train control room)**, a yard or
-    platform (e.g. `Colma TCR (Train Control Room)`)
-- requests are drawn on the map colour-coded by status; requests that share
-  any track or the same location in an overlapping time window are flagged
+- the week's TAWRs are drawn colour-coded by status, with the linked activities
 - go to a milepost or station (Find tab); show all selectable track by type,
   calibrated centrelines, milepost anchors and labels that need review (Layers)
 
@@ -115,7 +216,7 @@ The server creates `db/trackmap.db` from `web/data/map.json` on first run.
 
 ## Database
 
-`db/schema.sql` (SQLite):
+`db/schema.sql` (SQLite, `db/trackmap.db`, regenerated by the extraction):
 
 | table | contents |
 |---|---|
@@ -125,10 +226,19 @@ The server creates `db/trackmap.db` from `web/data/map.json` on first run.
 | `milepost_labels` | every label read off the drawing, with its status |
 | `stations` | station and yard names |
 | `track_segments` | every piece of track: name, kind (running / crossover / yard / track), switches, milepost at each end, geometry |
-| `locations` | stations, train control rooms (TCR), yards and platforms that requests can name |
-| `access_requests` | **your operational data**: track limits (geometry plus the MP ranges and pieces they cover), typed track/MP range, location, time window, work type, requester, status |
+| `locations` | stations, train control rooms (TCR), yards and platforms that a location can name |
+| `access_requests` | the earlier, hand-drawn access requests (kept across rebuilds; superseded by TAWRs, still served by the API) |
 
-Rebuilding the extracted data keeps the existing `access_requests`.
+`db/operations.sql` (SQLite, `db/operations.db`, never regenerated):
+
+| table | contents |
+|---|---|
+| `users`, `sessions` | accounts (requester, manager, viewer) and signed-in sessions |
+| `la_rows`, `la_cells` | the look-ahead: sections, activities (with their track plan `link`) and Resource rows; a colour and text per day |
+| `meta` | the legend (shift colours), the support code register, the look-ahead's version |
+| `tawrs` | the requests: week, place and shift, status, the form's fields as generated and as edited, what they were read from, who did what and when |
+| `tawr_merges` | consolidations: which requests the manager made one |
+| `tawr_settings`, `tawr_descriptions` | Setup: contacts, the requester's name, phone and signature, shift hours, lead time; expanded wording for activities |
 
 ### API
 
@@ -137,28 +247,66 @@ Rebuilding the extracted data keeps the existing `access_requests`.
 | `GET /api/tracks` | calibrated tracks |
 | `GET /api/locate?track=W1&mp=23.5` | drawing position of a milepost |
 | `GET /api/segment?track=W1&from=23&to=24` | polylines covering an MP range |
-| `GET/POST /api/requests`, `PUT/DELETE /api/requests/<id>` | access requests |
+| `GET /api/me`, `POST /api/setup`, `/api/login`, `/api/logout`, `/api/users` | accounts |
+| `GET /api/lookahead`, `POST /api/lookahead/ops`, `/api/lookahead/replace`, `PUT /api/lookahead/legend`, `/codes` | the look-ahead |
+| `GET/POST /api/tawrs`, `PUT /api/tawrs/<id>`, `POST /api/tawrs/<id>/<action>`, `/api/tawrs/consolidate`, `/api/tawrs/<id>/split` | TAWRs and their workflow |
+| `GET/PUT /api/tawr/settings`, `/api/tawr/template`, `/api/tawr/descriptions` | Setup |
+| `GET/POST /api/requests`, `PUT/DELETE /api/requests/<id>` | the earlier access requests |
 
-`/api/segment` is the hook for linking an existing track-access system: send
-it a track and MP range and draw what comes back.
+`server.py`'s docstring lists every route and who may call it.
 
 ## Layout
 
 ```
 source/   the original PDF
 pipeline/ extraction (pdfmap, labels, tracks, linref, build), glyph prototypes, fonts.conf, overrides
-web/      viewer (index.html, app.js, style.css, vendor/leaflet), map.svg, data/map.json; tiles/ is generated
-db/       schema.sql (trackmap.db is generated, not committed)
+web/      the application: index.html, style.css, js/ (ES modules, no build step), data/map.json,
+          data/tawr_workflow.json, map.svg, vendor/leaflet; tiles/ is generated
+db/       schema.sql (the map), operations.sql (accounts, look-ahead, TAWRs); the .db files are generated
+tests/    test_tawr.mjs (Node), test_server.py (Python), smoke.mjs (Playwright), fixtures/
 docs/     qa_report.md
-server.py
+server.py, operations.py
 ```
+
+`web/js`:
+
+| module | |
+|---|---|
+| `main.js` | loads everything, switches between the three views |
+| `lookahead.js` | the look-ahead's rows, cells and ops (undo), the legend and support codes, the workbook import |
+| `links.js` | a track plan link: its label, Area, key, and whether two overlap |
+| `tawr.js` | a week of the look-ahead read into TAWRs; the form's values; the workflow table's rules |
+| `tawr_sync.js` | drafts raised and kept in step with the look-ahead; consolidations |
+| `store.js` | the server's API, or this browser's storage, behind one interface |
+| `map.js` | the map, Select on track plan, TAWRs drawn on it |
+| `lookahead_view.js`, `tawr_view.js` | the two planning views |
+| `tawr_pdf.js`, `pdf_metrics.js`, `xlsx.js`, `la_read.js`, `inflate.js`, `zip.js` | BART's form filled; the workbook read; zip |
+
+The four-week look-ahead, the TAWR rules and BART's form filler are rebuilt from
+**cx-timeline** (its `core/la_edit.js`, `core/tawr.js`, `io/tawr_pdf.js`,
+`io/lookahead.js`), with the track plan link in place of its location register.
+The readers and the form filler are copied unchanged; each file says where it
+came from.
+
+## Tests
+
+```bash
+npm install                 # once: Playwright, for the browser test
+npm test                    # all three suites
+node tests/test_tawr.mjs    # look-ahead, links, TAWR reading, consolidation, workflow table, workbook import, the form filled (Node)
+python3 -m unittest tests/test_server.py   # what the server allows and refuses (Python)
+node tests/smoke.mjs        # the whole flow in Chromium, on the static site and against server.py
+```
+
+The browser test runs as though it were Friday 16 October 2026, so the week of
+2 November is the one due. Any console error fails it. `.github/workflows/checks.yml`
+runs all three on every push.
 
 ## Next steps
 
 - Review `docs/qa_report.md` with someone who knows the territory and record
   the fixes in `overrides.json`.
-- For multi-user use, move to Postgres/PostGIS. The schema maps directly, and
+- For many users, move to Postgres/PostGIS. The schema maps directly, and
   `geometry` becomes a `LINESTRING` with `ST_LineSubstring` for MP ranges.
-  Add authentication in front of the API.
 - Extract interlocking limits (the `W45` dimension arrows) so requests can be
   made by interlocking as well as by MP.

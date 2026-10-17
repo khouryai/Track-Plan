@@ -3,131 +3,117 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Track Map</title>
+<title>Track Plan</title>
 <link rel="stylesheet" href="vendor/leaflet/leaflet.css">
 <link rel="stylesheet" href="style.css">
 </head>
-<body>
+<body data-view="lookahead">
 <header>
-  <button id="toggle-panel" title="Show / hide panel" aria-label="Toggle panel">☰</button>
-  <h1>Track Map</h1>
-  <div id="readout" aria-live="polite">Hover a track for its milepost</div>
-  <div class="zoom">
+  <button id="toggle-panel" class="map-only" title="Show / hide panel" aria-label="Toggle panel">☰</button>
+  <h1>Track Plan</h1>
+  <nav class="views" role="tablist" aria-label="Views">
+    <button type="button" role="tab" data-view="lookahead">Look-ahead</button>
+    <button type="button" role="tab" data-view="tawr">TAWRs <span id="tawr-count" class="count" hidden></span></button>
+    <button type="button" role="tab" data-view="map">Track plan</button>
+  </nav>
+  <div id="readout" class="map-only" aria-live="polite">Hover a track for its milepost</div>
+  <div class="zoom map-only">
     <button id="zoom-in" title="Zoom in">+</button>
     <button id="zoom-out" title="Zoom out">−</button>
     <button id="zoom-fit" title="Fit whole sheet">Fit</button>
   </div>
+  <div id="who"></div>
 </header>
 
 <main>
-  <aside id="panel">
-    <nav class="tabs" role="tablist">
-      <button role="tab" data-tab="requests" class="active">Access requests</button>
-      <button role="tab" data-tab="find">Find</button>
-      <button role="tab" data-tab="layers">Layers</button>
-    </nav>
+  <section id="view-map" class="view">
+    <aside id="panel">
+      <nav class="tabs" role="tablist">
+        <button role="tab" data-tab="pick" hidden>Link location</button>
+        <button role="tab" data-tab="onmap" class="active">On the map</button>
+        <button role="tab" data-tab="find">Find</button>
+        <button role="tab" data-tab="layers">Layers</button>
+      </nav>
 
-    <section id="tab-requests" class="tab active">
-      <form id="req-form" autocomplete="off">
-        <h2 id="req-form-title">New access request</h2>
-        <input type="hidden" name="id">
-        <h3>Work limits on the map</h3>
-        <div class="tools" role="group" aria-label="Map selection tools">
-          <button type="button" class="tool secondary" data-tool="box" title="Drag a box over a block of tracks">▭ Box select</button>
-          <button type="button" class="tool secondary" data-tool="path" title="Click a start point, then click along the track (through crossovers) to the end">⟿ Draw along track</button>
-          <button type="button" class="tool secondary" data-tool="piece" title="Click track pieces (crossovers, yard tracks...) to add or remove them">✚ Add / remove pieces</button>
-        </div>
-        <p id="tool-hint" class="small"></p>
-        <div id="selection" class="selection" hidden>
-          <div class="sel-head"><b>Selected track</b><button type="button" id="sel-clear" class="link">Clear</button></div>
-          <ul id="sel-list"></ul>
-        </div>
-        <details id="typed-limits">
-          <summary>…or type a track and milepost range</summary>
-          <div class="row">
-            <label>Track<select name="track_id"><option value="">—</option></select></label>
-            <label>From MP<input name="from_mp" type="number" step="0.001"></label>
-            <label>To MP<input name="to_mp" type="number" step="0.001"></label>
+      <section id="tab-pick" class="tab">
+        <form id="pick-form" autocomplete="off">
+          <h2>Select on track plan</h2>
+          <p class="pick-for">For <b id="pick-title"></b></p>
+          <label>Station, train control room (TCR), yard or platform
+            <select id="pick-location" name="location"></select></label>
+          <p class="small">…or click a blue pin on the map.</p>
+          <h3>Block of track</h3>
+          <div class="tools" role="group" aria-label="Map selection tools">
+            <button type="button" class="tool secondary" data-tool="box" title="Drag a box over a block of tracks">▭ Box select</button>
+            <button type="button" class="tool secondary" data-tool="path" title="Click a start point, then click along the track (through crossovers) to the end">⟿ Draw along track</button>
+            <button type="button" class="tool secondary" data-tool="piece" title="Click track pieces (crossovers, yard tracks...) to add or remove them">✚ Add / remove pieces</button>
           </div>
-        </details>
-        <label>Location (station or train control room)
-          <select name="location"><option value="">— none —</option></select></label>
-        <div class="row">
-          <label>Start<input name="start_time" type="datetime-local"></label>
-          <label>End<input name="end_time" type="datetime-local"></label>
-        </div>
-        <div class="row">
-          <label>Request #<input name="request_no"></label>
-          <label>Status<select name="status">
-            <option>requested</option><option>approved</option><option>active</option>
-            <option>completed</option><option>cancelled</option></select></label>
-        </div>
-        <div class="row">
-          <label>Work type<input name="work_type" list="work-types"></label>
-          <label>Requester<input name="requester"></label>
-        </div>
-        <datalist id="work-types">
-          <option>Track inspection</option><option>Track maintenance</option><option>Train control</option>
-          <option>Traction power</option><option>Structures</option><option>Vegetation</option><option>Other</option>
-        </datalist>
-        <label>Notes<textarea name="notes" rows="2"></textarea></label>
-        <p id="form-msg" class="msg" role="status"></p>
-        <div class="row actions">
-          <button type="submit" id="save">Save request</button>
-          <button type="button" id="cancel-edit" class="secondary" hidden>Cancel edit</button>
-        </div>
-      </form>
-      <div class="list-head">
-        <h2>Requests</h2>
-        <select id="status-filter" aria-label="Filter by status">
-          <option value="open">Open (not completed / cancelled)</option>
-          <option value="all">All</option>
-        </select>
-      </div>
-      <p id="store-note" class="small"></p>
-      <div class="row">
-        <button type="button" id="export" class="secondary">Export JSON</button>
-        <button type="button" id="import" class="secondary">Import JSON</button>
-        <input type="file" id="import-file" accept="application/json,.json" hidden>
-      </div>
-      <ul id="req-list"></ul>
-    </section>
+          <p id="tool-hint" class="small"></p>
+          <div id="selection" class="selection" hidden>
+            <div class="sel-head"><b>Selected track</b><button type="button" id="sel-clear" class="link">Clear</button></div>
+            <ul id="sel-list"></ul>
+          </div>
+          <details id="typed-limits">
+            <summary>…or type a track and milepost range</summary>
+            <div class="row">
+              <label>Track<select name="track_id"><option value="">—</option></select></label>
+              <label>From MP<input name="from_mp" type="number" step="0.001"></label>
+              <label>To MP<input name="to_mp" type="number" step="0.001"></label>
+            </div>
+          </details>
+          <p id="pick-msg" class="msg err" role="status"></p>
+          <div class="row actions">
+            <button type="submit" id="pick-save">Use this location</button>
+            <button type="button" id="pick-cancel" class="secondary">Cancel</button>
+          </div>
+          <p class="small">The location is written into the activity's Location cell on the look-ahead, and every TAWR raised from it takes its Area from here.</p>
+        </form>
+      </section>
 
-    <section id="tab-find" class="tab">
-      <form id="find-mp">
-        <h2>Go to milepost</h2>
-        <div class="row">
-          <label>Track<select name="track"></select></label>
-          <label>MP<input name="mp" type="number" step="0.001" required></label>
-          <button type="submit">Go</button>
-        </div>
-        <p class="msg" id="find-msg"></p>
-      </form>
-      <h2>Stations</h2>
-      <input id="station-filter" placeholder="Filter stations…" aria-label="Filter stations">
-      <ul id="station-list" class="plain"></ul>
-      <h2>Calibrated tracks</h2>
-      <table id="track-table"><thead><tr><th>Track</th><th>MP range</th></tr></thead><tbody></tbody></table>
-    </section>
+      <section id="tab-onmap" class="tab active">
+        <div id="onmap"></div>
+      </section>
 
-    <section id="tab-layers" class="tab">
-      <h2>Overlays</h2>
-      <label class="check"><input type="checkbox" id="lyr-requests" checked> Access requests</label>
-      <label class="check"><input type="checkbox" id="lyr-segs"> All selectable track, by type</label>
-      <label class="check"><input type="checkbox" id="lyr-routes"> Calibrated track centrelines</label>
-      <label class="check"><input type="checkbox" id="lyr-anchors"> Milepost anchor points</label>
-      <label class="check"><input type="checkbox" id="lyr-qa"> Labels needing review</label>
-      <div id="legend"></div>
-      <h2>Data</h2>
-      <p id="data-info" class="small"></p>
-    </section>
-  </aside>
+      <section id="tab-find" class="tab">
+        <form id="find-mp">
+          <h2>Go to milepost</h2>
+          <div class="row">
+            <label>Track<select name="track"></select></label>
+            <label>MP<input name="mp" type="number" step="0.001" required></label>
+            <button type="submit">Go</button>
+          </div>
+          <p class="msg" id="find-msg"></p>
+        </form>
+        <h2>Stations</h2>
+        <input id="station-filter" placeholder="Filter stations…" aria-label="Filter stations">
+        <ul id="station-list" class="plain"></ul>
+        <h2>Calibrated tracks</h2>
+        <table id="track-table"><thead><tr><th>Track</th><th>MP range</th></tr></thead><tbody></tbody></table>
+      </section>
 
-  <div id="viewport" tabindex="0" aria-label="Track map">
-    <div id="loading">Loading map…</div>
-  </div>
+      <section id="tab-layers" class="tab">
+        <h2>Overlays</h2>
+        <label class="check"><input type="checkbox" id="lyr-tawrs" checked> TAWRs, by status</label>
+        <label class="check"><input type="checkbox" id="lyr-activities" checked> Linked look-ahead activities</label>
+        <label class="check"><input type="checkbox" id="lyr-segs"> All selectable track, by type</label>
+        <label class="check"><input type="checkbox" id="lyr-routes"> Calibrated track centrelines</label>
+        <label class="check"><input type="checkbox" id="lyr-anchors"> Milepost anchor points</label>
+        <label class="check"><input type="checkbox" id="lyr-qa"> Labels needing review</label>
+        <div id="legend"></div>
+        <h2>Data</h2>
+        <p id="data-info" class="small"></p>
+      </section>
+    </aside>
+
+    <div id="viewport" tabindex="0" aria-label="Track map"></div>
+  </section>
+
+  <section id="view-lookahead" class="view" aria-label="Four-week look-ahead"></section>
+  <section id="view-tawr" class="view" aria-label="Track access work requests"></section>
+  <div id="loading">Loading…</div>
 </main>
+<div id="toasts" role="status" aria-live="polite"></div>
 <script src="vendor/leaflet/leaflet.js"></script>
-<script src="app.js"></script>
+<script type="module" src="js/main.js"></script>
 </body>
 </html>
