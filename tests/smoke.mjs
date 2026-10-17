@@ -229,10 +229,21 @@ async function flow(page, { mode }) {
   await page.locator('#onmap .clash-list li').first().click();
   await page.waitForTimeout(200);
   check('picking a conflict makes both requests glow', await page.locator('#viewport path.tawr-glow').count() >= 2);
+  /* Hover a point on the drawn line itself — a point inside its bounding box
+     need not be on the stroke — trying a few along it in case a pin covers one. */
   const line = page.locator('#viewport path.tawr-line').first();
-  const box = await line.boundingBox();
-  await page.mouse.move(box.x + box.width * 0.2, box.y + box.height / 2);
-  await page.waitForSelector('.leaflet-tooltip.map-tip');
+  for (const at of [0.3, 0.5, 0.7, 0.15, 0.85]) {
+    const pt = await line.evaluate((p, f) => {
+      const q = p.getPointAtLength(p.getTotalLength() * f);
+      const m = p.getScreenCTM();
+      return { x: q.x * m.a + q.y * m.c + m.e, y: q.x * m.b + q.y * m.d + m.f };
+    }, at);
+    await page.mouse.move(pt.x, pt.y, { steps: 4 });
+    if (await page.locator('.leaflet-tooltip.map-tip').isVisible()) break;
+    await page.waitForTimeout(150);
+    if (await page.locator('.leaflet-tooltip.map-tip').isVisible()) break;
+  }
+  await page.waitForSelector('.leaflet-tooltip.map-tip', { timeout: 5000 });
   const tipText = await page.textContent('.leaflet-tooltip.map-tip');
   await shot(page, `${mode}-2b-hover`);
   check('hovering a request shows its party, description and limits', /Party to action: BART/.test(tipText) && /IXL SIM Testing|Cable pull/.test(tipText) && /Limits: W2 MP/.test(tipText), tipText);
