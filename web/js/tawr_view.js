@@ -34,7 +34,7 @@ import {
 } from './ui.js';
 import { STATUS_COLOR } from './map.js';
 
-const V = { app: null, root: null, section: 'requests', picked: new Set(), history: false, focus: null };
+const V = { app: null, root: null, section: 'requests', picked: new Set(), open: new Set(), history: false, focus: null };
 
 /** Open with one request in view (from the map). */
 export function focus(id) { V.focus = id; }
@@ -86,11 +86,11 @@ function renderRequests(host) {
   const app = V.app;
   const week = app.week || T.dueWeek(app.today);
   const settings = app.settings || {};
-  const manager = S.isManager();
 
   host.append(el('div', { class: 'tawr-head' }, [
     el('h2', { text: 'Track access work requests' }),
-    el('p', { class: 'small', text: `One request per place and shift for the week, read off the look-ahead, with its Area from the track plan. Each is due ${T.TAWR_LEAD_DAYS} days before its first day. ${manager ? 'You approve, reject and consolidate them.' : S.writer() ? 'You review and submit them; the Track Allocation Manager approves them.' : 'Read only.'}` }),
+    el('p', { class: 'small', text: `One TAWR per place and shift each week, made from the look-ahead, with its limits from the track plan. Each is due ${T.TAWR_LEAD_DAYS} days before its first day.` }),
+    flowStrip(),
   ]));
 
   if (S.writer()) {
@@ -98,16 +98,20 @@ function renderRequests(host) {
     else if (!settings.requestor_name || !settings.requestor_signature) host.append(notice('info', 'The requester\'s name, cell phone or signature is not saved yet.', 'Every request goes out with them. Save them in Setup.', 'Open Setup'));
   }
 
-  /* The weeks. */
+  /* The weeks, each saying where its requests stand. */
   const weeks = app.weeks();
-  const counts = new Map();
-  for (const t of app.tawrs) if (live(t)) counts.set(t.week_start, (counts.get(t.week_start) || 0) + 1);
   const due = T.dueWeek(app.today);
-  host.append(el('div', { class: 'week-picker', role: 'group', 'aria-label': 'Week' }, weeks.map((w) => el('button', {
-    type: 'button', class: `week-btn${w === week ? ' on' : ''}${w === due ? ' due' : ''}`, dataset: { week: w },
-    'aria-pressed': String(w === week), title: `${dayLabel(w)} – ${dayLabel(T.addDaysISO(w, 6))}; due ${dayLabel(T.tawrDeadline(w))}`,
-    onClick: () => { app.setWeek(w); V.picked.clear(); rerender(); },
-  }, [`${dayLabel(w).slice(4)}`, w === due ? el('span', { class: 'tag', text: 'due now' }) : null, counts.get(w) ? el('span', { class: 'count', text: String(counts.get(w)) }) : null]))));
+  host.append(el('div', { class: 'week-picker', role: 'group', 'aria-label': 'Week' }, weeks.map((w) => {
+    const sum = weekSummary(app.tawrs, w);
+    return el('button', {
+      type: 'button', class: `week-btn${w === week ? ' on' : ''}${w === due ? ' due' : ''}`, dataset: { week: w },
+      'aria-pressed': String(w === week), title: `${dayLabel(w)} – ${dayLabel(T.addDaysISO(w, 6))}. Its TAWRs are due ${T.TAWR_LEAD_DAYS} days before their first day, from ${dayLabel(T.tawrDeadline(w))}.`,
+      onClick: () => { app.setWeek(w); V.picked.clear(); rerender(); },
+    }, [
+      el('span', { class: 'wk-date' }, [`Week of ${dayLabel(w).slice(4)}`, w === due ? el('span', { class: 'tag', text: 'due now' }) : null]),
+      el('span', { class: 'wk-sum', text: sum || 'nothing raised' }),
+    ]);
+  })));
 
   /* What the look-ahead says this week, and what has been saved. */
   const groups = extract(app, week);
@@ -119,7 +123,10 @@ function renderRequests(host) {
   items.sort((a, b) => (order[a.record?.status || 'none'] - order[b.record?.status || 'none'])
     || (a.group?.locationName || a.record?.location_name || '').localeCompare(b.group?.locationName || b.record?.location_name || ''));
 
-  const deadline = T.deadlineState(week, app.today);
+  /* Each request is due ${T.TAWR_LEAD_DAYS} days before its own first day: the week says the soonest still open. */
+  const open = items.filter((i) => ['none', 'draft', 'rejected'].includes(i.record?.status || 'none'))
+    .map((i) => i.group?.firstDay || i.record?.first_day || week).sort();
+  const deadline = open.length ? T.deadlineState(open[0], app.today) : null;
   const approved = items.filter((i) => i.record?.status === 'approved').map((i) => i.record);
   const notRaised = items.filter((i) => !i.record && i.group);
   const drafts = items.filter((i) => i.record?.status === 'draft');
@@ -128,12 +135,13 @@ function renderRequests(host) {
   const bar = el('div', { class: 'tawr-toolbar' }, [
     el('div', {}, [
       el('strong', { text: `${dayLabel(week)} – ${dayLabel(T.addDaysISO(week, 6))} ${week.slice(0, 4)}` }),
-      el('span', { class: `badge tone-${deadline.tone}`, text: `Due ${dayLabel(deadline.deadline)} · ${deadline.label}` }),
+      deadline ? el('span', { class: `badge tone-${deadline.tone}`, title: `TAWRs are due ${T.TAWR_LEAD_DAYS} days before their first day.`, text: `Next due ${dayLabel(deadline.deadline)} · ${deadline.label}` })
+        : items.length ? el('span', { class: 'badge tone-ok', text: 'Nothing left to submit' }) : null,
     ]),
     el('div', { class: 'tawr-actions' }, [
       S.writer() && (groups.length || drafts.length) ? el('button', {
         type: 'button', class: 'mini', dataset: { action: 'tawr-sync' },
-        text: notRaised.length ? `Raise ${notRaised.length} draft${notRaised.length === 1 ? '' : 's'} from the look-ahead` : 'Update drafts from the look-ahead',
+        text: notRaised.length ? `Raise ${notRaised.length} draft${notRaised.length === 1 ? '' : 's'} from the look-ahead` : 'Refresh from the look-ahead',
         title: 'One draft per place and shift. Drafts keep every change typed into them; submitted and approved requests are left alone.',
         onClick: async (e) => {
           e.currentTarget.disabled = true;
@@ -176,12 +184,34 @@ function renderRequests(host) {
       el('p', { text: 'Nothing is painted on the look-ahead this week, so there is nothing to request.' }),
       el('button', { type: 'button', class: 'mini', text: 'Go to the look-ahead', onClick: () => app.go('lookahead') }),
     ]));
+  } else {
+    const pickable = items.filter((i) => i.record && live(i.record)).map((i) => i.record.id);
+    const all = el('input', {
+      type: 'checkbox', class: 'pick-all', 'aria-label': 'Pick every request this week',
+      onChange: (e) => { for (const id of pickable) { if (e.target.checked) V.picked.add(id); else V.picked.delete(id); } rerender(); },
+    });
+    all.checked = pickable.length > 0 && pickable.every((id) => V.picked.has(id));
+    const clashes = T.conflicts(records.filter(live));
+    const table = el('table', { class: 'tawr-table' }, [
+      el('thead', {}, [el('tr', {}, [
+        el('th', { class: 'c-pick' }, [pickable.length ? all : null]),
+        ...['Request', 'When', 'Work', 'BART support', 'Status and next step'].map((h) => el('th', { text: h })),
+        el('th', { class: 'c-act' }, [el('span', { class: 'sr-only', text: 'Actions' })]),
+      ])]),
+      ...items.map((item) => card(item, items, clashes)),
+    ]);
+    host.append(el('div', { class: 'scroll-x' }, [table]));
   }
 
-  const list = el('div', { class: 'tawr-list' });
-  const clashes = T.conflicts(records.filter(live));
-  for (const item of items) list.append(card(item, items, clashes));
-  host.append(list);
+  /* Said once for the week, quietly, not on every request. */
+  const unexpanded = [...new Set(items.filter((i) => i.group && (!i.record || i.record.status === 'draft')).flatMap((i) => i.group.unexpanded || []))];
+  if (S.writer() && unexpanded.length) {
+    host.append(el('p', { class: 'small tawr-aside' }, [
+      `The form's Work Description gives only the activity's name for ${unexpanded.length === 1 ? unexpanded[0] : `${unexpanded.length} activities this week`}. `,
+      el('button', { type: 'button', class: 'link', text: 'Add fuller wording in Setup', onClick: () => { V.section = 'setup'; rerender(); } }),
+      ' if BART needs more.',
+    ]));
+  }
 
   const old = records.filter((r) => !live(r));
   if (old.length) {
@@ -200,9 +230,35 @@ function renderRequests(host) {
 
   if (V.focus) {
     const node = host.querySelector(`[data-tawr-id="${V.focus}"]`);
-    if (node) { node.classList.add('flash'); requestAnimationFrame(() => node.scrollIntoView({ block: 'center' })); }
+    if (node) {
+      setOpen(node, true);
+      node.classList.add('flash');
+      requestAnimationFrame(() => node.scrollIntoView({ block: 'center' }));
+    }
     V.focus = null;
   }
+}
+
+/** Where a request goes, step by step, with this account's step marked. */
+function flowStrip() {
+  const role = S.role();
+  const steps = [
+    ['Look-ahead', 'the work is painted', null],
+    ['Draft', 'the requester reviews and submits', 'requester'],
+    ['Submitted', 'the Track Allocation Manager approves', 'manager'],
+    ['Approved', 'downloaded as BART\'s form', null],
+  ];
+  return el('ol', { class: 'flow', 'aria-label': 'How a TAWR moves along' }, steps.map(([name, what, who]) => el('li', { class: who && who === role ? 'mine' : '' }, [
+    el('b', { text: name }), ` ${what}`, who && who === role ? el('span', { class: 'you', text: ' — you' }) : null,
+  ])));
+}
+
+/** "2 approved · 4 drafts": where a week's requests stand. */
+function weekSummary(tawrs, week) {
+  const by = {};
+  for (const t of tawrs) if (t.week_start === week && live(t)) by[t.status] = (by[t.status] || 0) + 1;
+  const plural = { draft: 'drafts', submitted: 'submitted', approved: 'approved', rejected: 'rejected' };
+  return ['draft', 'submitted', 'approved', 'rejected'].filter((s) => by[s]).map((s) => `${by[s]} ${by[s] === 1 ? statusName(s).toLowerCase() : plural[s]}`).join(' · ');
 }
 
 function notice(tone, title, detail, action = null) {
@@ -214,7 +270,81 @@ function notice(tone, title, detail, action = null) {
 
 /* ── One request ──────────────────────────────────────────────────────── */
 
-function card({ group, record }, items, clashes = []) {
+const KIND_WORD = { tcr: 'TCR', track: 'track', place: 'station or yard' };
+
+/* What a blocking flag comes to, in the few words the row has room for. */
+const BLOCKER = {
+  no_location: 'an activity has no location',
+  location_unlinked: 'a location is not linked to the track plan',
+  colour_unmapped: 'painted in a colour the legend does not know',
+  gone: 'it is no longer on the look-ahead',
+};
+
+/**
+ * Whose turn it is, and by when, in words: `{ text, tone }` where tone is
+ * `you` (this account's move), `wait`, `done` or `bad`.
+ */
+function nextStep(record, blocking, due, conflicted = false) {
+  const wf = S.store.workflow;
+  const role = S.role();
+  const status = record?.status || 'none';
+  const by = due.daysLeft < 0 ? `— it was due ${dayLabel(due.deadline)}` : `by ${dayLabel(due.deadline)}`;
+  if (status === 'none') return S.writer() ? { tone: 'you', text: 'Not raised yet: raise a draft' } : { tone: 'wait', text: 'Not raised yet' };
+  if (status === 'draft') {
+    if (blocking.length) return { tone: 'bad', text: `Fix first: ${BLOCKER[blocking[0].kind] || blocking[0].message}${blocking.length > 1 ? ` (and ${blocking.length - 1} more)` : ''}` };
+    if (T.may(wf, role, 'submit', status)) return { tone: due.daysLeft < 0 ? 'bad' : 'you', text: `Your turn: review and submit ${by}` };
+    return { tone: 'wait', text: 'With the requester, not submitted yet' };
+  }
+  if (status === 'submitted') {
+    if (!T.may(wf, role, 'approve', status)) return { tone: 'wait', text: 'Waiting for the Track Allocation Manager' };
+    return { tone: 'you', text: conflicted ? 'Your turn: settle the conflict, then approve or reject' : 'Your turn: approve or reject' };
+  }
+  if (status === 'approved') return { tone: 'done', text: S.writer() ? 'Approved: download BART\'s form' : 'Approved' };
+  if (status === 'rejected') return role === 'requester' ? { tone: 'you', text: 'Rejected: reopen, correct and submit again' } : { tone: 'wait', text: 'Rejected: back with the requester' };
+  return { tone: 'wait', text: statusName(status) };
+}
+
+/** "Mon 9, Tue 10 Nov": the days, short. */
+function daysShort(days) {
+  if (!days.length) return '—';
+  const labels = days.map((d) => dayLabel(d.date));
+  const months = new Set(labels.map((l) => l.slice(-3)));
+  return months.size === 1 ? `${labels.map((l) => l.slice(0, -4)).join(', ')} ${[...months][0]}` : labels.join(', ');
+}
+
+/** "2300–0500", or that the hours differ from day to day. */
+function hoursShort(days) {
+  const hours = [...new Set(days.map((d) => `${d.start || '?'}–${d.end || '?'}`))];
+  return hours.length === 1 ? hours[0] : hours.length ? 'hours differ by day' : '';
+}
+
+function supportText(support) {
+  return [
+    support.filter((s) => s.line === 'systems').map((s) => (s.count > 1 ? `${s.count} x ${s.label}` : s.label)).join(', '),
+    support.filter((s) => s.line === 'occ').map((s) => `OCC: ${s.label}`).join(', '),
+  ].filter(Boolean).join(' · ') || 'None';
+}
+
+/** The other requests made from the same activities, as the other kind of work: a TCR's track request, and back. */
+function partners(item, kind, items) {
+  const rows = new Set((item.group?.activities || item.record?.source?.activities || []).map((a) => a.row).filter(Boolean));
+  if (!rows.size) return [];
+  return items.filter((o) => o !== item && (o.group?.kind || o.record?.source?.kind) !== kind
+    && (o.group?.activities || o.record?.source?.activities || []).some((a) => rows.has(a.row)));
+}
+
+function setOpen(node, open) {
+  node.classList.toggle('open', open);
+  node.querySelector('.tawr-detail').hidden = !open;
+  const toggle = node.querySelector('.tawr-toggle');
+  toggle.setAttribute('aria-expanded', String(open));
+  toggle.textContent = open ? 'Hide details' : 'Details';
+  const key = node.dataset.tawrKey || node.dataset.tawrId;
+  if (open) V.open.add(key); else V.open.delete(key);
+}
+
+function card(item, items, clashes = []) {
+  const { group, record } = item;
   const app = V.app;
   const status = record?.status || 'none';
   const src = group ? null : record?.source || {};
@@ -235,34 +365,103 @@ function card({ group, record }, items, clashes = []) {
   const edited = record ? T.editedKeys(record.fields, record.generated) : [];
   const overlaps = (group?.overlaps || []).map((o) => ({ ...o, item: items.find((i) => i.group?.key === o.key) })).filter((o) => o.item);
   const merged = String(record?.group_key || group?.key || '').startsWith('merge:');
+  const mine = clashes.filter((x) => record && (x.a.id === record.id || x.b.id === record.id));
+  const next = nextStep(record, blocking, due, mine.length > 0);
+  const pairs = partners(item, kind, items);
+  const key = group?.key || record?.group_key || '';
+  const open = V.open.has(key || String(record?.id || ''));
 
-  const node = el('article', {
-    class: `tawr-card st-${status}`, style: `--c:${STATUS_COLOR[status] || '#9ca3af'}`,
-    dataset: { tawrKey: group?.key || record?.group_key || '', tawrStatus: status, tawrId: record?.id || '' },
+  const node = el('tbody', {
+    class: `tawr-card st-${status}${open ? ' open' : ''}`, style: `--c:${STATUS_COLOR[status] || '#9ca3af'}`,
+    dataset: { tawrKey: key, tawrStatus: status, tawrId: record?.id || '' },
     'aria-label': `${name}, ${T.tawrShiftLabel(shift)} shift — ${statusName(status)}`,
   });
+
+  /* The row: enough to know what it is and what happens next. */
   const pick = record && live(record) ? el('input', {
     type: 'checkbox', class: 'pick', 'aria-label': `Pick #${record.id}`,
     onChange: (e) => { if (e.target.checked) V.picked.add(record.id); else V.picked.delete(record.id); rerender(); },
   }) : null;
   if (pick) pick.checked = V.picked.has(record.id);
-  node.append(el('header', {}, [
-    pick,
-    el('h3', { text: `${record ? `#${record.id} ` : ''}${name}` }),
-    el('span', { class: `badge kind-${kind}`, title: kind === 'tcr' ? 'Work in the train control room — never on the same request as track' : kind === 'track' ? 'Work on the track, between these limits' : '', text: T.PART_KINDS[kind] || kind }),
-    el('span', { class: 'badge', text: `${T.tawrShiftLabel(shift)} shift` }),
-    el('span', { class: 'pill', style: `--c:${STATUS_COLOR[status] || '#9ca3af'}`, text: statusName(status) }),
-    merged ? el('span', { class: 'badge', text: `Consolidated from ${(view.members || group?.members || []).length}` }) : null,
-    ['approved', 'none'].includes(status) && status !== 'none' ? null : el('span', { class: `badge tone-${due.tone}`, text: due.label }),
-  ]));
-
   const days = view.days || [];
   const activities = view.activities || [];
   const support = view.support || [];
-  const sswp = view.sswp || [];
+  const parties = [...new Set(activities.map((a) => a.party).filter(Boolean))];
+
+  const wf = S.store.workflow;
+  const role = S.role();
+  const available = record ? T.actionsFor(wf, role, record.status).filter((a) => !['consolidate', 'split'].includes(a) && !(a === 'discard' && merged)) : [];
+  const primary = !record ? (group && S.writer() ? 'raise' : null)
+    : ['submit', 'approve', 'reopen'].find((a) => available.includes(a)) || (record.status === 'approved' && S.writer() ? 'download' : null);
+  const stepButton = (action, text = wf.actions[action].label) => {
+    const rule = wf.actions[action];
+    const stopped = rule.unblocked && blocking.length;
+    return button(text, `tawr-${action}`, () => act(record, action), {
+      primary: ['submit', 'approve'].includes(action), danger: ['reject', 'discard'].includes(action), disabled: stopped,
+      title: stopped ? `Cannot be ${action === 'submit' ? 'submitted' : 'approved'} yet: ${blocking.map((f) => f.message).join(' ')}` : '',
+    });
+  };
+  const rowActions = [];
+  if (record) {
+    const editable = T.canEdit(wf, role, record.status);
+    rowActions.push(button(editable ? 'Review' : 'View', editable ? 'tawr-review' : 'tawr-view', () => openReview(record, group, { readOnly: !editable, blocking })));
+  }
+  if (primary === 'raise') {
+    rowActions.push(button('Raise draft', 'tawr-raise', async () => {
+      try { await S.createTawr(recordOf(app, group)); } catch (err) { toast(err.message, 'bad'); }
+      refresh();
+    }, { primary: true }));
+  } else if (primary === 'download') {
+    rowActions.push(button('Download PDF', 'tawr-download', () => downloadOne(record), { primary: true }));
+  } else if (primary) rowActions.push(stepButton(primary, { submit: 'Submit', approve: 'Approve', reopen: 'Reopen' }[primary]));
+  if ((view.place?.geometry?.length || view.place?.places?.length) && record) {
+    rowActions.push(button('Map', 'tawr-map', () => app.showTawrOnMap(record), { title: 'Show it on the track plan' }));
+  }
+  const toggle = el('button', { type: 'button', class: 'mini secondary tawr-toggle', 'aria-expanded': String(open), text: open ? 'Hide details' : 'Details', onClick: () => setOpen(node, !node.classList.contains('open')) });
+  rowActions.push(toggle);
+
+  const attention = [];
+  for (const c of mine) attention.push(el('span', { class: 'chip-bad', text: `Conflict with #${(c.a.id === record.id ? c.b : c.a).id}` }));
+  if (changed.length) attention.push(el('span', { class: 'chip-bad', text: 'Look-ahead has changed' }));
+  if (overlaps.length && S.isManager()) attention.push(el('span', { class: 'chip-info', text: `Overlaps ${overlaps.map((o) => (o.item.record ? `#${o.item.record.id}` : o.locationName)).join(', ')} — can consolidate` }));
+
+  const row = el('tr', {
+    class: 'tawr-row',
+    onClick: (e) => { if (!e.target.closest('button, input, a, select, label')) setOpen(node, !node.classList.contains('open')); },
+  }, [
+    el('td', { class: 'c-pick' }, [pick]),
+    el('td', { class: 'c-req' }, [
+      el('h3', { text: `${record ? `#${record.id} ` : ''}${name}` }),
+      el('div', { class: 'chips' }, [
+        el('span', { class: `badge kind-${kind}`, title: kind === 'tcr' ? 'Work in the train control room — never on the same request as track' : kind === 'track' ? 'Work on the track, between these limits' : '', text: T.PART_KINDS[kind] || kind }),
+        merged ? el('span', { class: 'badge', text: `Consolidated from ${(view.members || group?.members || []).length}` }) : null,
+      ]),
+      pairs.length ? el('div', { class: 'small pair', title: 'A TCR and track are separate categories of work, so the same activity makes one request for each.', text: `Goes with ${pairs.map((p) => `${p.record ? `#${p.record.id}` : p.group?.locationName} (${KIND_WORD[p.group?.kind || p.record?.source?.kind] || 'other'})`).join(', ')} — same activity` }) : null,
+    ]),
+    el('td', { class: 'c-when' }, [
+      el('span', { class: 'badge', text: `${T.tawrShiftLabel(shift)} shift` }),
+      el('div', { text: daysShort(days) }),
+      el('div', { class: 'small', text: hoursShort(days) }),
+    ]),
+    el('td', { class: 'c-work' }, [
+      activities[0] ? el('div', { text: [activities[0].activityId, activities[0].title].filter(Boolean).join(' · ') }) : el('div', { text: '—' }),
+      activities.length > 1 ? el('div', { class: 'small', text: `and ${activities.length - 1} more` }) : null,
+      parties.length ? el('div', { class: 'small', text: parties.join(', ') }) : null,
+    ]),
+    el('td', { class: 'c-sup', text: supportText(support) }),
+    el('td', { class: 'c-status' }, [
+      el('span', { class: 'pill', style: `--c:${STATUS_COLOR[status] || '#9ca3af'}`, text: statusName(status) }),
+      el('div', { class: `next tone-${next.tone}`, text: next.text }),
+      attention.length ? el('div', {}, attention) : null,
+    ]),
+    el('td', { class: 'c-act' }, rowActions),
+  ]);
+
+  /* The details: everything it says, what needs attention, and the rest of what can be done. */
   const area = (frozen ? record.fields?.row1_area : null) || view.area || name;
-  node.append(el('dl', { class: 'facts' }, [
-    el('dt', { text: 'Area' }), el('dd', { class: 'area', text: area }),
+  const sswp = view.sswp || [];
+  const facts = el('dl', { class: 'facts' }, [
+    el('dt', { text: 'Where' }), el('dd', { class: 'area', text: area }),
     el('dt', { text: 'Days' }),
     el('dd', { text: days.map((d) => `${dayLabel(d.date)} ${d.start || '?'}–${d.end || '?'}${d.fromShift ? ' (shift hours)' : ''}`).join(' · ') || '—' }),
     el('dt', { text: 'Work' }),
@@ -272,35 +471,34 @@ function card({ group, record }, items, clashes = []) {
       a.party ? el('div', { class: 'small', text: `Party to action: ${a.party}` }) : null,
       a.crew?.length ? el('div', { class: 'small', text: `Crew: ${a.crew.join(', ')}` }) : null,
     ]))),
-    el('dt', { text: 'BART support' }),
-    el('dd', { text: [support.filter((s) => s.line === 'systems').map((s) => (s.count > 1 ? `${s.count} x ${s.label}` : s.label)).join(', '), support.filter((s) => s.line === 'occ').map((s) => `OCC: ${s.label}`).join(', ')].filter(Boolean).join(' · ') || 'None' }),
-    sswp.length ? el('dt', { text: 'SSWP' }) : null,
+    el('dt', { text: 'BART support' }), el('dd', { text: supportText(support) }),
+    sswp.length ? el('dt', { text: 'SSWP #' }) : null,
     sswp.length ? el('dd', { text: sswp.join(', ') }) : null,
-  ]));
+  ]);
 
-  const notes = el('ul', { class: 'flags' });
-  for (const f of flags) notes.append(el('li', { class: f.blocking ? 'block' : 'note', text: f.message }));
-  for (const o of overlaps) {
-    const other = o.item.record;
-    notes.append(el('li', { class: 'overlap' }, [
-      `Overlaps ${other ? `#${other.id} ` : ''}${o.locationName} on the drawing${o.days.length ? `, on ${o.days.map(dayLabel).join(', ')}` : ' this week'}. `,
-      record && other && T.may(S.store.workflow, S.role(), 'consolidate', record.status) && T.may(S.store.workflow, S.role(), 'consolidate', other.status)
-        ? el('button', { type: 'button', class: 'mini', dataset: { action: 'consolidate-pair' }, text: `Consolidate with #${other.id}`, onClick: () => consolidate([record, other]) })
-        : el('span', { class: 'small', text: S.isManager() ? '' : 'The Track Allocation Manager can consolidate them into one.' }),
-    ]));
-  }
-  for (const c of clashes.filter((x) => record && (x.a.id === record.id || x.b.id === record.id))) {
+  const needs = el('ul', { class: 'flags attention' });
+  for (const f of blocking) needs.append(el('li', { class: 'block', text: f.message }));
+  for (const c of mine) {
     const other = c.a.id === record.id ? c.b : c.a;
-    notes.append(el('li', { class: 'block clash' }, [
+    needs.append(el('li', { class: 'block clash' }, [
       `Conflicts with #${other.id} ${other.location_name} (${statusName(other.status).toLowerCase()}): the same ${record.source?.kind === 'tcr' ? 'room' : 'track'} at the same time on ${c.when.map((w) => `${dayLabel(w.date)} (${w.a} / ${w.b})`).join(', ')}. `,
       el('button', { type: 'button', class: 'mini secondary', text: 'See it on the track plan', onClick: () => app.showTawrOnMap(record) }),
     ]));
   }
-  if (changed.length) notes.append(el('li', { class: 'block', text: `The look-ahead has changed since this was ${status} (${changed.map(label).join(', ')}). ${status === 'approved' ? 'Revise it if the request should follow.' : status === 'submitted' ? 'Withdraw it to bring it up to date.' : 'Reopen it to bring it up to date.'}` }));
-  if (record?.status === 'draft' && record.source?.conflicts?.length) notes.append(el('li', { class: 'note', text: `Kept your change where the look-ahead now says something else: ${record.source.conflicts.map(label).join(', ')}.` }));
-  if (group?.unexpanded?.length && !frozen) notes.append(el('li', { class: 'note', text: `No expanded wording for: ${group.unexpanded.join(', ')}. Add it in Setup.` }));
-  if (record?.decision_note && record.status === 'rejected') notes.append(el('li', { class: 'block', text: `Rejected: ${record.decision_note}` }));
-  if (notes.childNodes.length) node.append(notes);
+  if (changed.length) needs.append(el('li', { class: 'block', text: `The look-ahead has changed since this was ${status} (${changed.map(label).join(', ')}). ${status === 'approved' ? 'Revise it if the request should follow.' : status === 'submitted' ? 'Withdraw it to bring it up to date.' : 'Reopen it to bring it up to date.'}` }));
+  if (record?.decision_note && record.status === 'rejected') needs.append(el('li', { class: 'block', text: `Rejected: ${record.decision_note}` }));
+  for (const o of overlaps) {
+    const other = o.item.record;
+    needs.append(el('li', { class: 'overlap' }, [
+      `Overlaps ${other ? `#${other.id} ` : ''}${o.locationName} on the drawing${o.days.length ? `, on ${o.days.map(dayLabel).join(', ')}` : ' this week'}. `,
+      record && other && T.may(wf, role, 'consolidate', record.status) && T.may(wf, role, 'consolidate', other.status)
+        ? el('button', { type: 'button', class: 'mini', dataset: { action: 'consolidate-pair' }, text: `Consolidate with #${other.id}`, onClick: () => consolidate([record, other]) })
+        : el('span', { class: 'small', text: S.isManager() ? '' : 'The Track Allocation Manager can consolidate them into one.' }),
+    ]));
+  }
+
+  const notes = flags.filter((f) => !f.blocking).map((f) => f.message);
+  if (record?.status === 'draft' && record.source?.conflicts?.length) notes.push(`Kept your change where the look-ahead now says something else: ${record.source.conflicts.map(label).join(', ')}.`);
 
   const meta = [];
   if (record) {
@@ -309,44 +507,28 @@ function card({ group, record }, items, clashes = []) {
     if (record.decided_at && ['approved', 'rejected'].includes(record.status)) meta.push(`${record.status} ${stampLabel(record.decided_at)}`);
     if (edited.length) meta.push(`${edited.length} field${edited.length === 1 ? '' : 's'} changed by hand`);
   } else meta.push('Not raised yet.');
-  node.append(el('p', { class: 'small meta', text: meta.join(' · ') }));
-  if (record?.history?.length) {
-    node.append(el('details', { class: 'history' }, [
+
+  const more = el('div', { class: 'card-actions' });
+  for (const action of available) if (action !== primary) more.append(stepButton(action));
+  if (record && merged && T.may(wf, role, 'split', record.status)) more.append(button('Split back up', 'tawr-split', () => splitUp(record)));
+  if (record && S.writer() && record.status !== 'approved') more.append(button('Preview PDF', 'tawr-preview', () => downloadOne(record, { draft: true })));
+
+  const detail = el('tr', { class: 'tawr-detail', hidden: !open || null }, [el('td', { colSpan: 7 }, [
+    facts,
+    needs.childNodes.length ? needs : null,
+    notes.length ? el('details', { class: 'notes' }, [
+      el('summary', { text: `${notes.length} note${notes.length === 1 ? '' : 's'}` }),
+      el('ul', { class: 'flags' }, notes.map((n) => el('li', { class: 'note', text: n }))),
+    ]) : null,
+    el('p', { class: 'small meta', text: meta.join(' · ') }),
+    record?.history?.length ? el('details', { class: 'history' }, [
       el('summary', { text: 'History' }),
       el('ol', {}, record.history.map((h) => el('li', { text: `${stampLabel(h.at)} — ${h.by}: ${h.action}${h.note ? ` (“${h.note}”)` : ''}` }))),
-    ]));
-  }
+    ]) : null,
+    more.childNodes.length ? more : null,
+  ])]);
 
-  const actions = el('div', { class: 'card-actions' });
-  const wf = S.store.workflow;
-  const role = S.role();
-  if (!record && group && S.writer()) {
-    actions.append(button('Raise draft', 'tawr-raise', async () => {
-      try { await S.createTawr(recordOf(app, group)); } catch (err) { toast(err.message, 'bad'); }
-      refresh();
-    }, { primary: true }));
-  }
-  if (record) {
-    const editable = T.canEdit(wf, role, record.status);
-    actions.append(button(editable ? 'Review' : 'View', editable ? 'tawr-review' : 'tawr-view', () => openReview(record, group, { readOnly: !editable, blocking })));
-    for (const action of T.actionsFor(wf, role, record.status)) {
-      if (['consolidate', 'split'].includes(action)) continue;
-      if (action === 'discard' && merged) continue;
-      const rule = wf.actions[action];
-      const stopped = rule.unblocked && blocking.length;
-      actions.append(button(rule.label, `tawr-${action}`, () => act(record, action), {
-        primary: ['submit', 'approve'].includes(action), danger: ['reject', 'discard'].includes(action), disabled: stopped,
-        title: stopped ? `Cannot be ${action === 'submit' ? 'submitted' : 'approved'} yet: ${blocking.map((f) => f.message).join(' ')}` : '',
-      }));
-    }
-    if (merged && T.may(wf, role, 'split', record.status)) actions.append(button('Split back up', 'tawr-split', () => splitUp(record)));
-    if (S.writer()) {
-      actions.append(button(record.status === 'approved' ? 'Download PDF' : 'Preview PDF', record.status === 'approved' ? 'tawr-download' : 'tawr-preview',
-        () => downloadOne(record, { draft: record.status !== 'approved' }), { primary: record.status === 'approved' }));
-    }
-  }
-  if ((view.place?.geometry?.length || view.place?.places?.length) && record) actions.append(button('Show on track plan', 'tawr-map', () => app.showTawrOnMap(record)));
-  if (actions.childNodes.length) node.append(actions);
+  node.append(row, detail);
   return node;
 }
 
@@ -515,14 +697,39 @@ const TRANS_LINES = [
   ['trans_train_operators', 'Train Operator(s)'], ['trans_single_tracking', 'Single Tracking'], ['trans_occ_support', 'OCC Support'],
 ];
 
+/* What BART usually needs on a request, checked as the Review is typed into. */
+const NEEDED = [
+  ['Requestor', (f) => f.requestor_name],
+  ['the requestor\'s cell phone', (f) => f.requestor_cell_phone],
+  ['Person in charge', (f) => f.person_in_charge_name],
+  ['the person in charge\'s cell phone', (f) => f.person_in_charge_cell_phone],
+  ['Category of Work', (f) => f.category_of_work],
+  ['Work Description', (f) => f.work_description],
+  ['Work/Activity in Track Zone (Yes or No)', (f) => f.work_in_track_zone_yes || f.work_in_track_zone_no],
+  ['a date with its start, end and area', (f) => f.row1_date && f.row1_time_start && f.row1_time_end && f.row1_area],
+];
+
 function openReview(record, group, { readOnly = false, blocking = [] } = {}) {
   const editor = formEditor(record, { readOnly });
   const fitBox = el('div', { class: 'small fit', 'aria-live': 'polite' });
+  const needBox = el('div', { class: 'need', 'aria-live': 'polite' });
+  const checkNeeded = () => {
+    const fields = editor.read();
+    const blank = NEEDED.filter(([, has]) => !has(fields)).map(([name]) => name);
+    needBox.className = `need ${blank.length ? 'need-some' : 'need-none'}`;
+    needBox.textContent = blank.length ? `Still blank: ${blank.join(', ')}. BART usually needs ${blank.length === 1 ? 'it' : 'them'} — it can be submitted without, but may come back.` : 'Everything BART usually needs is filled in.';
+  };
   const body = el('div', { class: 'review' }, [
     blocking.length ? el('div', { class: 'notice notice-bad' }, blocking.map((f) => el('div', { text: f.message }))) : null,
+    readOnly ? null : needBox,
     fitBox,
     editor.node,
   ]);
+  if (!readOnly) {
+    editor.node.addEventListener('input', checkNeeded);
+    editor.node.addEventListener('change', checkNeeded);
+    checkNeeded();
+  }
   let timer = null;
   const checkFit = () => {
     clearTimeout(timer);

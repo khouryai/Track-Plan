@@ -233,12 +233,23 @@ details .row { margin-top: 6px; }
 .subtabs { display: flex; gap: 4px; margin-bottom: 8px; }
 .subtabs button { background: none; color: var(--muted); border: none; border-bottom: 2px solid transparent; border-radius: 0; }
 .subtabs button[aria-selected=true] { color: var(--ink); border-bottom-color: var(--accent); }
-.tawr { max-width: 1100px; }
+.tawr { max-width: 1240px; }
 .tawr-head h2 { margin-top: 4px; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+/* How a request moves along, this account's step marked. */
+.flow { display: flex; flex-wrap: wrap; gap: 6px 22px; list-style: none; padding: 0; margin: 6px 0 10px; font-size: 12px; color: var(--muted); }
+.flow li { position: relative; padding: 4px 10px; background: #eef0f3; border-radius: 6px; }
+.flow li + li::before { content: '→'; position: absolute; left: -16px; color: #9aa0a8; }
+.flow li b { color: var(--ink); }
+.flow li.mine { background: #e3eefc; box-shadow: inset 0 0 0 1px #9db6e0; }
+.flow .you { font-weight: 700; color: var(--accent); }
 .week-picker { display: flex; flex-wrap: wrap; gap: 4px; margin: 8px 0; }
-.week-btn { background: #fff; color: var(--ink); border-color: var(--line); }
+.week-btn { background: #fff; color: var(--ink); border-color: var(--line); display: flex; flex-direction: column; align-items: flex-start; gap: 1px; padding: 4px 10px; text-align: left; }
+.week-btn .wk-date { font-weight: 600; }
+.week-btn .wk-sum { font-size: 11px; color: var(--muted); }
 .week-btn.on { background: var(--week); border-color: var(--week); color: #fff; }
-.week-btn .tag { font-size: 10px; margin-left: 4px; background: #fff1db; color: var(--warn); border-radius: 6px; padding: 0 4px; }
+.week-btn.on .wk-sum { color: #dce8fb; }
+.week-btn .tag { font-size: 10px; margin-left: 6px; background: #fff1db; color: var(--warn); border-radius: 6px; padding: 0 4px; font-weight: 600; }
 .tawr-toolbar { display: flex; flex-wrap: wrap; gap: 8px; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--line); margin-bottom: 10px; }
 .tawr-toolbar strong { margin-right: 8px; }
 .tawr-actions, .card-actions, .inline { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
@@ -247,13 +258,41 @@ details .row { margin-top: 6px; }
 .notice-warn { background: #fff6e6; border: 1px solid #f3d29a; }
 .notice-info { background: #eef4fd; border: 1px solid #c4d6f3; }
 .notice-bad { background: #fdecec; border: 1px solid #f1b5b5; display: block; }
-.tawr-list { display: grid; gap: 10px; }
-.tawr-card { background: #fff; border: 1px solid var(--line); border-left: 6px solid var(--c); border-radius: 8px; padding: 10px 12px; }
-.tawr-card.flash { animation: flash 1.6s ease-out; }
-@keyframes flash { from { box-shadow: 0 0 0 4px rgba(10,143,106,.5); } to { box-shadow: none; } }
-.tawr-card header { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
-.tawr-card h3 { margin: 0 6px 0 0; font-size: 15px; }
-.tawr-card .pick { width: 16px; height: 16px; }
+/* The week's requests: one row each, its details underneath when opened. */
+.tawr-table { width: 100%; border-collapse: separate; border-spacing: 0; background: #fff; border: 1px solid var(--line); border-radius: 8px; font-size: 13px; }
+.tawr-table thead th { text-align: left; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .03em; color: var(--muted); background: #fafbfc; padding: 8px; border-bottom: 1px solid var(--line); }
+.tawr-table td { padding: 8px; vertical-align: top; border-bottom: 1px solid #eceef1; }
+.tawr-row { cursor: pointer; }
+.tawr-row:hover td { background: #fafbfc; }
+.tawr-row td:first-child { box-shadow: inset 5px 0 0 var(--c); }
+.tawr-card.open .tawr-row td, .tawr-detail td { background: #f5f8fd; }
+.tawr-card.open .tawr-row td { border-bottom-color: transparent; }
+.tawr-detail td { padding: 0 12px 12px 41px; box-shadow: inset 5px 0 0 var(--c); }
+.tawr-card.flash td { animation: flash 1.6s ease-out; }
+@keyframes flash { from { background: rgba(10,143,106,.25); } to { background: transparent; } }
+.c-pick { width: 22px; }
+.tawr-table .pick, .tawr-table .pick-all { width: 16px; height: 16px; }
+.c-req { min-width: 190px; }
+.c-req h3 { margin: 0 0 3px; font-size: 14px; }
+.c-req .chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.c-req .pair { margin-top: 4px; color: #5b2a9a; }
+.c-when { min-width: 120px; }
+.c-when .badge { margin-bottom: 3px; }
+.c-work { min-width: 160px; }
+.c-sup { min-width: 70px; }
+.c-status { min-width: 180px; }
+.c-status .next { margin-top: 4px; font-size: 12px; line-height: 1.3; }
+.next.tone-you { color: var(--accent); font-weight: 600; }
+.next.tone-wait { color: var(--muted); }
+.next.tone-done { color: var(--good); font-weight: 600; }
+.next.tone-bad { color: var(--bad); font-weight: 600; }
+.chip-bad, .chip-info { display: inline-block; margin: 4px 4px 0 0; font-size: 11px; font-weight: 600; padding: 0 6px; border-radius: 8px; }
+.chip-bad { background: #fde5e5; color: var(--bad); }
+.chip-info { background: #f1e9fb; color: #6a35a8; }
+.c-act { text-align: right; white-space: nowrap; }
+.c-act button { margin: 0 0 4px 4px; }
+.notes summary { font-size: 12px; color: var(--warn); cursor: pointer; }
+.tawr-aside { color: var(--muted); margin: 8px 2px; }
 .facts { display: grid; grid-template-columns: 110px 1fr; gap: 3px 10px; margin: 8px 0; font-size: 13px; }
 .facts dt { color: var(--muted); }
 .facts dd { margin: 0; }
@@ -270,6 +309,9 @@ details .row { margin-top: 6px; }
 .tawr .empty { padding: 24px; text-align: center; color: var(--muted); }
 
 .review .fit { margin-bottom: 8px; }
+.need { font-size: 13px; border-radius: 6px; padding: 6px 10px; margin-bottom: 8px; }
+.need-some { background: #fff6e6; border: 1px solid #f3d29a; }
+.need-none { background: #e3f3ea; border: 1px solid #b6dcc6; color: var(--good); }
 .review .fit.warn { color: var(--bad); }
 .form fieldset { border: 1px solid var(--line); border-radius: 6px; margin: 0 0 10px; padding: 8px 10px; }
 .form legend { font-weight: 600; font-size: 13px; padding: 0 4px; }
@@ -327,7 +369,7 @@ details .row { margin-top: 6px; }
   .form .line, .form .grid2 { grid-template-columns: 1fr; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .tawr-card.flash { animation: none; }
+  .tawr-card.flash td { animation: none; }
 }
 
 /* ── The track plan: hover cards, the status filter, conflicts, the glow ── */

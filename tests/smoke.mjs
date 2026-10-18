@@ -214,7 +214,13 @@ async function flow(page, { mode }) {
   check('a requester is not offered consolidation', await page.locator('[data-action=consolidate-pair]').count() === 0);
   check('nor approval', await page.locator('[data-action=tawr-approve]').count() === 0);
   check('the party to action and the crew come off the look-ahead', /Party to action: BART/.test(await ixl.textContent()) && /Crew: Rosa, Victor/.test(await ixl.textContent()));
+  check('each request says whose turn it is, and by when', /^Your turn: review and submit by \w{3} \d+ \w{3}$/.test(await ixl.locator('.next').textContent()), await ixl.locator('.next').textContent());
+  check('a TCR request names the track request made from the same activity', new RegExp(`^Goes with #${await ixl.getAttribute('data-tawr-id')} \\(track\\)`).test(await tcr.locator('.pair').textContent()), await tcr.locator('.pair').textContent());
+  check('its details stay folded away until asked for', await ixl.locator('.tawr-detail').isHidden());
+  await ixl.locator('.tawr-toggle').click();
+  check('and open under the row', await ixl.locator('.tawr-detail .facts').isVisible());
   await ixl.locator('[data-action=tawr-review]').click();
+  check('the review says what BART usually needs that is still blank', /^Still blank: .*Person in charge/.test(await page.textContent('.modal .need')), await page.textContent('.modal .need'));
   await page.fill('.modal input[data-field=schedule_number]', 'S-123');
   await page.click('.modal [data-action=review-save]');
   await page.waitForSelector('.modal-back', { state: 'detached' });
@@ -274,7 +280,10 @@ async function manage(page, { mode }) {
   await page.waitForSelector('.tawr-card');
   check('the badge counts what is waiting for approval', (await page.textContent('#tawr-count')) === '3');
   check('the TCR request is not offered to consolidate with track', await card(page, 'Colma TCR').locator('[data-action=consolidate-pair]').count() === 0);
-  await page.locator('[data-action=consolidate-pair]').first().click();
+  check('the manager is told it is their turn', /^Your turn: settle the conflict, then approve or reject$/.test(await card(page, 'W2 MP 16.600–16.900').locator('.next').textContent()), await card(page, 'W2 MP 16.600–16.900').locator('.next').textContent());
+  const overlapping = page.locator('.tawr-card', { has: page.locator('[data-action=consolidate-pair]') }).first();
+  await overlapping.locator('.tawr-toggle').click();
+  await overlapping.locator('[data-action=consolidate-pair]').click();
   await page.click('.modal [data-action=confirm]');
   await page.waitForFunction(() => document.querySelectorAll('.tawr-card').length === 2);
   const one = card(page, 'W2 MP 16.600–17.200');

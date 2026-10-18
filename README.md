@@ -64,17 +64,23 @@ data extracted automatically from the drawing.
    request, and the TCR request says so. A track request is marked as work in the
    track zone, and each kind takes its own Category of Work from Setup. Drafts
    follow the look-ahead as it changes and keep anything typed into them by hand.
-4. **The requester reviews and submits** (*TAWRs* view): every field of BART's
-   form can be checked in *Review*; *Submit for approval* (one, or several picked
-   at once).
+4. **The requester reviews and submits** (*TAWRs* view). The week's requests
+   are a table, one row each: where, when, the work and its party, BART support,
+   and its status with **the next step in words** — *Your turn: review and submit
+   by Fri 23 Oct*, *Waiting for the Track Allocation Manager*, *Approved: download
+   BART's form*. *Details* opens the rest under the row: what needs attention
+   (in red), notes (folded away), history and the less common actions. A TCR
+   request names the track request made from the same activity. Every field of
+   BART's form can be checked in *Review*, which says what BART usually needs that
+   is still blank; *Submit* (one, or several picked at once).
 5. **The Track Allocation Manager decides.** Requests whose places **overlap** on
    the drawing — the same TCR, or track in common — in the same week and shift are
    named to each other; *Consolidate* makes them one request (the limits
    accumulated, support recounted, hand edits kept), and *Split back up* undoes
    it. A TCR request and a track request are never consolidated. Requests that want
    the same track (or room) **at the same time** — whatever their shift: a Blanket
-   from midnight meets the night shift before it — are marked as conflicts on their
-   cards and on the track plan. Then *Approve* or
+   from midnight meets the night shift before it — are marked as conflicts in their
+   rows and on the track plan. Then *Approve* or
    *Reject* (with a reason the requester sees), one by one or in bulk. An approved
    request is final: changing it is a *Revise*, which keeps the approved version
    as superseded. If two approved requests still repeat each other, the page says

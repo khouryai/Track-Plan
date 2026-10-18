@@ -541,7 +541,7 @@ function finish(g, { register, expanded, shiftHours }) {
   }
   for (const [title, where] of g.supportElsewhere || []) {
     flags.push({ kind: 'support_on_track', blocking: false,
-      message: `The BART support typed for "${title}" is asked for on its track request (${where}), not here — a TCR and track are separate requests. Add it in Review if the room needs its own.` });
+      message: `The BART support for "${title}" is asked for on its track request (${where}), not on this TCR request. Add it here in Review only if the room needs its own.` });
   }
   if (g.missing?.length) {
     flags.push({ kind: 'merge_partial', blocking: false,
