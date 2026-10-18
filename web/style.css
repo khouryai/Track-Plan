@@ -141,6 +141,14 @@ td, th { text-align: left; padding: 3px 6px; border-bottom: 1px solid var(--line
 .tools .tool.armed { background: var(--hover); border-color: var(--hover); color: #fff; }
 .selection { border: 1px solid var(--line); border-left: 4px solid var(--hover); border-radius: 6px; padding: 6px 8px; margin: 8px 0; font-size: 13px; }
 .selection ul { margin: 4px 0 0; padding-left: 18px; }
+#tab-pick h3 { display: flex; align-items: baseline; gap: 6px; margin: 14px 0 6px; font-size: 13px; }
+#tab-pick .step { display: inline-grid; place-items: center; width: 18px; height: 18px; border-radius: 50%; background: var(--hover); color: #fff; font-size: 11px; flex: none; }
+#tab-pick .opt { font-weight: 400; color: var(--muted); font-size: 12px; }
+#pick-find { width: 100%; margin-bottom: 4px; }
+#tab-pick details { margin: 6px 0; font-size: 13px; }
+#tab-pick details summary { cursor: pointer; color: var(--accent); }
+#tab-pick details .tools { margin-top: 6px; }
+.pick-split { font-size: 12px; background: #f1e9fb; border: 1px solid #d9c6f1; color: #4b2380; border-radius: 6px; padding: 6px 8px; margin: 8px 0; }
 .sel-head { display: flex; justify-content: space-between; align-items: center; }
 details { margin: 8px 0; font-size: 13px; }
 details summary { cursor: pointer; color: var(--accent); }

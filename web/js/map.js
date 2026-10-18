@@ -320,7 +320,7 @@ function showReadout(e) {
 
 const HINTS = {
   box: 'Drag a box over the block of tracks. Everything inside becomes part of the location.',
-  path: 'Click the start, then click along the track (through any crossover) to the end. Click the tool again or press Esc to finish.',
+  path: 'Click where the work starts on a track, then where it ends — through crossovers too. Keep clicking to take it further; press Esc when done.',
   piece: 'Click any piece of track - crossover, yard lead, middle track - to add it; click again to remove it.',
 };
 function toolPrompt(short) {
@@ -364,6 +364,7 @@ function onDraftChanged() {
     lims.some((l) => l.track) && lims.filter((l) => l.track).length > 1
       ? el('li', { class: 'small sel-inside', text: `Per track: ${lims.filter((l) => l.track).map((l) => limitText(l, { dash: '–' })).join(' · ')}` }) : null,
   ].filter(Boolean));
+  splitNote();
   renderDraft();
 }
 
@@ -835,15 +836,19 @@ export function pickLocation({ title, link = null }) {
   state.path = null;
   const f = $('#pick-form');
   f.reset();
+  fillLocations();
   $('#pick-location').value = link?.location_id || '';
   $('#pick-title').textContent = title;
   $('#pick-msg').textContent = '';
   $('#typed-limits').open = false;
+  $('#more-ways').open = false;
   document.querySelector('[data-tab=pick]').hidden = false;
   showTab('pick');
   $('#panel').classList.remove('hidden');
   renderPlaces();
   onDraftChanged();
+  // One obvious way to pick track: clicking along it is on from the start.
+  if (state.tool !== 'path') setTool('path');
   renderOverlay(); // drawn quiet while picking: hover shows, clicks go to the tools
   return new Promise((resolve) => { pickResolve = resolve; });
 }
@@ -918,11 +923,38 @@ function populateTracks() {
     tr.onclick = () => { const p = sliceTrack(t.id, t.from_mp, t.to_mp); if (p.length) zoomTo(...bboxOf(p), 60); };
     tb.append(tr);
   }
+  fillLocations();
+}
+
+/**
+ * The TCRs, stations, yards and platforms to choose from, grouped — only those
+ * whose name has every word typed into the find box. One match is chosen.
+ */
+function fillLocations(query = '') {
+  const words = query.toLowerCase().split(/\s+/).filter(Boolean);
+  const keep = (l) => words.every((w) => l.name.toLowerCase().includes(w));
+  const sel = $('#pick-location');
+  const was = sel.value;
   const groups = [['tcr', 'Train control rooms (TCR)'], ['station', 'Stations'], ['yard', 'Yards'], ['platform', 'Platforms']];
-  $('#pick-location').innerHTML = `<option value="">— no station or TCR —</option>${groups.map(([k, label]) => {
-    const items = state.data.locations.filter((l) => l.kind === k);
+  const found = state.data.locations.filter((l) => groups.some(([k]) => k === l.kind) && keep(l));
+  sel.innerHTML = `<option value="">${words.length ? `— ${found.length} found —` : '— no station or TCR —'}</option>${groups.map(([k, label]) => {
+    const items = found.filter((l) => l.kind === k);
     return items.length ? `<optgroup label="${label}">${items.map((l) => `<option value="${esc(l.id)}">${esc(l.name)}</option>`).join('')}</optgroup>` : '';
   }).join('')}`;
+  if (found.some((l) => l.id === was)) sel.value = was;
+  else if (words.length && found.length === 1) { sel.value = found[0].id; sel.dispatchEvent(new Event('change')); }
+}
+
+/** Say what the choice will raise: a TCR with track is two requests; a station with track is only the track. */
+function splitNote() {
+  const loc = pickedLocation();
+  const track = draftGeometry().concat(typedGeometry()).length > 0;
+  const note = $('#pick-split');
+  note.hidden = !(loc && track);
+  if (!loc || !track) return;
+  note.textContent = loc.kind === 'tcr'
+    ? `This makes two TAWRs: one for ${shortLocationName(loc.name)}, one for the track. A TCR and track are different categories of work, so they are never on one request.`
+    : `With track picked, the request gives the track limits; ${shortLocationName(loc.name)} is only where it is.`;
 }
 
 function renderLegend() {
@@ -989,8 +1021,10 @@ export function initMap(data, tileIndex) {
   $('#pick-location').addEventListener('change', () => {
     const loc = pickedLocation();
     if (loc) zoomTo(loc.x - 150, loc.y - 70, loc.x + 150, loc.y + 70, 0);
+    splitNote();
     renderDraft();
   });
+  $('#pick-find').addEventListener('input', (e) => fillLocations(e.target.value));
   $('#pick-form').addEventListener('submit', (e) => { e.preventDefault(); savePick(); });
   $('#pick-cancel').onclick = () => endPick(null);
 

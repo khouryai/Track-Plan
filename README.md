@@ -44,10 +44,14 @@ data extracted automatically from the drawing.
 2. **Link each activity's location** — hover its Location cell and press *Link*
    (or right-click it → *Select on track plan…*). Once linked, *Map* shows it on
    the track plan, and the cell's *#21* opens the TAWR made from it. After any
-   jump to the map, *← Back* returns to where you were. The map opens on that activity: choose a
-   station, its **TCR (train control room)**, a yard or a platform (or click a blue
-   pin), and/or a **block of track** — box-select it, draw along it through
-   crossovers, add pieces, or type a track and milepost range. **Only the limits
+   jump to the map, *← Back* returns to where you were. The map opens on that
+   activity, in two steps: **1** its **TCR (train control room)**, station, yard
+   or platform, if it has one — type to find it, or click a blue pin — and **2**
+   its **block of track**, if it is on the track: clicking along the track is on
+   from the start (click where the work starts, then where it ends, through
+   crossovers too); box select, adding pieces and typing a track and milepost
+   range are there as other ways. Choosing a TCR and track says it will make two
+   TAWRs. **Only the limits
    matter on the track**: however it was picked, the selection reads as the
    leftmost and rightmost milepost on each line with every track between —
    `W1+W2+W3 MP 23.747–24.446` — and the crossovers inside are not listed.

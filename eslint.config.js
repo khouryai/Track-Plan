@@ -11,7 +11,7 @@ export default [
         window: 'readonly', document: 'readonly', location: 'readonly', history: 'readonly', localStorage: 'readonly',
         indexedDB: 'readonly', fetch: 'readonly', Blob: 'readonly', URL: 'readonly', Response: 'readonly',
         DecompressionStream: 'readonly', TextDecoder: 'readonly', TextEncoder: 'readonly', crypto: 'readonly',
-        CustomEvent: 'readonly', Node: 'readonly', navigator: 'readonly', DOMParser: 'readonly', getComputedStyle: 'readonly', requestAnimationFrame: 'readonly',
+        CustomEvent: 'readonly', Event: 'readonly', Node: 'readonly', navigator: 'readonly', DOMParser: 'readonly', getComputedStyle: 'readonly', requestAnimationFrame: 'readonly',
         setTimeout: 'readonly', clearTimeout: 'readonly', setInterval: 'readonly', clearInterval: 'readonly', console: 'readonly',
       },
     },

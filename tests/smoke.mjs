@@ -132,17 +132,19 @@ async function typeIn(page, title, iso, text) {
   await page.keyboard.press('Enter');
 }
 
-async function link(page, title, { place = '', track = '', from = '', to = '' }) {
+async function link(page, title, { place = '', find = '', track = '', from = '', to = '', before = null }) {
   await rowOf(page, title).locator('td.la-m2').hover();
   await rowOf(page, title).locator('[data-action=loc-link]').click();
   await page.waitForSelector('#tab-pick.active');
-  if (place) await page.selectOption('#pick-location', place);
+  if (find) await page.fill('#pick-find', find);
+  else if (place) await page.selectOption('#pick-location', place);
   if (track) {
     await page.click('#typed-limits summary');
     await page.selectOption('#pick-form select[name=track_id]', track);
     await page.fill('#pick-form input[name=from_mp]', from);
     await page.fill('#pick-form input[name=to_mp]', to);
   }
+  if (before) await before();
   await page.click('#pick-save');
   await page.waitForSelector('#view-lookahead .la-grid');
 }
@@ -183,7 +185,14 @@ async function flow(page, { mode }) {
   await page.keyboard.press('Enter');
 
   console.log(`\n${mode}: Select on track plan`);
-  await link(page, 'IXL SIM Testing', { place: 'tcr:Colma', track: 'W2', from: '16.6', to: '16.9' });
+  await link(page, 'IXL SIM Testing', {
+    find: 'colma tcr', track: 'W2', from: '16.6', to: '16.9',
+    before: async () => {
+      check('the picker opens ready to click along the track', await page.locator('#tab-pick .tool.armed[data-tool=path]').count() === 1);
+      check('typing a name finds the TCR', (await page.$eval('#pick-location', (sel) => sel.value)) === 'tcr:Colma');
+      check('a TCR with track says it makes two TAWRs', await page.locator('#pick-split').isVisible() && /two TAWRs/.test(await page.textContent('#pick-split')), await page.textContent('#pick-split'));
+    },
+  });
   const loc = rowOf(page, 'IXL SIM Testing').locator('td.la-m2');
   check('the Location cell says the TCR and the track limits', /Colma TCR · W2 MP 16\.600–16\.900/.test(await loc.textContent()), await loc.textContent());
   check('and is marked as linked', await loc.evaluate((n) => n.classList.contains('loc-linked')));

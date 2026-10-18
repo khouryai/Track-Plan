@@ -38,36 +38,43 @@
 
       <section id="tab-pick" class="tab">
         <form id="pick-form" autocomplete="off">
-          <h2>Select on track plan</h2>
+          <h2>Pick the location</h2>
           <p class="pick-for">For <b id="pick-title"></b></p>
-          <label>Station, train control room (TCR), yard or platform
-            <select id="pick-location" name="location"></select></label>
+          <h3><span class="step">1</span> Train control room, station or yard <span class="opt">if it has one</span></h3>
+          <input id="pick-find" type="search" placeholder="Type to find, e.g. Daly City" aria-label="Find a TCR, station or yard">
+          <select id="pick-location" name="location" aria-label="TCR, station, yard or platform"></select>
           <p class="small">…or click a blue pin on the map.</p>
-          <h3>Block of track</h3>
+          <h3><span class="step">2</span> Block of track <span class="opt">if it is on the track</span></h3>
           <div class="tools" role="group" aria-label="Map selection tools">
-            <button type="button" class="tool secondary" data-tool="box" title="Drag a box over a block of tracks">▭ Box select</button>
-            <button type="button" class="tool secondary" data-tool="path" title="Click a start point, then click along the track (through crossovers) to the end">⟿ Draw along track</button>
-            <button type="button" class="tool secondary" data-tool="piece" title="Click track pieces (crossovers, yard tracks...) to add or remove them">✚ Add / remove pieces</button>
+            <button type="button" class="tool secondary" data-tool="path" title="Click where the work starts on a track, then where it ends — through crossovers too">⟿ Click along the track</button>
           </div>
           <p id="tool-hint" class="small"></p>
-          <div id="selection" class="selection" hidden>
-            <div class="sel-head"><b>Selected track</b><button type="button" id="sel-clear" class="link">Clear</button></div>
-            <ul id="sel-list"></ul>
-          </div>
+          <details id="more-ways">
+            <summary>Other ways to pick track</summary>
+            <div class="tools" role="group" aria-label="More selection tools">
+              <button type="button" class="tool secondary" data-tool="box" title="Drag a box over a block of tracks">▭ Box select</button>
+              <button type="button" class="tool secondary" data-tool="piece" title="Click track pieces (crossovers, yard tracks...) to add or remove them">✚ Add / remove pieces</button>
+            </div>
+          </details>
           <details id="typed-limits">
-            <summary>…or type a track and milepost range</summary>
+            <summary>Type a track and milepost range</summary>
             <div class="row">
               <label>Track<select name="track_id"><option value="">—</option></select></label>
               <label>From MP<input name="from_mp" type="number" step="0.001"></label>
               <label>To MP<input name="to_mp" type="number" step="0.001"></label>
             </div>
           </details>
+          <div id="selection" class="selection" hidden>
+            <div class="sel-head"><b>Selected track</b><button type="button" id="sel-clear" class="link">Clear</button></div>
+            <ul id="sel-list"></ul>
+          </div>
+          <p id="pick-split" class="pick-split" hidden></p>
           <p id="pick-msg" class="msg err" role="status"></p>
           <div class="row actions">
             <button type="submit" id="pick-save">Use this location</button>
             <button type="button" id="pick-cancel" class="secondary">Cancel</button>
           </div>
-          <p class="small">The location is written into the activity's Location cell on the look-ahead, and every TAWR raised from it takes its Area from here.</p>
+          <p class="small">It is written into the activity's Location cell on the look-ahead, and every TAWR raised from the activity takes its limits from here.</p>
         </form>
       </section>
 
