@@ -85,7 +85,10 @@ function pythonServer() {
 async function open(browser, base) {
   const context = await browser.newContext({ viewport: { width: 1500, height: 950 }, acceptDownloads: true });
   const page = await context.newPage();
-  await page.clock.setFixedTime(NOW);
+  // The page's clock starts at NOW and runs. Pinned (setFixedTime), new Date()
+  // never moves, and Leaflet times its pans with it: a pan never finished, and
+  // the map stayed on its first frame with the requests off-screen.
+  await page.clock.install({ time: NOW });
   const errors = [];
   page.on('console', (m) => {
     if (m.type() !== 'error') return;
@@ -378,17 +381,16 @@ async function sampleData(page, { mode }) {
  * A point where a request's line is what is actually under the mouse: on its
  * stroke, inside the map, not under a pin, a panel or a toast. The line may run
  * far off-screen after the zoom to a conflict, so its points are tested rather
- * than assumed — and only once the map has stopped. That zoom animates when it
- * is short enough (Leaflet's threshold, which a few pixels of panel width
- * decide), and a point found mid-zoom is elsewhere when it stops; so no zoom
- * may be running, and the same point has to be found twice, 100 ms apart.
+ * than assumed — and only once the map has stopped: a point found mid-zoom or
+ * mid-pan is elsewhere when it stops. So no zoom or pan may be running, and the
+ * same point has to be found twice, 100 ms apart.
  * When there is none, `why` says what is on top of each line instead.
  */
 async function lineUnderMouse(page) {
   await page.evaluate(() => { globalThis.__lineUnderMouse = null; });
   const found = await page.waitForFunction(() => {
     let at = null;
-    if (!document.querySelector('#viewport .leaflet-map-pane.leaflet-zoom-anim')) {
+    if (!document.querySelector('#viewport .leaflet-map-pane:is(.leaflet-zoom-anim, .leaflet-pan-anim)')) {
       search: for (const p of document.querySelectorAll('#viewport path.tawr-line')) {
         const len = p.getTotalLength();
         const m = p.getScreenCTM();
