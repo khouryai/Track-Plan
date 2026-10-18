@@ -363,7 +363,13 @@ async function sampleData(page, { mode }) {
   await page.click('.modal [data-action=sample-confirm]');
   await rowOf(page, 'Cable trough installation').waitFor();
   check('four weeks of W and M line work arrive, linked', await page.locator('tr.la-activity td.loc-linked').count() === 16);
-  await page.evaluate(() => { document.querySelector('.la-scroll').scrollLeft = 0; });
+  const fit = await page.evaluate(() => {
+    const sc = document.querySelector('.la-scroll');
+    const first = [...document.querySelectorAll('tr.la-activity')][0].querySelector('td.la-painted').getBoundingClientRect();
+    const box = sc.getBoundingClientRect();
+    return { fits: sc.scrollWidth <= sc.clientWidth + 1, left: sc.scrollLeft, seen: first.left >= box.left && first.right <= box.right };
+  });
+  check('the four weeks fit side by side, opened at the first', fit.fits && fit.left === 0 && fit.seen, JSON.stringify(fit));
   await shot(page, `${mode}-5a-sample-lookahead`);
   check('the look-ahead shows them from the coming Monday', (await page.locator('.la-week').first().getAttribute('data-week')) === '2026-10-19');
   // Acting as the manager here, the badge counts what is submitted; count the drafts themselves.

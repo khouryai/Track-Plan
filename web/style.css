@@ -175,15 +175,17 @@ details .row { margin-top: 6px; }
 .la-grid .la-meta { position: sticky; background: #fff; z-index: 2; overflow: hidden; text-overflow: ellipsis; }
 .la-grid thead .la-meta { z-index: 4; background: #f7f8fa; vertical-align: bottom; white-space: normal; line-height: 1.15; }
 .la-grid .la-meta-all { left: 0; text-align: left; color: var(--muted); font-weight: 500; font-size: 11px; }
-.la-m0 { left: 0; width: 84px; min-width: 84px; max-width: 84px; }
-.la-m1 { left: 84px; width: 250px; min-width: 250px; max-width: 250px; }
-.la-m2 { left: 334px; width: 210px; min-width: 210px; max-width: 210px; }
-.la-m3 { left: 544px; width: 56px; min-width: 56px; max-width: 56px; }
-.la-m4 { left: 600px; width: 66px; min-width: 66px; max-width: 66px; }
-.la-m5 { left: 666px; width: 84px; min-width: 84px; max-width: 84px; box-shadow: 2px 0 0 #c9ccd1; }
-.la-section-title { left: 0; width: 750px; max-width: 750px; box-shadow: 2px 0 0 #c9ccd1; }
-.la-grid .la-num, .la-grid .la-wd, .la-grid .la-day { width: 46px; min-width: 46px; max-width: 46px; text-align: center; }
-.la-grid .la-day { font: 11px ui-monospace, Menlo, monospace; cursor: cell; overflow: hidden; text-overflow: clip; }
+.la-m0 { left: 0; width: 70px; min-width: 70px; max-width: 70px; }
+.la-m1 { left: 70px; width: 182px; min-width: 182px; max-width: 182px; }
+.la-m2 { left: 252px; width: 210px; min-width: 210px; max-width: 210px; }
+.la-m3 { left: 462px; width: 54px; min-width: 54px; max-width: 54px; }
+.la-m4 { left: 516px; width: 66px; min-width: 66px; max-width: 66px; }
+.la-m5 { left: 582px; width: 82px; min-width: 82px; max-width: 82px; box-shadow: 2px 0 0 #c9ccd1; }
+.la-section-title { left: 0; width: 664px; max-width: 664px; box-shadow: 2px 0 0 #c9ccd1; }
+/* The day columns take their width from the table (lookahead_view.js), which shares out what the frozen columns leave. */
+.la-grid .la-num, .la-grid .la-wd, .la-grid .la-day { text-align: center; overflow: hidden; }
+.la-grid .la-day { font: 10px ui-monospace, Menlo, monospace; letter-spacing: -0.2px; padding: 2px 1px; cursor: cell; text-overflow: clip; }
+.la-grid .la-activity .la-day { white-space: normal; line-height: 10px; }
 .la-weekend { background-color: var(--weekend); }
 .la-grid thead .la-weekend { background: #eceef1; }
 .la-monday { border-left: 2px solid #c9ccd1 !important; }
@@ -201,7 +203,7 @@ details .row { margin-top: 6px; }
 .la-row.la-section td { background: var(--band); font-weight: 700; }
 .la-row.la-section .la-band { background: var(--band); }
 .la-row.la-resource td { color: #444; font-style: italic; background-color: #fbfbfc; }
-.la-row.la-resource .la-day { font: italic 11px system-ui, sans-serif; text-align: left; }
+.la-row.la-resource .la-day { font: italic 10px system-ui, sans-serif; text-align: left; }
 .la-row.la-resource .la-in-week:not(.la-painted) { background-color: var(--week-tint); }
 .la-painted { color: #111; }
 .la-dark { color: #fff !important; }

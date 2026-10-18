@@ -36,9 +36,11 @@ import { sampleLookahead, sampleStart } from './sample.js';
 const META = LA.FIELDS.length;
 const LOC = LA.FIELDS.findIndex((f) => f.key === 'location');
 /* The frozen columns' widths, which `.la-m0` … `.la-m5` in style.css are frozen at. */
-const META_WIDTHS = [84, 250, 210, 56, 66, 84];
+const META_WIDTHS = [70, 182, 210, 54, 66, 82];
 const META_WIDTH = META_WIDTHS.reduce((a, b) => a + b, 0);
-const DAY_WIDTH = 46;
+/* The days share whatever the frozen columns leave, so the four weeks fit a
+   laptop's width side by side; only narrower than this does the grid scroll. */
+const MIN_DAY_WIDTH = 26;
 
 const V = {
   app: null,
@@ -287,9 +289,10 @@ function draw() {
 
   /* Fixed layout takes its widths from here, not from the first row — which
      spans columns, and would leave the frozen columns narrower than the
-     offsets they are frozen at. */
-  const table = el('table', { class: 'la-grid', style: `width:${META_WIDTH + V.days.length * DAY_WIDTH}px` }, [
-    el('colgroup', {}, [...META_WIDTHS.map((w) => el('col', { style: `width:${w}px` })), ...V.days.map(() => el('col', { style: `width:${DAY_WIDTH}px` }))]),
+     offsets they are frozen at. The days are given no width, so they share
+     the rest equally. */
+  const table = el('table', { class: 'la-grid', style: `width:100%;min-width:${META_WIDTH + V.days.length * MIN_DAY_WIDTH}px` }, [
+    el('colgroup', {}, [...META_WIDTHS.map((w) => el('col', { style: `width:${w}px` })), ...V.days.map(() => el('col'))]),
   ]);
   const head = el('thead');
   head.append(el('tr', { class: 'la-weeks' }, [
@@ -384,11 +387,8 @@ function draw() {
   clear(wrap);
   wrap.append(scroll);
   V.scroll = scroll;
-  if (keepScroll) { scroll.scrollTop = keepScroll.top; scroll.scrollLeft = keepScroll.left; } else {
-    /* The first time: the TAWR week in view, with the week before it for context. */
-    const at = V.days.indexOf(V.app.week);
-    if (at > 7) scroll.scrollLeft = (at - 7) * DAY_WIDTH;
-  }
+  // The first time, it opens at its first week: where the work is soonest.
+  if (keepScroll) { scroll.scrollTop = keepScroll.top; scroll.scrollLeft = keepScroll.left; }
   clampSelection();
   paintSelection();
   if (hadFocus && !document.querySelector('.modal-back')) scroll.focus({ preventScroll: true });
@@ -396,10 +396,14 @@ function draw() {
 }
 
 /** Codes as written, a struck-out one drawn struck through. */
+/* A narrow day may wrap the codes after a dot ("TCE." over "WIT"), never inside one. */
 function codeNodes(td, text) {
-  if (!text.includes('~')) { td.textContent = text; return; }
+  if (!text.includes('~')) {
+    text.split('.').forEach((part, i) => { if (i) td.append('.', el('wbr')); td.append(part); });
+    return;
+  }
   LA.cellTokens(text).forEach((t, i) => {
-    if (i) td.append('.');
+    if (i) td.append('.', el('wbr'));
     td.append(t.cancelled ? el('span', { class: 'la-code-x', title: `${t.code} cancelled`, text: t.code }) : t.code);
   });
 }
