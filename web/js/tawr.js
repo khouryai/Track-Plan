@@ -529,10 +529,10 @@ function finish(g, { register, expanded, shiftHours }) {
     if (a.link) continue;
     if (!a.rawLocation) {
       flags.push({ kind: 'no_location', blocking: true, row: a.row,
-        message: `"${a.title}" has no location. Right-click its Location cell on the look-ahead and choose Select on track plan.` });
+        message: `"${a.title}" has no location. On the look-ahead, hover its Location cell and press Link to pick it on the track plan.` });
     } else {
       flags.push({ kind: 'location_unlinked', blocking: true, row: a.row,
-        message: `"${a.rawLocation}" (${a.title}) is not linked to the track plan. Right-click its Location cell and choose Select on track plan.` });
+        message: `"${a.rawLocation}" (${a.title}) is not linked to the track plan. On the look-ahead, hover its Location cell and press Link.` });
     }
   }
   if (g.shift === 'unmapped') {

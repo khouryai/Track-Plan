@@ -169,16 +169,23 @@ export function contextMenu(x, y, items) {
   menu.style.left = `${Math.min(x, window.innerWidth - r.width - 8)}px`;
   menu.style.top = `${Math.min(y, window.innerHeight - r.height - 8)}px`;
   openMenu = menu;
-  setTimeout(() => {
-    document.addEventListener('mousedown', outside, true);
-    document.addEventListener('keydown', escape, true);
-  });
+  menuOpener = document.activeElement;
+  // A key can be pressed at once; only the click that opened the menu must not close it.
+  document.addEventListener('keydown', escape, true);
+  setTimeout(() => document.addEventListener('mousedown', outside, true));
   menu.querySelector('button:not([disabled])')?.focus();
   return menu;
 }
 
+let menuOpener = null;
 function outside(e) { if (openMenu && !openMenu.contains(e.target)) closeMenu(); }
-function escape(e) { if (e.key === 'Escape') { e.stopPropagation(); closeMenu(); } }
+function escape(e) {
+  if (e.key !== 'Escape') return;
+  e.stopPropagation();
+  const back = menuOpener;
+  closeMenu();
+  if (back?.isConnected) back.focus({ preventScroll: true }); // the shortcuts keep working where they were
+}
 
 export function closeMenu() {
   if (!openMenu) return;

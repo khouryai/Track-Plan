@@ -778,7 +778,7 @@ function renderOnMapList() {
   host.append(ul);
   const linked = (o.activities || []).filter((a) => hasLink(a.link));
   host.append(el('h2', { text: 'Linked activities' }));
-  if (!linked.length) host.append(el('p', { class: 'small', text: 'No activity in this week is linked yet. Right-click a Location cell on the look-ahead and choose Select on track plan.' }));
+  if (!linked.length) host.append(el('p', { class: 'small', text: 'No activity in this week is linked yet. On the look-ahead, hover a Location cell and press Link.' }));
   const al = el('ul', { class: 'plain act-list' });
   for (const a of linked) {
     al.append(el('li', { onClick: () => showLink(a.link) }, [

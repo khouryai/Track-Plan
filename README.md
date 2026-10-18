@@ -17,8 +17,8 @@ data extracted automatically from the drawing.
 ```
  Look-ahead                   Track plan                    TAWRs
  ──────────                   ──────────                    ─────
- activity, painted by    ──►  right-click its Location ──►  one request per place and shift
- shift, BART support          → Select on track plan:       per week, raised by itself ahead
+ activity, painted by    ──►  hover its Location cell  ──►  one request per place and shift
+ shift, BART support          → Link:                       per week, raised by itself ahead
  typed in each day            TCR / station / block of      of the deadline (17 days before
  ("X.WIT")                    track → the Location cell     the Monday), Area from the link
                               and the TAWR's Area           │
@@ -41,8 +41,10 @@ data extracted automatically from the drawing.
    imported (*Import 4WLA (.xlsx)*): the calendar sheet is found by its row of
    weekday letters, the workbook's own colour key is read, and a colour nobody has
    named is asked about, never guessed.
-2. **Link each activity's location** — right-click its Location cell (or press
-   the pin) → *Select on track plan…*. The map opens on that activity: choose a
+2. **Link each activity's location** — hover its Location cell and press *Link*
+   (or right-click it → *Select on track plan…*). Once linked, *Map* shows it on
+   the track plan, and the cell's *#21* opens the TAWR made from it. After any
+   jump to the map, *← Back* returns to where you were. The map opens on that activity: choose a
    station, its **TCR (train control room)**, a yard or a platform (or click a blue
    pin), and/or a **block of track** — box-select it, draw along it through
    crossovers, add pieces, or type a track and milepost range. **Only the limits

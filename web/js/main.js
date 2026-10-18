@@ -26,6 +26,7 @@ import * as TawrView from './tawr_view.js';
 
 const $ = (s) => document.querySelector(s);
 const VIEWS = ['lookahead', 'tawr', 'map'];
+const VIEW_NAMES = { lookahead: 'the look-ahead', tawr: 'TAWRs', map: 'the track plan' };
 
 export const app = {
   data: null,
@@ -111,9 +112,10 @@ app.lookaheadChanged = () => {
  * Show a view. Entering the track plan fits the whole sheet, unless `focus`
  * zooms somewhere in particular (it answers true when it did).
  */
-app.go = (view, { week = null, focus = null } = {}) => {
+app.go = (view, { week = null, focus = null, back = null } = {}) => {
   if (week) app.week = week;
   if (!VIEWS.includes(view)) view = 'lookahead';
+  setBack(view === 'map' ? back : null);
   if (app.view === 'lookahead' && view !== 'lookahead') LookaheadView.leave?.();
   app.view = view;
   document.body.dataset.view = view;
@@ -143,13 +145,30 @@ app.pickLocation = async ({ title, link }) => {
   return picked;
 };
 
+/* Where "Back" on the track plan returns to, after a jump there to show something. */
+let backTo = null;
+function setBack(back) {
+  backTo = back;
+  const btn = $('#map-back');
+  btn.hidden = !back;
+  btn.textContent = back ? `← Back to ${back.label}` : '';
+}
+
 app.showOnMap = (link) => {
-  app.go('map', { focus: () => M.showLink(link) });
+  app.go('map', { focus: () => M.showLink(link), back: app.view === 'map' ? null : { view: app.view, label: VIEW_NAMES[app.view] } });
 };
 
 app.showTawrOnMap = (record) => {
+  const back = app.view === 'tawr' ? { view: 'tawr', label: `TAWR #${record.id}`, tawr: record }
+    : app.view === 'map' ? null : { view: app.view, label: VIEW_NAMES[app.view] };
   app.week = record.week_start;
-  app.go('map', { focus: () => M.showTawr(record) });
+  app.go('map', { focus: () => M.showTawr(record), back });
+};
+
+/** Open one request in the TAWRs view, in view and opened. */
+app.openTawr = (record) => {
+  TawrView.focus(record.id);
+  app.go('tawr', { week: record.week_start });
 };
 
 /** Weeks anybody might look at: the look-ahead's, and any with requests. */
@@ -189,7 +208,7 @@ function pushOverlay() {
     conflicts: T.conflicts(tawrs),
     activities,
     onWeek: (w) => { app.week = w; pushOverlay(); },
-    onOpenTawr: (t) => { TawrView.focus(t.id); app.go('tawr', { week: t.week_start }); },
+    onOpenTawr: (t) => app.openTawr(t),
   });
 }
 app.pushOverlay = pushOverlay;
@@ -352,6 +371,7 @@ function poll() {
     app.data = data;
     app.locations = data.locations;
     document.querySelectorAll('nav.views button').forEach((b) => { b.onclick = () => app.go(b.dataset.view); });
+    $('#map-back').onclick = () => { const b = backTo; if (b?.tawr) app.openTawr(b.tawr); else if (b) app.go(b.view); };
     window.addEventListener('hashchange', () => { const v = location.hash.slice(1); if (VIEWS.includes(v) && v !== app.view) app.go(v); });
     window.addEventListener('tp:signed-out', () => { toast('Signed out. Sign in again to carry on.', 'warn'); signIn().then(() => location.reload()); });
     M.initMap(data, tiles);

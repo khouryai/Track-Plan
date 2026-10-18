@@ -8,8 +8,9 @@
  * spreadsheet: click a day and type, drag across a week and press a colour,
  * Delete clears, Ctrl+Z undoes, copy and paste a block.
  *
- * **The Location column is linked to the track plan.** Right-click a Location
- * cell (or press its pin) and choose *Select on track plan*: the map opens on
+ * **The Location column is linked to the track plan.** Hover a Location cell
+ * and press *Link* (or right-click it, or press its pin, and choose *Select on
+ * track plan*): the map opens on
  * that activity, a station, TCR or block of track is picked, and the cell says
  * where — and every TAWR raised from the activity takes its Area from it. A
  * location only typed is shown as such, and one the track plan cannot match is
@@ -247,8 +248,8 @@ function help() {
   return el('p', {
     class: 'small la-help',
     text: writer()
-      ? 'Click a day and type support codes; drag to select several days and press a colour. Right-click a Location cell → Select on track plan. Enter edits, Delete clears, Ctrl+Z undoes, Ctrl+C / Ctrl+V copy and paste.'
-      : 'Read only. Right-click a linked Location to see it on the track plan.',
+      ? 'Click a day and type support codes; drag to select several days and press a colour. Hover a Location cell and press Link to pick it on the track plan (Map shows it there; #21 opens its TAWR). Enter edits, Delete clears, Ctrl+Z undoes, Ctrl+C / Ctrl+V copy and paste.'
+      : 'Read only. Hover a linked Location and press Map to see it on the track plan.',
   });
 }
 
@@ -423,13 +424,25 @@ function locationCell(td, row, tawr) {
       'aria-label': `Location options for ${LA.rowTitle(row)}`, tabindex: '-1',
       onClick: (e) => { e.stopPropagation(); const r = e.currentTarget.getBoundingClientRect(); locationMenu(row, r.left, r.bottom); },
     }),
-    el('span', { class: 'loc-text', text: text || (writer() ? 'Select on track plan…' : '') }),
-    tawr ? el('span', { class: 'loc-tawr', style: `--c:${STATUS_COLOR[tawr.status]}`, title: `TAWR #${tawr.id} for the week of ${tawr.week_start}: ${tawr.status}`, text: `#${tawr.id}` }) : null,
+    el('span', { class: 'loc-text', text: text || (writer() ? 'No location yet' : '') }),
+    /* The way to the map, shown on hovering the cell: link it, or see where it is. */
+    linked ? el('button', {
+      type: 'button', class: 'loc-go', tabindex: '-1', text: 'Map', title: 'Show it on the track plan', dataset: { action: 'loc-map' },
+      onClick: (e) => { e.stopPropagation(); V.app.showOnMap(row.link); },
+    }) : writer() ? el('button', {
+      type: 'button', class: 'loc-go', tabindex: '-1', text: 'Link', title: 'Pick its TCR or block of track on the track plan', dataset: { action: 'loc-link' },
+      onClick: (e) => { e.stopPropagation(); selectOnTrackPlan(row); },
+    }) : null,
+    tawr ? el('button', {
+      type: 'button', class: 'loc-tawr', tabindex: '-1', style: `--c:${STATUS_COLOR[tawr.status]}`, dataset: { action: 'loc-tawr' },
+      title: `TAWR #${tawr.id} for the week of ${tawr.week_start}: ${tawr.status}. Click to open it.`, text: `#${tawr.id}`,
+      onClick: (e) => { e.stopPropagation(); V.app.openTawr(tawr); },
+    }) : null,
   ].filter(Boolean));
   td.title = linked ? `Linked to the track plan: ${linkArea(row.link)}`
-    : resolved ? `Typed, and matched to ${resolved.name}. Select on track plan to add the block of track.`
-      : typed ? `"${typed}" is not linked to the track plan. Right-click → Select on track plan.`
-        : 'No location. Right-click → Select on track plan.';
+    : resolved ? `Typed, and matched to ${resolved.name}. Press Link to add the block of track.`
+      : typed ? `"${typed}" is not linked to the track plan. Press Link (or right-click the cell) to pick it there.`
+        : 'No location. Press Link (or right-click the cell) to pick it on the track plan.';
 }
 
 /* ── Selection ────────────────────────────────────────────────────────── */

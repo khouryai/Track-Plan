@@ -46,6 +46,8 @@ nav.views .count, .week-btn .count { display: inline-block; min-width: 18px; pad
 .who b { color: var(--ink); }
 .who.role-manager b { color: var(--accent); }
 body:not([data-view=map]) .map-only { display: none; }
+#map-back[hidden] { display: none; }
+#map-back { white-space: nowrap; }
 body[data-view=map] #who { margin-left: 0; }
 
 button {
@@ -226,8 +228,13 @@ details .row { margin-top: 6px; }
 .loc-empty .loc-text { color: #9aa0a8; font-style: italic; }
 .loc-unlinked .loc-text { color: var(--bad); text-decoration: underline dotted; }
 .loc-linked .loc-text { color: #0b5d46; font-weight: 600; }
-.loc-tawr { position: absolute; right: 3px; top: 50%; transform: translateY(-50%); font-size: 10px; color: #fff; background: var(--c); border-radius: 8px; padding: 0 5px; }
+.loc-tawr { position: absolute; right: 3px; top: 50%; transform: translateY(-50%); font: 600 10px system-ui, sans-serif; color: #fff; background: var(--c); border: 0; border-radius: 8px; padding: 1px 6px; cursor: pointer; }
+.loc-tawr:hover { box-shadow: 0 0 0 2px #fff, 0 0 0 3px var(--c); }
 .la-m2.has-tawr { padding-right: 36px; }
+/* Link / Map: shown over the end of the Location cell while it is hovered. */
+.loc-go { display: none; position: absolute; right: 3px; top: 50%; transform: translateY(-50%); font: 600 11px system-ui, sans-serif; padding: 1px 8px; border-radius: 6px; background: var(--accent); color: #fff; border: 0; cursor: pointer; box-shadow: -8px 0 8px #fff; }
+.la-m2.has-tawr .loc-go { right: 36px; }
+.la-m2:hover .loc-go, .la-m2.la-cur .loc-go { display: inline-block; }
 
 /* ── TAWRs ───────────────────────────────────────────────────────────── */
 .subtabs { display: flex; gap: 4px; margin-bottom: 8px; }

@@ -133,8 +133,8 @@ async function typeIn(page, title, iso, text) {
 }
 
 async function link(page, title, { place = '', track = '', from = '', to = '' }) {
-  await rowOf(page, title).locator('td.la-m2').click({ button: 'right' });
-  await page.click('[data-action=select-on-track-plan]');
+  await rowOf(page, title).locator('td.la-m2').hover();
+  await rowOf(page, title).locator('[data-action=loc-link]').click();
   await page.waitForSelector('#tab-pick.active');
   if (place) await page.selectOption('#pick-location', place);
   if (track) {
@@ -187,6 +187,11 @@ async function flow(page, { mode }) {
   const loc = rowOf(page, 'IXL SIM Testing').locator('td.la-m2');
   check('the Location cell says the TCR and the track limits', /Colma TCR · W2 MP 16\.600–16\.900/.test(await loc.textContent()), await loc.textContent());
   check('and is marked as linked', await loc.evaluate((n) => n.classList.contains('loc-linked')));
+  await loc.hover();
+  check('a linked Location offers Map, where an unlinked one offered Link', await loc.locator('[data-action=loc-map]').isVisible() && await rowOf(page, 'Cable pull').locator('[data-action=loc-link]').count() === 1);
+  await loc.click({ button: 'right' });
+  check('right-clicking still offers Select on track plan', await page.locator('[data-action=select-on-track-plan]').count() === 1);
+  await page.keyboard.press('Escape');
   await link(page, 'Cable pull', { track: 'W2', from: '16.8', to: '17.2' });
   await rowOf(page, 'IXL SIM Testing').locator('td.la-m1').click();
   await page.click('[data-action=add-resource]');
@@ -226,6 +231,13 @@ async function flow(page, { mode }) {
   await page.waitForSelector('.modal-back', { state: 'detached' });
   await page.waitForFunction(() => [...document.querySelectorAll('.tawr-card')].some((c) => /1 field changed by hand/.test(c.textContent)));
   check('a field changed in Review is kept and marked as changed by hand', true);
+  await ixl.locator('[data-action=tawr-map]').click();
+  await page.waitForSelector('body[data-view=map]');
+  const back = page.locator('#map-back');
+  check('a request shown on the map offers the way back to it', /^← Back to TAWR #\d+$/.test(await back.textContent()) && await back.isVisible(), await back.textContent());
+  await back.click();
+  await page.waitForSelector('body[data-view=tawr]');
+  check('which returns to it, opened', await card(page, 'W2 MP 16.600–16.900').locator('.tawr-detail').isVisible());
 
   console.log(`\n${mode}: the conflicts on the track plan`);
   await page.click('nav.views [data-view=map]');
@@ -340,6 +352,10 @@ async function manage(page, { mode }) {
   await shot(page, `${mode}-4-map`);
   await page.click('nav.views [data-view=lookahead]');
   check('the look-ahead shows which request each activity is in', /#\d+/.test(await rowOf(page, 'IXL SIM Testing').locator('.loc-tawr').textContent()));
+  await rowOf(page, 'IXL SIM Testing').locator('.loc-tawr').click();
+  await page.waitForSelector('body[data-view=tawr]');
+  check('and opens it', await card(page, 'W2 MP 16.600–17.200').locator('.tawr-detail').isVisible());
+  await page.click('nav.views [data-view=lookahead]');
   await page.click('nav.views [data-view=map]');
   await page.waitForTimeout(300);
   check('coming back to the track plan fits the whole sheet again', await fitted(page));
