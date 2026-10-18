@@ -179,7 +179,8 @@ function renderRequests(host) {
   }
 
   const list = el('div', { class: 'tawr-list' });
-  for (const item of items) list.append(card(item, items));
+  const clashes = T.conflicts(records.filter(live));
+  for (const item of items) list.append(card(item, items, clashes));
   host.append(list);
 
   const old = records.filter((r) => !live(r));
@@ -213,12 +214,13 @@ function notice(tone, title, detail, action = null) {
 
 /* ── One request ──────────────────────────────────────────────────────── */
 
-function card({ group, record }, items) {
+function card({ group, record }, items, clashes = []) {
   const app = V.app;
   const status = record?.status || 'none';
   const src = group ? null : record?.source || {};
   const name = group?.locationName || record?.location_name || '(no location)';
   const shift = group?.shift || record?.shift;
+  const kind = group?.kind || record?.source?.kind || 'unlinked';
   const firstDay = group?.firstDay || record?.first_day || record?.week_start;
   const due = T.deadlineState(firstDay, app.today);
   const fresh = group ? freshValues(app, group) : null;
@@ -247,6 +249,7 @@ function card({ group, record }, items) {
   node.append(el('header', {}, [
     pick,
     el('h3', { text: `${record ? `#${record.id} ` : ''}${name}` }),
+    el('span', { class: `badge kind-${kind}`, title: kind === 'tcr' ? 'Work in the train control room — never on the same request as track' : kind === 'track' ? 'Work on the track, between these limits' : '', text: T.PART_KINDS[kind] || kind }),
     el('span', { class: 'badge', text: `${T.tawrShiftLabel(shift)} shift` }),
     el('span', { class: 'pill', style: `--c:${STATUS_COLOR[status] || '#9ca3af'}`, text: statusName(status) }),
     merged ? el('span', { class: 'badge', text: `Consolidated from ${(view.members || group?.members || []).length}` }) : null,
@@ -266,6 +269,7 @@ function card({ group, record }, items) {
     el('dd', {}, activities.map((a) => el('div', {}, [
       el('b', { text: [a.activityId, a.title].filter(Boolean).join(' · ') }),
       a.link ? el('span', { class: 'small', text: ` — ${linkArea(a.link)}${a.how === 'typed' ? ' (typed)' : ''}` }) : el('span', { class: 'warn', text: ` — ${a.rawLocation ? `"${a.rawLocation}" not linked` : 'no location'}` }),
+      a.party ? el('div', { class: 'small', text: `Party to action: ${a.party}` }) : null,
       a.crew?.length ? el('div', { class: 'small', text: `Crew: ${a.crew.join(', ')}` }) : null,
     ]))),
     el('dt', { text: 'BART support' }),
@@ -283,6 +287,13 @@ function card({ group, record }, items) {
       record && other && T.may(S.store.workflow, S.role(), 'consolidate', record.status) && T.may(S.store.workflow, S.role(), 'consolidate', other.status)
         ? el('button', { type: 'button', class: 'mini', dataset: { action: 'consolidate-pair' }, text: `Consolidate with #${other.id}`, onClick: () => consolidate([record, other]) })
         : el('span', { class: 'small', text: S.isManager() ? '' : 'The Track Allocation Manager can consolidate them into one.' }),
+    ]));
+  }
+  for (const c of clashes.filter((x) => record && (x.a.id === record.id || x.b.id === record.id))) {
+    const other = c.a.id === record.id ? c.b : c.a;
+    notes.append(el('li', { class: 'block clash' }, [
+      `Conflicts with #${other.id} ${other.location_name} (${statusName(other.status).toLowerCase()}): the same ${record.source?.kind === 'tcr' ? 'room' : 'track'} at the same time on ${c.when.map((w) => `${dayLabel(w.date)} (${w.a} / ${w.b})`).join(', ')}. `,
+      el('button', { type: 'button', class: 'mini secondary', text: 'See it on the track plan', onClick: () => app.showTawrOnMap(record) }),
     ]));
   }
   if (changed.length) notes.append(el('li', { class: 'block', text: `The look-ahead has changed since this was ${status} (${changed.map(label).join(', ')}). ${status === 'approved' ? 'Revise it if the request should follow.' : status === 'submitted' ? 'Withdraw it to bring it up to date.' : 'Reopen it to bring it up to date.'}` }));
@@ -397,6 +408,7 @@ async function bulk(records, action) {
 async function consolidate(records) {
   const shifts = new Set(records.map((r) => r.shift));
   if (shifts.size > 1) { toast('Only requests on the same shift can be one request — a form row is one start and finish a day.', 'warn'); return; }
+  if (new Set(records.map((r) => r.source?.kind)).size > 1) { toast('A TCR request and a track request stay separate — they are different categories of work.', 'warn'); return; }
   let built;
   try { built = consolidation(V.app, records); } catch (err) { toast(err.message, 'bad'); return; }
   const note = await promptDialog({
@@ -754,7 +766,9 @@ function renderSetup(host) {
   setting('Person in charge — cell phone', 'person_in_charge_cell_phone');
   setting('Project representative', 'project_rep_name');
   setting('Project representative — cell phone', 'project_rep_cell_phone');
-  setting('Category of Work, unless changed', 'category_default', { options: CATEGORY_OPTIONS.filter(Boolean), fallback: 'F' });
+  setting('Category of Work — TCR requests', 'category_tcr', { options: CATEGORY_OPTIONS.filter(Boolean), fallback: s.category_default || 'F', hint: 'A request for a train control room. Never shares a request with track.' });
+  setting('Category of Work — track requests', 'category_track', { options: CATEGORY_OPTIONS.filter(Boolean), fallback: s.category_default || 'F', hint: 'A request for track limits. These are marked as work in the track zone.' });
+  setting('Category of Work — anything else', 'category_default', { options: CATEGORY_OPTIONS.filter(Boolean), fallback: 'F', hint: 'A station, yard or platform with no track picked.' });
 
   group('When drafts are raised');
   setting('Days before the deadline', 'auto_lead_days', {

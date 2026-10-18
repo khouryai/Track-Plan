@@ -8,10 +8,23 @@
  *     geometry: [[[x, y], …], …] }                    the track picked, drawing points
  *
  * Either half may be missing — a TCR with no track, or a block of track with
- * no station — but not both. From it come the Location column's text
- * (`linkLabel`), the TAWR's Area (`linkArea`), the key that says two
- * activities are at the same place (`linkKey`), and whether two places
- * overlap on the drawing (`linksOverlap`).
+ * no station — but not both.
+ *
+ * **Only the limits matter on the track.** However the track was picked — a
+ * box over a block, several pieces, a range typed — what a request says is the
+ * leftmost and rightmost milepost on each line, with every track between:
+ * "W1+W2+W3 MP 23.747-24.446" (`limitsText`). The crossovers and yard pieces
+ * inside those limits are part of the geometry, not of the words.
+ *
+ * **A TCR and track are never one request.** They are different categories of
+ * work, so a link naming both is two parts (`linkParts`): the train control
+ * room, and the track limits. Each part is its own TAWR. A station, yard or
+ * platform picked alongside track only says where the track is; picked alone,
+ * it is a part of its own.
+ *
+ * From the parts come the Location column's text (`linkLabel`), the TAWR's
+ * Area (`partArea`), the key that says two activities are at the same place
+ * (`partKey`), and whether two places overlap on the drawing (`linksOverlap`).
  *
  * Pure: no DOM, no Leaflet. The map module uses the same geometry helpers.
  *
@@ -35,6 +48,30 @@ export function samplePolys(polys, step = 1) {
 /** The 1.5-point grid cells a geometry passes through: two geometries sharing one share track. */
 export function cellSet(polys) {
   return new Set(samplePolys(polys, 1).map(([x, y]) => `${Math.round(x / 1.5)},${Math.round(y / 1.5)}`));
+}
+
+/**
+ * The drawing's polylines covering milepost range [a, b] of a calibrated
+ * track — the same rule as server.py's `/api/segment`. `routes` is map.json's.
+ */
+export function sliceRoute(routes, track, a, b) {
+  const lo = Math.min(a, b); const hi = Math.max(a, b); const out = [];
+  for (const pc of routes?.[track] || []) {
+    for (const lg of pc.legs) {
+      let cur = null;
+      for (let i = 0; i < lg.pts.length - 1; i++) {
+        const p0 = lg.pts[i]; const p1 = lg.pts[i + 1]; const m0 = lg.mps[i]; const m1 = lg.mps[i + 1];
+        const c0 = Math.max(Math.min(m0, m1), lo); const c1 = Math.min(Math.max(m0, m1), hi);
+        if (c0 > c1) { if (cur) { out.push(cur); cur = null; } continue; }
+        const at = (m) => { const f = m1 === m0 ? 0 : (m - m0) / (m1 - m0); return [p0[0] + f * (p1[0] - p0[0]), p0[1] + f * (p1[1] - p0[1])]; };
+        const [s, e] = m0 <= m1 ? [c0, c1] : [c1, c0];
+        if (!cur) cur = [at(s)];
+        cur.push(at(e));
+      }
+      if (cur) out.push(cur);
+    }
+  }
+  return out;
 }
 
 export function bboxOf(polys) {
@@ -64,43 +101,91 @@ export function hasLink(link) {
   return Boolean(link && (link.location_id || (link.limits && link.limits.length) || (link.geometry && link.geometry.length)));
 }
 
-/** What the Location column says for a link: the place, then the first limit and how many more. */
+/** The line a track's mileposts belong to: "W2" → "W", "CX3" → "C". */
+export function lineOf(track) {
+  return String(track || '').charAt(0).toUpperCase();
+}
+
+const byTrack = (a, b) => a.localeCompare(b, 'en', { numeric: true });
+
+/**
+ * The track limits accumulated: for each line, every track picked and one
+ * milepost span from the leftmost limit to the rightmost —
+ * `[{ line, tracks: ['W1', 'W2', 'W3'], from_mp, to_mp }]`.
+ */
+export function trackSpans(limits) {
+  const lines = new Map();
+  for (const l of limits || []) {
+    if (!l.track) continue;
+    const k = lineOf(l.track);
+    const s = lines.get(k) || { line: k, tracks: new Set(), from_mp: Infinity, to_mp: -Infinity };
+    s.tracks.add(l.track);
+    s.from_mp = Math.min(s.from_mp, Number(l.from_mp), Number(l.to_mp));
+    s.to_mp = Math.max(s.to_mp, Number(l.from_mp), Number(l.to_mp));
+    lines.set(k, s);
+  }
+  return [...lines.values()]
+    .map((s) => ({ ...s, tracks: [...s.tracks].sort(byTrack) }))
+    .sort((a, b) => a.line.localeCompare(b.line));
+}
+
+/**
+ * The limits as a request says them: "W1+W2+W3 MP 23.747-24.446", a line at a
+ * time. Where nothing calibrated was picked — only yard tracks — their names.
+ */
+export function limitsText(limits, { dash = '–' } = {}) {
+  const spans = trackSpans(limits);
+  if (spans.length) return spans.map((s) => `${s.tracks.join('+')} MP ${r3(s.from_mp)}${dash}${r3(s.to_mp)}`).join('; ');
+  return [...new Set((limits || []).filter((l) => !l.track && l.name).map((l) => l.name))].sort(byTrack).join('; ');
+}
+
+const isTcr = (link) => link?.location_kind === 'tcr' || String(link?.location_id || '').startsWith('tcr:');
+
+/**
+ * A link as the requests it makes: a TCR part and a track part never share a
+ * request. `[{ kind: 'tcr' | 'track' | 'place', location_id, location_name,
+ * location_kind, limits, geometry }]` — each shaped like a link itself.
+ */
+export function linkParts(link) {
+  if (!hasLink(link)) return [];
+  const limits = link.limits || [];
+  const geometry = link.geometry || [];
+  const track = limits.length > 0 || geometry.length > 0;
+  const parts = [];
+  if (link.location_id && (isTcr(link) || !track)) {
+    parts.push({
+      kind: isTcr(link) ? 'tcr' : 'place', location_id: link.location_id, location_name: link.location_name,
+      location_kind: link.location_kind || null, limits: [], geometry: [],
+    });
+  }
+  if (track) parts.push({ kind: 'track', location_id: null, location_name: null, location_kind: null, limits, geometry });
+  return parts;
+}
+
+/** The kinds of request, as the cards and the form name them. */
+export const PART_KINDS = { tcr: 'TCR', track: 'Track', place: 'Station / yard', unlinked: 'Not linked' };
+
+/** The key that says two parts are the same place: the room, or the limits. */
+export function partKey(part) {
+  if (part.kind === 'track') return `trk:${limitsText(part.limits, { dash: '-' }) || `${part.geometry.length}`}`;
+  return `loc:${part.location_id}`;
+}
+
+/** A part in words: the room's short name, or the limits. Plain hyphens, so the form prints it in any font. */
+export function partArea(part, { dash = '-' } = {}) {
+  if (!part) return '';
+  if (part.kind === 'track') return limitsText(part.limits, { dash });
+  return shortLocationName(part.location_name);
+}
+
+/** What the Location column says for a link: its parts, the TCR first. */
 export function linkLabel(link) {
-  if (!hasLink(link)) return '';
-  const parts = [];
-  if (link.location_name) parts.push(shortLocationName(link.location_name));
-  const lims = link.limits || [];
-  const tracks = lims.filter((l) => l.track);
-  const first = tracks[0] || lims[0];
-  if (first) parts.push(first.track ? limitText(first, { dash: '–' }) : first.name);
-  const more = lims.length - (first ? 1 : 0);
-  return parts.join(' · ') + (more > 0 ? ` +${more}` : '');
+  return linkParts(link).map((p) => partArea(p, { dash: '–' })).join(' · ');
 }
 
-/**
- * The TAWR's Area for a link, as the form's Area column wants it: tracks,
- * mileposts and the station or train control room. Plain hyphens, so the form
- * prints it in any font.
- */
+/** A link in words, for a list or a tooltip: every part, plain hyphens. */
 export function linkArea(link) {
-  if (!hasLink(link)) return '';
-  const parts = [];
-  if (link.location_name) parts.push(shortLocationName(link.location_name));
-  for (const l of link.limits || []) parts.push(l.track ? limitText(l, { dash: '-' }) : l.name);
-  return parts.join('; ');
-}
-
-/**
- * The key that says two links are the same place: the station or TCR where
- * there is one, otherwise the track limits themselves. Two activities with the
- * same key are one TAWR; two different keys whose track overlaps are offered to
- * the track allocation manager to consolidate.
- */
-export function linkKey(link) {
-  if (!hasLink(link)) return null;
-  if (link.location_id) return `loc:${link.location_id}`;
-  const sig = (link.limits || []).map((l) => limitText(l, { dash: '-' })).sort().join('|');
-  return `trk:${sig || `${(link.geometry || []).length}`}`;
+  return linkParts(link).map((p) => partArea(p)).join('; ');
 }
 
 /* ── Combining and comparing ───────────────────────────────────────────── */
@@ -141,10 +226,14 @@ export function unionLinks(links) {
   return { places: [...places.values()], limits: [...merged, ...named], geometry };
 }
 
-/** The Area of several links together: every place, then every limit. */
-export function unionArea(links) {
-  const u = unionLinks(links);
-  return [...u.places.map((p) => shortLocationName(p.name)), ...u.limits.map((l) => (l.track ? limitText(l, { dash: '-' }) : l.name))].join('; ');
+/**
+ * The Area of several parts of one kind together: the rooms, or the limits
+ * accumulated — two activities on W1 and W2 a few hundred feet apart are
+ * "W1+W2 MP 23.747-24.446".
+ */
+export function unionArea(parts, { dash = '-' } = {}) {
+  const u = unionLinks(parts);
+  return [...u.places.map((p) => shortLocationName(p.name)), limitsText(u.limits, { dash })].filter(Boolean).join('; ');
 }
 
 /**
@@ -203,4 +292,17 @@ export function resolveLocationText(text, locations) {
 /** A link for a location alone, as typed text resolves to. */
 export function linkForLocation(loc) {
   return loc ? { location_id: loc.id, location_name: loc.name, location_kind: loc.kind, limits: [], geometry: [] } : null;
+}
+
+/**
+ * Where two geometries share track: the middle of what they have in common and
+ * its extent, `{ x, y, bbox }`, or null. For drawing a conflict where it is.
+ */
+export function sharedSpot(a, b) {
+  if (!a?.length || !b?.length) return null;
+  const cells = cellSet(b);
+  const pts = samplePolys(a, 1).filter(([x, y]) => cells.has(`${Math.round(x / 1.5)},${Math.round(y / 1.5)}`));
+  if (!pts.length) return null;
+  const bbox = bboxOf([pts]);
+  return { x: (bbox[0] + bbox[2]) / 2, y: (bbox[1] + bbox[3]) / 2, bbox };
 }

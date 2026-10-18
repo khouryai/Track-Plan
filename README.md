@@ -35,7 +35,9 @@ data extracted automatically from the drawing.
    cell — `X` an EIC, `WIT` a witness, `TCE`, `ROC`, `X.WIT` both, `~WIT` a
    witness cancelled. A Resource row under an activity names the crew. It
    behaves like a spreadsheet: drag to select, Alt+1…5 to paint, Enter to edit,
-   Delete, Ctrl+Z / Ctrl+Y, copy and paste. An existing 4WLA workbook can be
+   Delete, Ctrl+Z / Ctrl+Y, copy and paste. A copy carries each day's shift
+   colour as well as its text — within the calendar, and into Excel — and one
+   day copied onto several fills them all. An existing 4WLA workbook can be
    imported (*Import 4WLA (.xlsx)*): the calendar sheet is found by its row of
    weekday letters, the workbook's own colour key is read, and a colour nobody has
    named is asked about, never guessed.
@@ -43,25 +45,36 @@ data extracted automatically from the drawing.
    the pin) → *Select on track plan…*. The map opens on that activity: choose a
    station, its **TCR (train control room)**, a yard or a platform (or click a blue
    pin), and/or a **block of track** — box-select it, draw along it through
-   crossovers, add pieces, or type a track and milepost range. *Use this location*
-   writes it into the Location cell (`Colma TCR · W2 MP 16.600–16.900`) and the
-   activity's TAWR takes its Area from it (`Colma TCR; W2 MP 16.600-16.900`). A
-   location typed exactly as a station or TCR is recognised; anything else is
-   marked, and its TAWR cannot be submitted until it is linked.
+   crossovers, add pieces, or type a track and milepost range. **Only the limits
+   matter on the track**: however it was picked, the selection reads as the
+   leftmost and rightmost milepost on each line with every track between —
+   `W1+W2+W3 MP 23.747–24.446` — and the crossovers inside are not listed.
+   *Use this location* writes it into the Location cell
+   (`Colma TCR · W2 MP 16.600–16.900`). A location typed exactly as a station
+   or TCR is recognised; anything else is marked, and its TAWR cannot be
+   submitted until it is linked.
 3. **The TAWRs raise themselves.** The week whose requests are due next is
    highlighted on the look-ahead (*TAWR week*). Every week due within the lead
    time (Setup, default 7 days before the deadline) gets its drafts without
    anybody asking: one per place and shift, its days, combined hours (or the
    shift's), the BART support on its busiest day, SSWP numbers and the work
-   description. Drafts follow the look-ahead as it changes and keep anything typed
-   into them by hand.
+   description. **A TCR and track are never one request** — they are different
+   categories of work — so an activity linked to both raises two: `Colma TCR`,
+   and `W2 MP 16.600-16.900`. Its BART support is asked for once, on the track
+   request, and the TCR request says so. A track request is marked as work in the
+   track zone, and each kind takes its own Category of Work from Setup. Drafts
+   follow the look-ahead as it changes and keep anything typed into them by hand.
 4. **The requester reviews and submits** (*TAWRs* view): every field of BART's
    form can be checked in *Review*; *Submit for approval* (one, or several picked
    at once).
 5. **The Track Allocation Manager decides.** Requests whose places **overlap** on
    the drawing — the same TCR, or track in common — in the same week and shift are
-   named to each other; *Consolidate* makes them one request (Area and support
-   recombined, hand edits kept), and *Split back up* undoes it. Then *Approve* or
+   named to each other; *Consolidate* makes them one request (the limits
+   accumulated, support recounted, hand edits kept), and *Split back up* undoes
+   it. A TCR request and a track request are never consolidated. Requests that want
+   the same track (or room) **at the same time** — whatever their shift: a Blanket
+   from midnight meets the night shift before it — are marked as conflicts on their
+   cards and on the track plan. Then *Approve* or
    *Reject* (with a reason the requester sees), one by one or in bulk. An approved
    request is final: changing it is a *Revise*, which keeps the approved version
    as superseded. If two approved requests still repeat each other, the page says
@@ -71,8 +84,24 @@ data extracted automatically from the drawing.
    signature; *Download approved* puts the week's forms in one .zip, and the
    *Submittal register (CSV)* lists them.
 
-The *Track plan* view shows the week's TAWRs drawn where they are, coloured by
-status, and every linked activity, so overlaps can be seen as well as read.
+**Sample data.** *Look-ahead → Sample data…* loads four weeks of W and M line
+work from the coming Monday — cable trough and signal cable on the W line,
+foundations, rail and tie replacement, ATC loop cable, trench and conduit;
+IXL simulation and DCS checks in the San Bruno, Millbrae, Daly City and Balboa
+Park TCRs, track circuit, switch machine, CBTC radio and integrated system
+testing — every location linked to the track plan, and the TAWRs raised from it.
+Five conflicts are planted in it (`web/js/sample.js` says where): two on one
+shift that can be consolidated, a day shift and a swing shift on W1, two
+shifts in the Daly City TCR at once, and a night shift running into a Blanket
+on M2. On the static site it can clear the browser's TAWRs for a clean start.
+
+The *Track plan* view opens fitted to the whole sheet and shows the week's
+TAWRs drawn where they are, coloured by status, with every linked activity.
+Hovering a request or an activity shows its party to action, description,
+limits and days. A filter shows each status (with the week's counts) or only
+the requests in a conflict; conflicts are listed and marked where the track is
+shared, and the request — or both sides of the conflict — picked from the list
+or the map glows.
 
 ### Roles
 
@@ -149,7 +178,10 @@ is kept at `db/tawr_template.pdf` — outside `web/`, ignored by git.
     any crossover to the end
   - **Add / remove pieces**: click individual crossovers or yard tracks
   - a typed track and milepost range
-- the week's TAWRs are drawn colour-coded by status, with the linked activities
+- the week's TAWRs are drawn colour-coded by status, with the linked activities;
+  hover any of them for the party to action, description, limits and days;
+  filter by status; conflicts are listed and marked with a red pin; whatever is
+  picked glows. Entering the track plan fits the whole sheet.
 - go to a milepost or station (Find tab); show all selectable track by type,
   calibrated centrelines, milepost anchors and labels that need review (Layers)
 
@@ -275,7 +307,8 @@ server.py, operations.py
 | `main.js` | loads everything, switches between the three views |
 | `lookahead.js` | the look-ahead's rows, cells and ops (undo), the legend and support codes, the workbook import |
 | `links.js` | a track plan link: its label, Area, key, and whether two overlap |
-| `tawr.js` | a week of the look-ahead read into TAWRs; the form's values; the workflow table's rules |
+| `tawr.js` | a week of the look-ahead read into TAWRs; conflicts; the form's values; the workflow table's rules |
+| `sample.js` | four weeks of sample W and M line work, conflicts included |
 | `tawr_sync.js` | drafts raised and kept in step with the look-ahead; consolidations |
 | `store.js` | the server's API, or this browser's storage, behind one interface |
 | `map.js` | the map, Select on track plan, TAWRs drawn on it |

@@ -11,7 +11,7 @@ export default [
         window: 'readonly', document: 'readonly', location: 'readonly', history: 'readonly', localStorage: 'readonly',
         indexedDB: 'readonly', fetch: 'readonly', Blob: 'readonly', URL: 'readonly', Response: 'readonly',
         DecompressionStream: 'readonly', TextDecoder: 'readonly', TextEncoder: 'readonly', crypto: 'readonly',
-        CustomEvent: 'readonly', Node: 'readonly', getComputedStyle: 'readonly', requestAnimationFrame: 'readonly',
+        CustomEvent: 'readonly', Node: 'readonly', navigator: 'readonly', DOMParser: 'readonly', getComputedStyle: 'readonly', requestAnimationFrame: 'readonly',
         setTimeout: 'readonly', clearTimeout: 'readonly', setInterval: 'readonly', clearInterval: 'readonly', console: 'readonly',
       },
     },
@@ -22,7 +22,7 @@ export default [
     languageOptions: {
       ecmaVersion: 2022,
       sourceType: 'module',
-      globals: { process: 'readonly', Buffer: 'readonly', console: 'readonly', setTimeout: 'readonly', URL: 'readonly', document: 'readonly', getComputedStyle: 'readonly', fetch: 'readonly' },
+      globals: { process: 'readonly', Buffer: 'readonly', console: 'readonly', setTimeout: 'readonly', URL: 'readonly', document: 'readonly', getComputedStyle: 'readonly', fetch: 'readonly', DataTransfer: 'readonly', Event: 'readonly', localStorage: 'readonly' },
     },
     rules: { 'no-undef': 'error', 'no-unused-vars': ['error', { args: 'none', caughtErrors: 'none' }] },
   },

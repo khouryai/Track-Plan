@@ -211,6 +211,18 @@ class Workflow(Base):
         self.refused(ops.consolidate, self.con, [a["id"], b["id"]], merge, record("merge:m-0002-abcd"),
                      self.manager, WF, status=409)
 
+    def test_a_tcr_and_track_are_never_consolidated(self):
+        tcr = record("loc:tcr:Colma|day")
+        tcr["source"]["kind"] = "tcr"
+        trk = record("trk:W2 MP 16.600-16.900|day")
+        trk["source"]["kind"] = "track"
+        a = ops.create_tawr(self.con, tcr, self.requester, WF)
+        b = ops.create_tawr(self.con, trk, self.requester, WF)
+        merge = {"id": "m-0004-abcd", "week_start": MON, "keys": sorted([a["group_key"], b["group_key"]])}
+        e = self.refused(ops.consolidate, self.con, [a["id"], b["id"]], merge, record("merge:m-0004-abcd"),
+                         self.manager, WF, status=409)
+        self.assertIn("TCR", str(e))
+
     def test_approved_requests_are_not_consolidated(self):
         a = ops.act_on_tawr(self.con, self.draft("a|day")["id"], "submit", self.requester, WF)
         ops.act_on_tawr(self.con, a["id"], "approve", self.manager, WF)

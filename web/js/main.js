@@ -65,10 +65,18 @@ app.reloadTawrs = async () => {
   pushOverlay();
 };
 
-/** Drafts raised and brought up to date; quiet unless something was made. */
+/**
+ * Drafts raised and brought up to date; quiet unless something was made. Asked
+ * again while it runs, it runs once more afterwards — a change made meanwhile
+ * is not missed.
+ */
 let raising = null;
+let queued = null;
 app.raise = async ({ say = false } = {}) => {
-  if (raising) return raising;
+  if (raising) {
+    if (!queued) queued = raising.then(() => { queued = null; return app.raise({ say }); });
+    return queued;
+  }
   raising = (async () => {
     try {
       const r = await autoRaise(app);
@@ -99,7 +107,11 @@ app.lookaheadChanged = () => {
    The views
    ═══════════════════════════════════════════════════════════════════════ */
 
-app.go = (view, { week = null } = {}) => {
+/**
+ * Show a view. Entering the track plan fits the whole sheet, unless `focus`
+ * zooms somewhere in particular (it answers true when it did).
+ */
+app.go = (view, { week = null, focus = null } = {}) => {
   if (week) app.week = week;
   if (!VIEWS.includes(view)) view = 'lookahead';
   if (app.view === 'lookahead' && view !== 'lookahead') LookaheadView.leave?.();
@@ -107,7 +119,7 @@ app.go = (view, { week = null } = {}) => {
   document.body.dataset.view = view;
   document.querySelectorAll('nav.views button').forEach((b) => b.setAttribute('aria-selected', String(b.dataset.view === view)));
   if (location.hash !== `#${view}`) history.replaceState(null, '', `#${view}`);
-  if (view === 'map') { M.invalidate(); pushOverlay(); }
+  if (view === 'map') { pushOverlay(); M.enter(focus); }
   render();
 };
 
@@ -125,21 +137,19 @@ app.render = render;
 /** Pick an activity's location on the map, then come back to where we were. */
 app.pickLocation = async ({ title, link }) => {
   const back = app.view;
-  app.go('map');
+  app.go('map', { focus: link ? () => M.showLink(link) : null });
   const picked = await M.pickLocation({ title, link });
   app.go(back);
   return picked;
 };
 
 app.showOnMap = (link) => {
-  app.go('map');
-  setTimeout(() => M.showLink(link), 50);
+  app.go('map', { focus: () => M.showLink(link) });
 };
 
 app.showTawrOnMap = (record) => {
   app.week = record.week_start;
-  app.go('map');
-  setTimeout(() => M.showTawr(record), 50);
+  app.go('map', { focus: () => M.showTawr(record) });
 };
 
 /** Weeks anybody might look at: the look-ahead's, and any with requests. */
@@ -156,13 +166,27 @@ function pushOverlay() {
   const week = app.week;
   const weekEnd = T.addDaysISO(week, 6);
   const busy = new Set(LA.cellList(app.la.model).filter((c) => c.day >= week && c.day <= weekEnd && c.color).map((c) => c.row_id));
+  const legend = LA.legendMap(app.la.legend);
+  const daysOf = (r) => {
+    const ids = [r.id, ...LA.resourcesOf(app.la.model, r.id).map((k) => k.id)];
+    const out = new Map();
+    for (const c of LA.cellList(app.la.model)) {
+      if (!ids.includes(c.row_id) || !c.color || c.day < week || c.day > weekEnd) continue;
+      if (!out.has(c.day) || c.row_id === r.id) out.set(c.day, legend.get(c.color)?.meaning || `#${c.color}`);
+    }
+    return [...out].sort().map(([date, shift]) => ({ date, shift }));
+  };
   const activities = app.la.model.rows
     .filter((r) => r.kind === 'activity' && (busy.has(r.id) || LA.resourcesOf(app.la.model, r.id).some((k) => busy.has(k.id))))
-    .map((r) => ({ id: r.id, title: LA.rowTitle(r), link: r.link }));
+    .map((r) => ({
+      id: r.id, title: LA.rowTitle(r), link: r.link, activity_id: r.activity_id, description: r.description, party: r.party, days: daysOf(r),
+    }));
+  const tawrs = app.tawrs.filter((t) => t.week_start === week && !['superseded', 'consolidated'].includes(t.status));
   M.setOverlay({
     week,
     weeks: app.weeks().map((w) => ({ value: w, label: `Week of ${w}${w === T.dueWeek(app.today) ? ' (due now)' : ''}` })),
-    tawrs: app.tawrs.filter((t) => t.week_start === week && !['superseded', 'consolidated'].includes(t.status)),
+    tawrs,
+    conflicts: T.conflicts(tawrs),
     activities,
     onWeek: (w) => { app.week = w; pushOverlay(); },
     onOpenTawr: (t) => { TawrView.focus(t.id); app.go('tawr', { week: t.week_start }); },

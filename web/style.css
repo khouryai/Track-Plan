@@ -109,6 +109,9 @@ input[type=color] { width: 44px; padding: 1px; height: 28px; }
 .act-list li:hover { background: #f1f5fb; }
 .pill { display: inline-block; font-size: 11px; padding: 0 7px; border-radius: 9px; color: #fff; background: var(--c); vertical-align: 1px; text-transform: capitalize; }
 .badge { display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 9px; background: #eef0f3; color: var(--ink); }
+.badge.kind-tcr { background: #efe6fb; color: #5b2a9a; font-weight: 600; }
+.badge.kind-track { background: #e3eefc; color: #1f4f9a; font-weight: 600; }
+.badge.kind-unlinked { background: #fde5e5; color: var(--bad); }
 .badge.tone-ok { background: #e3f3ea; color: var(--good); }
 .badge.tone-warn { background: #fff1db; color: var(--warn); }
 .badge.tone-bad { background: #fde5e5; color: var(--bad); }
@@ -221,7 +224,8 @@ details .row { margin-top: 6px; }
 .loc-empty .loc-text { color: #9aa0a8; font-style: italic; }
 .loc-unlinked .loc-text { color: var(--bad); text-decoration: underline dotted; }
 .loc-linked .loc-text { color: #0b5d46; font-weight: 600; }
-.loc-tawr { float: right; font-size: 10px; color: #fff; background: var(--c); border-radius: 8px; padding: 0 5px; margin-top: 3px; }
+.loc-tawr { position: absolute; right: 3px; top: 50%; transform: translateY(-50%); font-size: 10px; color: #fff; background: var(--c); border-radius: 8px; padding: 0 5px; }
+.la-m2.has-tawr { padding-right: 36px; }
 
 /* ── TAWRs ───────────────────────────────────────────────────────────── */
 .subtabs { display: flex; gap: 4px; margin-bottom: 8px; }
@@ -323,3 +327,25 @@ details .row { margin-top: 6px; }
 @media (prefers-reduced-motion: reduce) {
   .tawr-card.flash { animation: none; }
 }
+
+/* ── The track plan: hover cards, the status filter, conflicts, the glow ── */
+.leaflet-tooltip.map-tip { width: max-content; max-width: 340px; white-space: normal; font: 12px/1.35 system-ui, sans-serif; padding: 7px 9px; border-radius: 8px; border: 1px solid #c9ccd1; box-shadow: 0 4px 16px rgba(0,0,0,.18); }
+.map-tip .tip-head { font-weight: 700; text-transform: uppercase; font-size: 10px; letter-spacing: .05em; color: var(--muted); margin-bottom: 2px; }
+.map-tip .tip-act { border-top: 1px solid var(--line); margin-top: 4px; padding-top: 4px; }
+.map-tip .tip-clash, .tip-head.tip-clash { color: #d1242f; font-weight: 600; }
+.status-filter { display: flex; flex-wrap: wrap; gap: 4px; }
+.status-filter .chip { background: #fff; color: var(--muted); border: 1px solid var(--line); border-radius: 14px; padding: 2px 9px; font-size: 12px; display: inline-flex; align-items: center; gap: 5px; text-transform: none; }
+.status-filter .chip .chip-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--c); opacity: .35; }
+.status-filter .chip.on { color: var(--ink); border-color: var(--c); background: color-mix(in srgb, var(--c) 10%, #fff); }
+.status-filter .chip.on .chip-dot { opacity: 1; }
+.clash-head { color: #d1242f; }
+.clash-list > li { background: #fff7f7; }
+.sel-limits { font-weight: 700; color: #0b5d46; font-variant-numeric: tabular-nums; }
+.sel-inside { list-style: none; margin-left: -18px; }
+.clash-pin span { display: grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; background: #d1242f; color: #fff; font: 700 14px system-ui, sans-serif; border: 2px solid #fff; box-shadow: 0 0 0 2px rgba(209,36,47,.45), 0 2px 6px rgba(0,0,0,.3); cursor: pointer; }
+.clash-pin-lit span, .clash-pin span:hover { box-shadow: 0 0 0 6px rgba(209,36,47,.35), 0 0 18px 6px rgba(209,36,47,.55); }
+.leaflet-overlay-pane path.tawr-glow { animation: tawr-breathe 1.4s ease-in-out infinite alternate; }
+.leaflet-overlay-pane path.tawr-lit { filter: drop-shadow(0 0 3px rgba(255,255,255,.95)); }
+.loc-pin-lit span { box-shadow: 0 0 0 3px #fff, 0 0 14px 6px #14d3a0; }
+@keyframes tawr-breathe { from { stroke-opacity: .25; } to { stroke-opacity: .75; } }
+@media (prefers-reduced-motion: reduce) { .leaflet-overlay-pane path.tawr-glow { animation: none; stroke-opacity: .4; } }

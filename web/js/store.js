@@ -33,6 +33,8 @@ export const store = {
   user: null,
   setupNeeded: false,
   workflow: null,
+  /** Signing out: a request refused meanwhile is this, not a session that lapsed. */
+  leaving: false,
 };
 
 /* ══════════════════════════════════════════════════════════════════════════
@@ -76,7 +78,7 @@ async function http(method, url, body, { raw = null, type = 'application/json', 
   });
   if (bytes && res.ok) return new Uint8Array(await res.arrayBuffer());
   const j = await res.json().catch(() => ({}));
-  if (res.status === 401 && store.user) {
+  if (res.status === 401 && store.user && !store.leaving) {
     store.user = null;
     window.dispatchEvent(new CustomEvent('tp:signed-out'));
   }
@@ -189,7 +191,12 @@ export async function setupFirst(username, name, password) {
 }
 export async function logout() {
   if (local()) { store.user = null; try { localStorage.removeItem(ACTING_KEY); } catch { /* */ } return; }
-  await http('POST', 'api/logout', {});
+  store.leaving = true;
+  try {
+    await http('POST', 'api/logout', {});
+  } finally {
+    store.leaving = false;
+  }
   store.user = null;
 }
 export const listUsers = () => http('GET', 'api/users');
@@ -350,6 +357,9 @@ export async function consolidate(ids, merge, record, note = null) {
     if (new Set(rows.map((r) => r.week_start)).size !== 1 || new Set(rows.map((r) => r.shift)).size !== 1) {
       throw new Refused('only requests in the same week and shift can be consolidated', 409);
     }
+    if (new Set(rows.map((r) => r.source?.kind)).size !== 1) {
+      throw new Refused('a TCR request and a track request cannot be consolidated — they are different categories of work', 409);
+    }
     const from = store.workflow.actions.consolidate.from;
     for (const r of rows) if (!from.includes(r.status)) throw new Refused(`#${r.id} is ${r.status}; only drafts and submitted requests can be consolidated`, 409);
     const stamp = nowIso();
@@ -486,6 +496,17 @@ export async function putTemplate(bytes) {
     return { size: bytes.length };
   }
   return http('PUT', 'api/tawr/template', undefined, { raw: bytes, type: 'application/pdf' });
+}
+
+/** On the static site: forget every TAWR and consolidation in this browser (sample data, a fresh start). */
+export function clearLocalTawrs() {
+  if (!local()) throw new Refused('only the copy in this browser can be cleared');
+  requireWrite();
+  const s = readLocal();
+  s.tawrs = [];
+  s.merges = [];
+  s.nextTawr = 1;
+  writeLocal(s);
 }
 
 // ── backing up the browser's copy

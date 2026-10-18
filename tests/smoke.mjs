@@ -85,7 +85,10 @@ function pythonServer() {
 async function open(browser, base) {
   const context = await browser.newContext({ viewport: { width: 1500, height: 950 }, acceptDownloads: true });
   const page = await context.newPage();
-  await page.clock.setFixedTime(NOW);
+  // The page's clock starts at NOW and runs. Pinned (setFixedTime), new Date()
+  // never moves, and Leaflet times its pans with it: a pan never finished, and
+  // the map stayed on its first frame with the requests off-screen.
+  await page.clock.install({ time: NOW });
   const errors = [];
   page.on('console', (m) => {
     if (m.type() !== 'error') return;
@@ -175,10 +178,14 @@ async function flow(page, { mode }) {
   await page.keyboard.press('Control+y');
   check('and redo puts it back', (await dayCell(page, 'Cable pull', '2026-11-03').textContent()) === 'X');
 
+  await rowOf(page, 'IXL SIM Testing').locator('td.la-m4').click();
+  await page.keyboard.type('BART');
+  await page.keyboard.press('Enter');
+
   console.log(`\n${mode}: Select on track plan`);
   await link(page, 'IXL SIM Testing', { place: 'tcr:Colma', track: 'W2', from: '16.6', to: '16.9' });
   const loc = rowOf(page, 'IXL SIM Testing').locator('td.la-m2');
-  check('the Location cell says the TCR and the track', /Colma TCR · W2 MP 16\.600–16\.900/.test(await loc.textContent()), await loc.textContent());
+  check('the Location cell says the TCR and the track limits', /Colma TCR · W2 MP 16\.600–16\.900/.test(await loc.textContent()), await loc.textContent());
   check('and is marked as linked', await loc.evaluate((n) => n.classList.contains('loc-linked')));
   await link(page, 'Cable pull', { track: 'W2', from: '16.8', to: '17.2' });
   await rowOf(page, 'IXL SIM Testing').locator('td.la-m1').click();
@@ -191,25 +198,62 @@ async function flow(page, { mode }) {
   await shot(page, `${mode}-1-lookahead`);
 
   console.log(`\n${mode}: drafts raised by themselves`);
-  await page.waitForFunction(() => document.querySelector('#tawr-count')?.textContent === '2', null, { timeout: 15000 });
+  await page.waitForFunction(() => document.querySelector('#tawr-count')?.textContent === '3', null, { timeout: 15000 });
   check('the week due is raised without being asked', true);
   await page.click('nav.views [data-view=tawr]');
   await page.waitForSelector('.tawr-card');
-  check('one request per place', await page.locator('.tawr-card').count() === 2);
-  const ixl = card(page, 'Colma TCR');
-  check('its Area comes from the track plan', (await ixl.locator('.area').textContent()) === 'Colma TCR; W2 MP 16.600-16.900', await ixl.locator('.area').textContent());
-  check('the support is read off the days', /EIC/.test(await ixl.textContent()));
-  check('overlapping places are named to each other', await page.locator('.flags .overlap').count() === 2);
+  check('one request per place — the TCR and the track separately', await page.locator('.tawr-card').count() === 3);
+  const tcr = card(page, 'Colma TCR');
+  const ixl = card(page, 'W2 MP 16.600–16.900');
+  check('the TCR request is the room alone', (await tcr.locator('.area').textContent()) === 'Colma TCR' && await tcr.locator('.badge.kind-tcr').count() === 1);
+  check('the track request is the limits alone', (await ixl.locator('.area').textContent()) === 'W2 MP 16.600-16.900' && await ixl.locator('.badge.kind-track').count() === 1, await ixl.locator('.area').textContent());
+  check('the support is asked for once, with the track', /EIC/.test(await ixl.locator('.facts').textContent()) && /None/.test(await tcr.locator('.facts').textContent()));
+  check('and the TCR request says so', /asked for on its track request/.test(await tcr.textContent()));
+  check('overlapping track is named to each other', await page.locator('.flags .overlap').count() === 2);
+  check('and the conflict — same track, same time — is said on both', await page.locator('.flags .clash').count() === 2);
   check('a requester is not offered consolidation', await page.locator('[data-action=consolidate-pair]').count() === 0);
   check('nor approval', await page.locator('[data-action=tawr-approve]').count() === 0);
-  check('the crew comes off the Resource row', /Crew: Rosa, Victor/.test(await ixl.textContent()));
+  check('the party to action and the crew come off the look-ahead', /Party to action: BART/.test(await ixl.textContent()) && /Crew: Rosa, Victor/.test(await ixl.textContent()));
   await ixl.locator('[data-action=tawr-review]').click();
   await page.fill('.modal input[data-field=schedule_number]', 'S-123');
   await page.click('.modal [data-action=review-save]');
   await page.waitForSelector('.modal-back', { state: 'detached' });
-  await page.waitForFunction(() => /1 field changed by hand/.test(document.querySelector('.tawr-card')?.textContent || ''));
+  await page.waitForFunction(() => [...document.querySelectorAll('.tawr-card')].some((c) => /1 field changed by hand/.test(c.textContent)));
   check('a field changed in Review is kept and marked as changed by hand', true);
 
+  console.log(`\n${mode}: the conflicts on the track plan`);
+  await page.click('nav.views [data-view=map]');
+  await page.waitForSelector('#onmap .status-filter');
+  await page.waitForTimeout(300);
+  check('the track plan opens fitted to the whole sheet', await fitted(page));
+  check('the conflict is listed', /Conflicts this week \(1\)/.test(await page.textContent('#onmap')));
+  check('and drawn where the track is shared', await page.locator('.clash-pin').count() === 1);
+  check('a filter chip per status, with the week\'s counts', await page.locator('.status-filter .chip').count() === 4 && /Draft\s*3/.test(await page.textContent('.status-filter [data-status=draft]')));
+  await page.locator('#onmap .clash-list li').first().click();
+  await page.waitForTimeout(200);
+  check('picking a conflict makes both requests glow', await page.locator('#viewport path.tawr-glow').count() >= 2);
+  const pt = await lineUnderMouse(page);
+  check('a request line is in view to hover', !pt.why, pt.why);
+  if (!pt.why) {
+    await page.mouse.move(pt.x, pt.y, { steps: 4 });
+    await page.waitForSelector('.leaflet-tooltip.map-tip', { timeout: 5000 });
+    const tipText = await page.textContent('.leaflet-tooltip.map-tip');
+    await shot(page, `${mode}-2b-hover`);
+    check('hovering a request shows its party, description and limits', /Party to action: BART/.test(tipText) && /IXL SIM Testing|Cable pull/.test(tipText) && /Limits: W2 MP/.test(tipText), tipText);
+    await page.mouse.move(5, 300);
+  }
+  await page.click('.status-filter [data-status=draft]');
+  check('a status switched off is not drawn', await page.locator('#viewport path.tawr-line').count() === 0);
+  await page.click('.status-filter [data-status=draft]');
+  await page.check('[data-action=conflicts-only]');
+  check('only requests in a conflict, when asked', /TAWRs this week \(2 of 3\)/.test(await page.textContent('#onmap')));
+  await page.uncheck('[data-action=conflicts-only]');
+  await page.locator('#onmap li[data-tawr]').filter({ hasText: 'Colma TCR' }).click();
+  await page.waitForTimeout(200);
+  check('a request picked from the list glows', await page.locator('#onmap li[data-tawr].sel').count() === 1 && await page.locator('.loc-pin-lit').count() >= 1);
+  await shot(page, `${mode}-2-conflicts`);
+
+  await page.click('nav.views [data-view=tawr]');
   await page.click('.subtabs [data-section=setup]');
   await page.fill('[data-setting=requestor_name]', 'Rae Requester');
   await page.locator('.settings-row', { has: page.locator('[data-setting=requestor_name]') }).locator('button').click();
@@ -220,27 +264,29 @@ async function flow(page, { mode }) {
   await page.click('[data-action=bulk-submit]');
   await confirm(page);
   await page.waitForFunction(() => [...document.querySelectorAll('.tawr-card')].every((c) => c.dataset.tawrStatus === 'submitted'));
-  check('both are submitted together', true);
-  await shot(page, `${mode}-2-submitted`);
+  check('all three are submitted together', true);
+  await shot(page, `${mode}-3-submitted`);
 }
 
 async function manage(page, { mode }) {
   console.log(`\n${mode}: the Track Allocation Manager`);
   await page.click('nav.views [data-view=tawr]');
   await page.waitForSelector('.tawr-card');
-  check('the badge counts what is waiting for approval', (await page.textContent('#tawr-count')) === '2');
+  check('the badge counts what is waiting for approval', (await page.textContent('#tawr-count')) === '3');
+  check('the TCR request is not offered to consolidate with track', await card(page, 'Colma TCR').locator('[data-action=consolidate-pair]').count() === 0);
   await page.locator('[data-action=consolidate-pair]').first().click();
   await page.click('.modal [data-action=confirm]');
-  await page.waitForFunction(() => document.querySelectorAll('.tawr-card').length === 1);
-  const one = page.locator('.tawr-card');
-  check('two overlapping requests become one', (await one.getAttribute('data-tawr-status')) === 'submitted');
-  check('its Area joins them, the track ranges merged', (await one.locator('.area').textContent()) === 'Colma TCR; W2 MP 16.600-17.200', await one.locator('.area').textContent());
+  await page.waitForFunction(() => document.querySelectorAll('.tawr-card').length === 2);
+  const one = card(page, 'W2 MP 16.600–17.200');
+  check('two overlapping track requests become one', (await one.getAttribute('data-tawr-status')) === 'submitted');
+  check('its limits accumulate, leftmost to rightmost', (await one.locator('.area').textContent()) === 'W2 MP 16.600-17.200', await one.locator('.area').textContent());
+  check('the TCR request stays its own', await card(page, 'Colma TCR').count() === 1);
   check('the originals are kept as consolidated', /Consolidated and superseded \(2\)/.test(await page.textContent('.tawr-history summary')));
-  await page.click('[data-action=tawr-approve]');
+  await one.locator('[data-action=tawr-approve]').click();
   await confirm(page);
-  await page.waitForFunction(() => document.querySelector('.tawr-card')?.dataset.tawrStatus === 'approved');
+  await page.waitForFunction(() => [...document.querySelectorAll('.tawr-card')].some((c) => c.dataset.tawrStatus === 'approved'));
   check('approved', true);
-  check('an approved request is not edited, only viewed', await page.locator('[data-action=tawr-view]').count() === 1 && await page.locator('[data-action=tawr-review]').count() === 0);
+  check('an approved request is not edited, only viewed', await one.locator('[data-action=tawr-view]').count() === 1 && await one.locator('[data-action=tawr-review]').count() === 0);
 
   console.log(`\n${mode}: BART's form`);
   await page.click('.subtabs [data-section=setup]');
@@ -251,13 +297,14 @@ async function manage(page, { mode }) {
   check('the blank form is checked for every field and kept', true);
   await page.click('.subtabs [data-section=requests]');
   const dl = page.waitForEvent('download');
-  await page.click('[data-action=tawr-download]');
+  await card(page, 'W2 MP 16.600–17.200').locator('[data-action=tawr-download]').click();
   const file = await dl;
   const bytes = new Uint8Array(fs.readFileSync(await file.path()));
   const form = pdf.readForm(bytes);
   const value = (n) => form.fields.find((f) => f.name === n)?.value;
-  check('the download is BART\'s form, named for the week, place and shift', file.suggestedFilename() === 'TAWR 2026-11-02 Colma TCR Day.pdf', file.suggestedFilename());
-  check('filled with the Area from the track plan', value('row1_area') === 'Colma TCR; W2 MP 16.600-17.200', value('row1_area'));
+  check('the download is BART\'s form, named for the week, limits and shift', file.suggestedFilename() === 'TAWR 2026-11-02 W2 MP 16.600-17.200 Day.pdf', file.suggestedFilename());
+  check('filled with the limits as the Area', value('row1_area') === 'W2 MP 16.600-17.200', value('row1_area'));
+  check('marked as work in the track zone', value('work_in_track_zone_yes') === 'Yes' && value('work_in_track_zone_no') !== 'Yes', `${value('work_in_track_zone_yes')} ${value('work_in_track_zone_no')}`);
   check('the dates', value('row1_date') === '11/02/2026' && value('row3_date') === '11/04/2026', value('row1_date'));
   check('and what was changed by hand, carried through consolidating', value('schedule_number') === 'S-123', value('schedule_number'));
   check('and the requester, set before it was submitted', value('requestor_name') === 'Rae Requester', value('requestor_name'));
@@ -269,14 +316,125 @@ async function manage(page, { mode }) {
   check('the week downloads as one zip, once each', files.size === 1);
 
   console.log(`\n${mode}: on the map`);
-  await page.click('[data-action=tawr-map]');
+  await card(page, 'W2 MP 16.600–17.200').locator('[data-action=tawr-map]').click();
   await page.waitForSelector('body[data-view=map]');
-  await page.waitForSelector('#onmap .req-list li');
-  check('the approved request is listed on the map', /approved/.test(await page.textContent('#onmap .req-list')));
-  check('and drawn there', await page.locator('#viewport path.leaflet-interactive').count() > 0);
-  await shot(page, `${mode}-3-map`);
+  await page.waitForSelector('#onmap li[data-tawr]');
+  await page.waitForTimeout(300);
+  check('the approved request is listed on the map', /approved/.test(await page.locator('#onmap li[data-tawr]').filter({ hasText: 'W2 MP' }).textContent()));
+  check('and glows there, picked', await page.locator('#viewport path.tawr-glow').count() > 0);
+  check('shown close up rather than fitted', !(await fitted(page)));
+  check('no conflict left once they are one', /Conflicts this week \(0\)/.test(await page.textContent('#onmap')));
+  await shot(page, `${mode}-4-map`);
   await page.click('nav.views [data-view=lookahead]');
   check('the look-ahead shows which request each activity is in', /#\d+/.test(await rowOf(page, 'IXL SIM Testing').locator('.loc-tawr').textContent()));
+  await page.click('nav.views [data-view=map]');
+  await page.waitForTimeout(300);
+  check('coming back to the track plan fits the whole sheet again', await fitted(page));
+}
+
+async function copyPaste(page, { mode }) {
+  console.log(`\n${mode}: copying days, shift and all`);
+  await page.click('nav.views [data-view=lookahead]');
+  await dayCell(page, 'IXL SIM Testing', WEEK).click();
+  await page.keyboard.press('Control+c');
+  await dayCell(page, 'Cable pull', '2026-11-05').click({ button: 'right' });
+  await page.click('.ctx-menu [data-action=paste]');
+  const thu = dayCell(page, 'Cable pull', '2026-11-05');
+  check('a copied day pastes with its shift colour', (await thu.evaluate((n) => getComputedStyle(n).backgroundColor)) === 'rgb(255, 255, 0)');
+  check('and its support', (await thu.textContent()) === 'X.WIT');
+  await dayCell(page, 'Cable pull', '2026-11-06').click();
+  await dayCell(page, 'Cable pull', '2026-11-08').click({ modifiers: ['Shift'] });
+  await dayCell(page, 'Cable pull', '2026-11-07').click({ button: 'right' });
+  await page.click('.ctx-menu [data-action=paste]');
+  const painted = await Promise.all(['2026-11-06', '2026-11-07', '2026-11-08'].map((d) => dayCell(page, 'Cable pull', d).evaluate((n) => getComputedStyle(n).backgroundColor)));
+  check('one day pasted over several fills them all', painted.every((c) => c === 'rgb(255, 255, 0)'), painted.join());
+  const html = await page.evaluate(() => {
+    const dt = new DataTransfer();
+    document.querySelector('.la-scroll').dispatchEvent(Object.assign(new Event('copy', { bubbles: true }), { clipboardData: dt }));
+    return dt.getData('text/html');
+  });
+  check('the clipboard carries the colours for Excel too', /background-color:#FFFF00/.test(html), html.slice(0, 120));
+}
+
+async function sampleData(page, { mode }) {
+  console.log(`\n${mode}: sample data`);
+  await page.click('nav.views [data-view=lookahead]');
+  await page.click('[data-action=sample]');
+  await page.click('.modal [data-action=sample-confirm]');
+  await rowOf(page, 'Cable trough installation').waitFor();
+  check('four weeks of W and M line work arrive, linked', await page.locator('tr.la-activity td.loc-linked').count() === 16);
+  await page.evaluate(() => { document.querySelector('.la-scroll').scrollLeft = 0; });
+  await shot(page, `${mode}-5a-sample-lookahead`);
+  check('the look-ahead shows them from the coming Monday', (await page.locator('.la-week').first().getAttribute('data-week')) === '2026-10-19');
+  // Acting as the manager here, the badge counts what is submitted; count the drafts themselves.
+  await page.waitForFunction(() => (JSON.parse(localStorage.getItem('trackplan.ops.v1') || '{}').tawrs || []).filter((t) => t.status === 'draft').length === 21, null, { timeout: 20000 });
+  check('every week\'s TAWRs are raised from it — 21 over four weeks', true);
+  await page.click('nav.views [data-view=map]');
+  await page.waitForSelector('#onmap .status-filter');
+  check('the week due shows its conflicts on the track plan', /Conflicts this week \(2\)/.test(await page.textContent('#onmap')) && await page.locator('.clash-pin').count() === 2);
+  await page.selectOption('#onmap select', '2026-11-09');
+  check('another week, another conflict', /Conflicts this week \(1\)/.test(await page.textContent('#onmap')));
+  await shot(page, `${mode}-5-sample-map`);
+}
+
+/**
+ * A point where a request's line is what is actually under the mouse: on its
+ * stroke, inside the map, not under a pin, a panel or a toast. The line may run
+ * far off-screen after the zoom to a conflict, so its points are tested rather
+ * than assumed — and only once the map has stopped: a point found mid-zoom or
+ * mid-pan is elsewhere when it stops. So no zoom or pan may be running, and the
+ * same point has to be found twice, 100 ms apart.
+ * When there is none, `why` says what is on top of each line instead.
+ */
+async function lineUnderMouse(page) {
+  await page.evaluate(() => { globalThis.__lineUnderMouse = null; });
+  const found = await page.waitForFunction(() => {
+    let at = null;
+    if (!document.querySelector('#viewport .leaflet-map-pane:is(.leaflet-zoom-anim, .leaflet-pan-anim)')) {
+      search: for (const p of document.querySelectorAll('#viewport path.tawr-line')) {
+        const len = p.getTotalLength();
+        const m = p.getScreenCTM();
+        for (let i = 1; i < 40; i++) {
+          const q = p.getPointAtLength((len * i) / 40);
+          const x = q.x * m.a + q.y * m.c + m.e;
+          const y = q.x * m.b + q.y * m.d + m.f;
+          if (document.elementFromPoint(x, y) === p) { at = { x, y }; break search; }
+        }
+      }
+    }
+    const before = globalThis.__lineUnderMouse;
+    globalThis.__lineUnderMouse = at;
+    return at && before && at.x === before.x && at.y === before.y ? at : null;
+  }, null, { polling: 100, timeout: 5000 }).catch(() => null);
+  if (found) return found.jsonValue();
+  return {
+    why: await page.evaluate(() => {
+      const name = (e) => (e ? `${e.tagName.toLowerCase()}${e.id ? `#${e.id}` : ''}${(e.getAttribute('class') || '').trim().split(/\s+/).filter(Boolean).map((c) => `.${c}`).join('')}` : 'nothing');
+      const lines = [...document.querySelectorAll('#viewport path.tawr-line')];
+      const out = [`${lines.length} lines`, `window ${globalThis.innerWidth}x${globalThis.innerHeight}`, `map pane ${name(document.querySelector('#viewport .leaflet-map-pane'))}`];
+      for (const p of lines.slice(0, 4)) {
+        const len = p.getTotalLength();
+        const m = p.getScreenCTM();
+        const q = p.getPointAtLength(len / 2);
+        const x = Math.round(q.x * m.a + q.y * m.c + m.e);
+        const y = Math.round(q.x * m.b + q.y * m.d + m.f);
+        const r = p.getBoundingClientRect();
+        out.push(`line ${Math.round(len)} long, middle ${x},${y}, box ${Math.round(r.left)},${Math.round(r.top)} ${Math.round(r.width)}x${Math.round(r.height)}, pointer-events ${getComputedStyle(p).pointerEvents}, on top ${name(document.elementFromPoint(x, y))}`);
+      }
+      out.push(`dialogs ${document.querySelectorAll('.modal').length}`, `toasts "${[...document.querySelectorAll('.toast')].map((t) => t.textContent).join(' / ')}"`);
+      return out.join('; ');
+    }),
+  };
+}
+
+async function fitted(page) {
+  return page.evaluate(() => {
+    const img = document.querySelector('#viewport img.leaflet-image-layer, #viewport .leaflet-tile-container');
+    const vp = document.querySelector('#viewport').getBoundingClientRect();
+    if (!img) return false;
+    const r = img.getBoundingClientRect();
+    return r.width <= vp.width + 4 && r.width >= vp.width * 0.8;
+  });
 }
 
 async function importBook(page, { mode }) {
@@ -309,7 +467,9 @@ try {
     await page.waitForSelector('#loading', { state: 'detached' });
     check('the role is chosen in this browser, and says so', /Track Allocation Manager/.test(await page.textContent('#who')));
     await manage(page, { mode: 'static site' });
+    await copyPaste(page, { mode: 'static site' });
     await importBook(page, { mode: 'static site' });
+    await sampleData(page, { mode: 'static site' });
     check('no console errors (static site)', !errors.length, errors.join(' | '));
     await context.close();
     srv.close();
@@ -334,7 +494,9 @@ try {
         body: JSON.stringify({ username: 'rae', name: 'Rae Requester', role: 'requester', password: 'requester-pass' }),
       })).status);
       check('the manager adds the requester', made === 201);
-      await page.click('#who button'); // sign out
+      // Sign out, and wait for the page it reloads to: the old one may still be
+      // finishing a raise, and a sign-in box opened there is thrown away.
+      await Promise.all([page.waitForEvent('load'), page.click('#who button')]);
       await page.waitForSelector('.modal [data-action=signin]');
       await page.locator('.modal input').nth(0).fill('rae');
       await page.locator('.modal input').nth(1).fill('requester-pass');
@@ -353,7 +515,7 @@ try {
       await page.click('nav.views [data-view=lookahead]');
       await page.waitForSelector('.la-grid');
       check('the look-ahead is kept by the server', await rowOf(page, 'IXL SIM Testing').count() === 1);
-      await page.click('#who button');
+      await Promise.all([page.waitForEvent('load'), page.click('#who button')]);
       await page.waitForSelector('.modal [data-action=signin]');
       await page.locator('.modal input').nth(0).fill('tam');
       await page.locator('.modal input').nth(1).fill('manager-pass');
