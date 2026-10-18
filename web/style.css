@@ -391,5 +391,17 @@ details .row { margin-top: 6px; }
 .leaflet-overlay-pane path.tawr-glow { animation: tawr-breathe 1.4s ease-in-out infinite alternate; }
 .leaflet-overlay-pane path.tawr-lit { filter: drop-shadow(0 0 3px rgba(255,255,255,.95)); }
 .loc-pin-lit span { box-shadow: 0 0 0 3px #fff, 0 0 14px 6px #14d3a0; }
+/* A request's number on its line, in its status colour. */
+.req-tag span, .req-tag-key { display: inline-block; font: 700 11px system-ui, sans-serif; color: #fff; background: var(--c, #666b73); border: 2px solid #fff; border-radius: 9px; padding: 0 6px; box-shadow: 0 1px 4px rgba(0,0,0,.35); white-space: nowrap; cursor: pointer; }
+.req-tag-lit span { box-shadow: 0 0 0 3px #14d3a0, 0 0 12px 4px #14d3a0; }
+.map-key { margin: 8px 0 4px; font-size: 12px; }
+.map-key summary { cursor: pointer; color: var(--muted); font-weight: 600; }
+.map-key ul { list-style: none; padding: 0; margin: 4px 0 0; }
+.map-key li { display: flex; align-items: center; gap: 8px; padding: 2px 0; color: var(--ink); }
+.map-key .sym { flex: 0 0 38px; display: inline-flex; justify-content: center; }
+.key-pin { display: inline-grid; place-items: center; width: 15px; height: 15px; border-radius: 50%; background: #d1242f; color: #fff; font: 700 10px system-ui, sans-serif; }
+#onmap .hint { color: var(--muted); }
+.req-list .m.hint { color: #6a35a8; }
+.req-list > li:hover { box-shadow: 0 1px 4px rgba(0,0,0,.12); }
 @keyframes tawr-breathe { from { stroke-opacity: .25; } to { stroke-opacity: .75; } }
 @media (prefers-reduced-motion: reduce) { .leaflet-overlay-pane path.tawr-glow { animation: none; stroke-opacity: .4; } }

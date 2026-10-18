@@ -551,6 +551,17 @@ function renderOverlay() {
         L.polyline(llPoly(pl), { color: CONFLICT, weight: 2, opacity: 0.95, dashArray: '4 4', interactive: false, className: 'tawr-clash-edge' }).addTo(layers.tawrs);
       }
     }
+    /* Its number on the line, so which line is which needs no hovering — and a
+       track request can be found when the whole sheet is fitted, too small to see. */
+    const mid = midpointOf(place.geometry || []);
+    if (mid) {
+      const tag = L.marker(ll(mid[0], mid[1]), {
+        interactive: !quiet, keyboard: false,
+        icon: L.divIcon({ className: `req-tag${lit ? ' req-tag-lit' : ''}`, html: `<span style="--c:${col}">#${t.id}</span>`, iconSize: null, iconAnchor: [14, 26] }),
+      }).bindTooltip(tawrTip(t), { ...tipOptions, sticky: false });
+      if (!quiet) tag.on('click', () => selectTawr(t));
+      tag.addTo(layers.tawrs);
+    }
     for (const p of place.places || []) {
       const loc = locationById(p.id);
       if (!loc) continue;
@@ -580,6 +591,50 @@ function renderOverlay() {
 }
 
 /** Where to draw a conflict: the track the two share, or the room. */
+/** The middle of the longest line in a geometry, along its length: where a request's number goes. */
+function midpointOf(geometry) {
+  let best = null; let bestLen = -1;
+  for (const pl of geometry) {
+    let len = 0;
+    for (let i = 1; i < pl.length; i++) len += Math.hypot(pl[i][0] - pl[i - 1][0], pl[i][1] - pl[i - 1][1]);
+    if (len > bestLen) { best = pl; bestLen = len; }
+  }
+  if (!best?.length) return null;
+  let left = bestLen / 2;
+  for (let i = 1; i < best.length; i++) {
+    const step = Math.hypot(best[i][0] - best[i - 1][0], best[i][1] - best[i - 1][1]);
+    if (step >= left && step > 0) {
+      const f = left / step;
+      return [best[i - 1][0] + (best[i][0] - best[i - 1][0]) * f, best[i - 1][1] + (best[i][1] - best[i - 1][1]) * f];
+    }
+    left -= step;
+  }
+  return best[0];
+}
+
+/** Where two requests in a conflict meet: the stretch of track both want, or the room. */
+function sharedWhere(c) {
+  const both = [];
+  for (const x of c.a.source?.place?.limits || []) {
+    for (const y of c.b.source?.place?.limits || []) {
+      if (x.track !== y.track) continue;
+      const lo = Math.max(Math.min(+x.from_mp, +x.to_mp), Math.min(+y.from_mp, +y.to_mp));
+      const hi = Math.min(Math.max(+x.from_mp, +x.to_mp), Math.max(+y.from_mp, +y.to_mp));
+      if (lo < hi) both.push({ track: x.track, from_mp: lo, to_mp: hi });
+    }
+  }
+  if (both.length) return limitsText(both, { dash: '–' });
+  const names = new Map((c.a.source?.place?.places || []).map((p) => [p.id, p.name]));
+  const room = (c.b.source?.place?.places || []).find((p) => names.has(p.id));
+  return room ? shortLocationName(room.name) : '';
+}
+
+/** "#18 Tie replacement": a request by its number and the work it is for. */
+function workOf(t) {
+  const acts = t.source?.activities || [];
+  return `#${t.id} ${acts[0]?.title || t.location_name}${acts.length > 1 ? ` and ${acts.length - 1} more` : ''}`;
+}
+
 function conflictSpot(c) {
   const ga = c.a.source?.place?.geometry || [];
   const gb = c.b.source?.place?.geometry || [];
@@ -638,6 +693,21 @@ export function showTawr(t) {
   return true;
 }
 
+/** What the marks on the map mean, beyond the status colours the chips show. */
+function mapKey() {
+  const line = (style) => `<svg width="34" height="12" aria-hidden="true"><line x1="2" y1="6" x2="32" y2="6" style="${style}"/></svg>`;
+  const rows = [
+    [line(`stroke:${GLOW};stroke-width:9;stroke-opacity:.5;stroke-linecap:round`) + '', 'The request you picked glows'],
+    [line(`stroke:${CONFLICT};stroke-width:2;stroke-dasharray:4 4`), 'In a conflict; <span class="key-pin">!</span> marks where'],
+    [line(`stroke:${ACTIVITY};stroke-width:3;stroke-dasharray:6 5`), 'An activity linked on the look-ahead'],
+    ['<span class="req-tag-key">#17</span>', 'A request\'s number; a TCR request is pinned at the room'],
+  ];
+  return el('details', { class: 'map-key', open: true }, [
+    el('summary', { text: 'Key' }),
+    el('ul', {}, rows.map(([sym, text]) => el('li', { html: `<span class="sym">${sym}</span><span>${text}</span>` }))),
+  ]);
+}
+
 function renderOnMapList() {
   const host = $('#onmap');
   if (!host) return;
@@ -665,7 +735,8 @@ function renderOnMapList() {
   }, [el('span', { class: 'chip-dot' }), `${cap(s)} `, el('b', { text: String(count(s)) })])));
   const only = el('input', { type: 'checkbox', dataset: { action: 'conflicts-only' }, onChange: (e) => { state.conflictsOnly = e.target.checked; renderOverlay(); renderOnMapList(); } });
   only.checked = state.conflictsOnly;
-  host.append(el('h2', { text: 'Show' }), chips, el('label', { class: 'check' }, [only, ' Only requests in a conflict']));
+  host.append(el('h2', { text: 'Show' }), el('p', { class: 'small hint', text: 'A request is drawn in its status colour; click a status to hide or show it.' }), chips,
+    el('label', { class: 'check' }, [only, ' Only requests in a conflict']), mapKey());
 
   /* Conflicts first: they are what needs doing. */
   const clashes = o.conflicts || [];
@@ -673,10 +744,14 @@ function renderOnMapList() {
   if (!clashes.length) host.append(el('p', { class: 'small', text: 'No two requests want the same track or room at the same time.' }));
   const cl = el('ul', { class: 'req-list clash-list' });
   for (const c of clashes) {
-    const li = el('li', { class: state.conflict === c ? 'sel' : '', style: `--c:${CONFLICT}`, dataset: { conflict: `${c.a.id}-${c.b.id}` } }, [
-      el('div', { class: 't', text: `#${c.a.id} ${c.a.location_name}  ↔  #${c.b.id} ${c.b.location_name}` }),
-      el('div', { class: 'm', text: c.when.map((w) => `${dayName(w.date)}: ${w.a} / ${w.b}`).join(' · ') }),
-      el('div', { class: 'm', text: `${cap(c.a.status)} and ${c.b.status} · ${c.a.shift === c.b.shift ? `both ${tawrShiftLabel(c.a.shift)} shift — can be consolidated` : `${tawrShiftLabel(c.a.shift)} and ${tawrShiftLabel(c.b.shift)} shifts overlap`}` }),
+    const where = sharedWhere(c);
+    const hours = (t, side) => [...new Set(c.when.map((w) => w[side]))].join(', ');
+    const li = el('li', { class: state.conflict === c ? 'sel' : '', style: `--c:${CONFLICT}`, dataset: { conflict: `${c.a.id}-${c.b.id}` }, title: 'Show both on the map' }, [
+      el('div', { class: 't', text: `#${c.a.id} and #${c.b.id} want the same ${c.a.source?.kind === 'tcr' ? 'room' : 'track'} at the same time` }),
+      el('div', { class: 'm', text: `${workOf(c.a)} — ${tawrShiftLabel(c.a.shift)}, ${hours(c.a, 'a')} (${c.a.status})` }),
+      el('div', { class: 'm', text: `${workOf(c.b)} — ${tawrShiftLabel(c.b.shift)}, ${hours(c.b, 'b')} (${c.b.status})` }),
+      el('div', { class: 'm' }, [el('b', { text: 'Where ' }), where || 'their limits overlap', el('b', { text: ' · When ' }), [...new Set(c.when.map((w) => dayName(w.date)))].join(', ')]),
+      c.a.shift === c.b.shift ? el('div', { class: 'm hint', text: 'The same shift: the Track Allocation Manager can consolidate them into one request.' }) : null,
     ]);
     li.addEventListener('click', () => focusConflict(c));
     cl.append(li);
@@ -694,8 +769,9 @@ function renderOnMapList() {
         clashing.has(t.id) ? el('span', { class: 'pill', style: `--c:${CONFLICT}`, text: 'conflict' }) : null]),
       el('div', { class: 'm', text: `${tawrShiftLabel(t.shift)} shift · ${(t.source?.days || []).map((d) => dayName(d.date)).join(', ')}` }),
       el('div', { class: 'm', text: (t.source?.activities || []).map((a) => [a.title, a.party && `(${a.party})`].filter(Boolean).join(' ')).join('; ') }),
-      el('div', { class: 'btns' }, [el('button', { type: 'button', class: 'secondary', text: 'Open', onClick: (e) => { e.stopPropagation(); o.onOpenTawr?.(t); } })]),
+      el('div', { class: 'btns' }, [el('button', { type: 'button', class: 'secondary', text: 'Open TAWR', title: 'Open it in the TAWRs view', onClick: (e) => { e.stopPropagation(); o.onOpenTawr?.(t); } })]),
     ]);
+    li.title = 'Click to find it on the map';
     li.addEventListener('click', () => selectTawr(t, true));
     ul.append(li);
   }

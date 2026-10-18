@@ -20,7 +20,7 @@ import * as LA from './lookahead.js';
 import * as T from './tawr.js';
 import { autoRaise } from './tawr_sync.js';
 import * as M from './map.js';
-import { el, clear, toast, openModal } from './ui.js';
+import { el, clear, toast, openModal, dayLabel } from './ui.js';
 import * as LookaheadView from './lookahead_view.js';
 import * as TawrView from './tawr_view.js';
 
@@ -184,7 +184,7 @@ function pushOverlay() {
   const tawrs = app.tawrs.filter((t) => t.week_start === week && !['superseded', 'consolidated'].includes(t.status));
   M.setOverlay({
     week,
-    weeks: app.weeks().map((w) => ({ value: w, label: `Week of ${w}${w === T.dueWeek(app.today) ? ' (due now)' : ''}` })),
+    weeks: app.weeks().map((w) => ({ value: w, label: `Week of ${dayLabel(w).slice(4)}${w === T.dueWeek(app.today) ? ' — due now' : ''}` })),
     tawrs,
     conflicts: T.conflicts(tawrs),
     activities,

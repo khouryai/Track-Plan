@@ -233,6 +233,10 @@ async function flow(page, { mode }) {
   await page.waitForTimeout(300);
   check('the track plan opens fitted to the whole sheet', await fitted(page));
   check('the conflict is listed', /Conflicts this week \(1\)/.test(await page.textContent('#onmap')));
+  const clash = await page.textContent('#onmap .clash-list li');
+  check('in words: who, and where and when they meet', /want the same track at the same time/.test(clash) && /Where W2 MP 16\.800–16\.900/.test(clash), clash);
+  check('every track request carries its number on the map', await page.locator('.req-tag').count() === 2 && /^#\d+$/.test(await page.locator('.req-tag span').first().textContent()));
+  check('the week picker reads as a date', /^Week of \d+ \w{3}/.test(await page.locator('#onmap select option:checked').textContent()));
   check('and drawn where the track is shared', await page.locator('.clash-pin').count() === 1);
   check('a filter chip per status, with the week\'s counts', await page.locator('.status-filter .chip').count() === 4 && /Draft\s*3/.test(await page.textContent('.status-filter [data-status=draft]')));
   await page.locator('#onmap .clash-list li').first().click();

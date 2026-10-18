@@ -107,11 +107,15 @@ Manager. On a server, only the steps the signed-in account may take are taken.
 
 The *Track plan* view opens fitted to the whole sheet and shows the week's
 TAWRs drawn where they are, coloured by status, with every linked activity.
-Hovering a request or an activity shows its party to action, description,
-limits and days. A filter shows each status (with the week's counts) or only
-the requests in a conflict; conflicts are listed and marked where the track is
-shared, and the request — or both sides of the conflict — picked from the list
-or the map glows.
+Every track request carries its number on its line (a TCR request is pinned at
+the room), so each can be found even when the sheet is fitted. Hovering a
+request or an activity shows its party to action, description, limits and days.
+The sidebar's *TAWRs* tab picks the week, filters by status (with the week's
+counts) or to the requests in a conflict, and has a key to the marks. Each
+conflict is said in words — *#18 and #19 want the same track at the same time*,
+the work and hours of each, and where and when they meet — and marked on the
+map; the request, or both sides of a conflict, picked from the list or the map
+glows. *Open TAWR* goes to it in the TAWRs view.
 
 ### Roles
 
