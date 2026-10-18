@@ -229,23 +229,7 @@ async function flow(page, { mode }) {
   await page.locator('#onmap .clash-list li').first().click();
   await page.waitForTimeout(200);
   check('picking a conflict makes both requests glow', await page.locator('#viewport path.tawr-glow').count() >= 2);
-  /* Hover a point where a request's line is what is actually under the mouse:
-     on its stroke, inside the map, not under a pin, a panel or a toast. The
-     line may run far off-screen after the zoom to the conflict, so the points
-     are tested rather than assumed. */
-  const pt = await page.evaluate(() => {
-    for (const p of document.querySelectorAll('#viewport path.tawr-line')) {
-      const len = p.getTotalLength();
-      const m = p.getScreenCTM();
-      for (let i = 1; i < 40; i++) {
-        const q = p.getPointAtLength((len * i) / 40);
-        const x = q.x * m.a + q.y * m.c + m.e;
-        const y = q.x * m.b + q.y * m.d + m.f;
-        if (document.elementFromPoint(x, y) === p) return { x, y };
-      }
-    }
-    return null;
-  });
+  const pt = await lineUnderMouse(page);
   check('a request line is in view to hover', Boolean(pt));
   await page.mouse.move(pt.x, pt.y, { steps: 4 });
   await page.waitForSelector('.leaflet-tooltip.map-tip', { timeout: 5000 });
@@ -386,6 +370,38 @@ async function sampleData(page, { mode }) {
   await page.selectOption('#onmap select', '2026-11-09');
   check('another week, another conflict', /Conflicts this week \(1\)/.test(await page.textContent('#onmap')));
   await shot(page, `${mode}-5-sample-map`);
+}
+
+/**
+ * A point where a request's line is what is actually under the mouse: on its
+ * stroke, inside the map, not under a pin, a panel or a toast. The line may run
+ * far off-screen after the zoom to a conflict, so its points are tested rather
+ * than assumed — and only once the map has stopped. That zoom animates when it
+ * is short enough (Leaflet's threshold, which a few pixels of panel width
+ * decide), and a point found mid-zoom is elsewhere when it stops; so no zoom
+ * may be running, and the same point has to be found twice, 100 ms apart.
+ */
+async function lineUnderMouse(page) {
+  await page.evaluate(() => { globalThis.__lineUnderMouse = null; });
+  const found = await page.waitForFunction(() => {
+    let at = null;
+    if (!document.querySelector('#viewport .leaflet-map-pane.leaflet-zoom-anim')) {
+      search: for (const p of document.querySelectorAll('#viewport path.tawr-line')) {
+        const len = p.getTotalLength();
+        const m = p.getScreenCTM();
+        for (let i = 1; i < 40; i++) {
+          const q = p.getPointAtLength((len * i) / 40);
+          const x = q.x * m.a + q.y * m.c + m.e;
+          const y = q.x * m.b + q.y * m.d + m.f;
+          if (document.elementFromPoint(x, y) === p) { at = { x, y }; break search; }
+        }
+      }
+    }
+    const before = globalThis.__lineUnderMouse;
+    globalThis.__lineUnderMouse = at;
+    return at && before && at.x === before.x && at.y === before.y ? at : null;
+  }, null, { polling: 100, timeout: 5000 }).catch(() => null);
+  return found && found.jsonValue();
 }
 
 async function fitted(page) {
