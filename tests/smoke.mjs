@@ -372,14 +372,31 @@ async function sampleData(page, { mode }) {
   check('the four weeks fit side by side, opened at the first', fit.fits && fit.left === 0 && fit.seen, JSON.stringify(fit));
   await shot(page, `${mode}-5a-sample-lookahead`);
   check('the look-ahead shows them from the coming Monday', (await page.locator('.la-week').first().getAttribute('data-week')) === '2026-10-19');
-  // Acting as the manager here, the badge counts what is submitted; count the drafts themselves.
-  await page.waitForFunction(() => (JSON.parse(localStorage.getItem('trackplan.ops.v1') || '{}').tawrs || []).filter((t) => t.status === 'draft').length === 21, null, { timeout: 20000 });
+  // Read the browser's copy: the badge counts only what waits on whoever is acting.
+  await page.waitForFunction(() => {
+    const tawrs = JSON.parse(localStorage.getItem('trackplan.ops.v1') || '{}').tawrs || [];
+    return tawrs.length === 21 && tawrs.some((t) => t.status === 'approved');
+  }, null, { timeout: 20000 });
   check('every week\'s TAWRs are raised from it — 21 over four weeks', true);
+  const byWeek = await page.evaluate(() => {
+    const out = {};
+    for (const t of JSON.parse(localStorage.getItem('trackplan.ops.v1') || '{}').tawrs || []) {
+      out[t.week_start] = out[t.week_start] || {};
+      out[t.week_start][t.status] = (out[t.week_start][t.status] || 0) + 1;
+    }
+    return out;
+  });
+  const only = (w, status) => Object.keys(byWeek[w] || {}).join() === status;
+  check('a week whose deadline passed a while ago is approved, but for the requests in its conflict', byWeek['2026-10-19']?.approved > 0 && byWeek['2026-10-19']?.submitted === 2 && !byWeek['2026-10-19']?.draft, JSON.stringify(byWeek['2026-10-19']));
+  check('the week whose deadline has just passed is submitted, waiting for approval', only('2026-10-26', 'submitted'), JSON.stringify(byWeek['2026-10-26']));
+  check('the weeks still to come are drafts', only('2026-11-02', 'draft') && only('2026-11-09', 'draft'), JSON.stringify(byWeek));
   await page.click('nav.views [data-view=map]');
   await page.waitForSelector('#onmap .status-filter');
   check('the week due shows its conflicts on the track plan', /Conflicts this week \(2\)/.test(await page.textContent('#onmap')) && await page.locator('.clash-pin').count() === 2);
   await page.selectOption('#onmap select', '2026-11-09');
-  check('another week, another conflict', /Conflicts this week \(1\)/.test(await page.textContent('#onmap')));
+  const sidebar = await page.textContent('#onmap');
+  check('another week, another conflict', /Conflicts this week \(1\)/.test(sidebar));
+  check('the third shift is called Blanket, never by its stored name', /Blanket shift/.test(sidebar) && !/possession/i.test(sidebar));
   await shot(page, `${mode}-5-sample-map`);
 }
 

@@ -133,6 +133,37 @@ export async function autoRaise(app) {
 }
 
 /**
+ * The sample's weeks as they would stand by now. A week whose deadline has
+ * passed was submitted, and approved once it passed a week ago — all but the
+ * requests in a conflict, which wait for the Track Allocation Manager. On the
+ * static site every step is taken; on a server, those this account may take.
+ * Answers how many steps were taken.
+ */
+export async function settleSample(app) {
+  const steps = [];
+  for (const week of new Set(app.tawrs.map((t) => t.week_start))) {
+    const deadline = T.tawrDeadline(week);
+    if (deadline >= app.today) continue;
+    const live = app.tawrs.filter((t) => t.week_start === week && !['superseded', 'consolidated'].includes(t.status));
+    const clashing = new Set(T.conflicts(live).flatMap((c) => [c.a.id, c.b.id]));
+    const approve = T.addDaysISO(deadline, 7) < app.today;
+    for (const t of live) {
+      if (t.status !== 'draft' || (t.source?.flags || []).some((f) => f.blocking)) continue;
+      steps.push([t.id, 'submit']);
+      if (approve && !clashing.has(t.id)) steps.push([t.id, 'approve']);
+    }
+  }
+  let taken = steps;
+  if (S.store.mode === 'local') S.settleLocalSample(steps);
+  else {
+    taken = steps.filter(([, action]) => T.may(S.store.workflow, S.role(), action));
+    for (const [id, action] of taken) await S.act(id, action);
+  }
+  if (taken.length) await app.reloadTawrs();
+  return taken.length;
+}
+
+/**
  * The merged request for a consolidation, read with the merge applied: what
  * `consolidate()` is sent along with the ids. The merge id is made here, so
  * the record and the merge agree before the server sees either.

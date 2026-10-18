@@ -32,6 +32,7 @@ import * as S from './store.js';
 import { el, esc, clear, toast, contextMenu, openModal, confirmDialog, dayLabel, saveFile, csvField } from './ui.js';
 import { STATUS_COLOR } from './map.js';
 import { sampleLookahead, sampleStart } from './sample.js';
+import { settleSample } from './tawr_sync.js';
 
 const META = LA.FIELDS.length;
 const LOC = LA.FIELDS.findIndex((f) => f.key === 'location');
@@ -1075,7 +1076,7 @@ function loadSample() {
   openModal({
     title: 'Load sample data',
     body: el('div', { class: 'form-grid' }, [
-      el('p', { text: `Four weeks from ${dayLabel(start)}: construction and testing and commissioning on the W line and the M line, each location linked to the track plan, with a few conflicts for the track allocation manager to sort out. TAWRs are raised from it by themselves.` }),
+      el('p', { text: `Four weeks from ${dayLabel(start)}: construction and testing and commissioning on the W line and the M line, each location linked to the track plan, with a few conflicts for the track allocation manager to sort out. TAWRs are raised from it by themselves, and the weeks whose deadline has already passed come as they would be by now: submitted, and approved where nothing conflicts.` }),
       existing ? el('p', { class: 'msg err', text: `This replaces the ${existing} rows on the look-ahead now.` }) : null,
       local ? el('label', { class: 'check' }, [fresh, ' Clear the TAWRs in this browser too, for a clean start'])
         : el('p', { class: 'small', text: 'TAWRs already raised stay; drafts no longer on the look-ahead can be discarded.' }),
@@ -1103,6 +1104,9 @@ function loadSample() {
           render(V.root, V.app);
           toast(`Sample loaded: ${sample.rows.filter((r) => r.kind === 'activity').length} activities over four weeks from ${dayLabel(sample.start)}. Raising the TAWRs…`, 'good', 6000);
           await V.app.raise({ say: true });
+          try {
+            if (await settleSample(V.app)) toast('The weeks already past their deadline are submitted, and approved where nothing conflicts — as they would be by now.', 'good', 6000);
+          } catch (err) { toast(`Could not move the earlier weeks on: ${err.message}`, 'bad'); }
           if (V.app.view === 'lookahead') draw();
         },
       },

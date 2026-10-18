@@ -94,6 +94,10 @@ Five conflicts are planted in it (`web/js/sample.js` says where): two on one
 shift that can be consolidated, a day shift and a swing shift on W1, two
 shifts in the Daly City TCR at once, and a night shift running into a Blanket
 on M2. On the static site it can clear the browser's TAWRs for a clean start.
+The weeks whose deadline has already passed come as they would be by now: a
+week past its deadline is submitted, and approved once the deadline is a week
+gone — except the requests in a conflict, which wait for the Track Allocation
+Manager. On a server, only the steps the signed-in account may take are taken.
 
 The *Track plan* view opens fitted to the whole sheet and shows the week's
 TAWRs drawn where they are, coloured by status, with every linked activity.

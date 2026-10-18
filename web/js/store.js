@@ -312,41 +312,60 @@ export async function updateTawr(id, changes) {
 export async function act(id, action, note = null) {
   if (local()) {
     if (!store.user) throw new Refused('choose who you are first', 401);
-    const rule = store.workflow.actions[action];
     const s = readLocal();
     const r = localTawr(s, id);
     if (!may(store.workflow, role(), action)) throw new Refused(`a ${store.workflow.roles[role()].toLowerCase()} cannot ${action} a request`);
-    if (!rule.from.includes(r.status)) throw new Refused(`a ${r.status} request cannot be ${action}ed`, 409);
-    if (rule.unblocked) {
-      const blocking = (r.source?.flags || []).filter((f) => f.blocking);
-      if (blocking.length) throw new Refused(`fix what is flagged first: ${blocking.map((f) => f.message).join(' ')}`, 409);
-    }
-    if (rule.note && !String(note || '').trim()) throw new Refused('say why', 400);
-    if (action === 'discard') {
-      s.tawrs = s.tawrs.filter((t) => t.id !== id);
-      writeLocal(s);
-      return { deleted: id };
-    }
-    const stamp = nowIso();
-    r.status = rule.to;
-    r.history = history(r, action, String(note || '').trim() || null);
-    r.updated_by = store.user.id;
-    r.updated_at = stamp;
-    if (action === 'submit') Object.assign(r, { submitted_by: store.user.id, submitted_at: stamp, decision_note: null });
-    if (action === 'approve' || action === 'reject') Object.assign(r, { decided_by: store.user.id, decided_at: stamp, decision_note: String(note || '').trim() || null });
-    let out = r;
-    if (rule.creates) {
-      out = {
-        ...clone(r), id: s.nextTawr++, status: 'draft', supersedes: r.id, merged_into: null, decision_note: null,
-        history: history(null, `revision of #${r.id}`), created_by: store.user.id, created_at: stamp,
-        submitted_by: null, submitted_at: null, decided_by: null, decided_at: null,
-      };
-      s.tawrs.push(out);
-    }
+    const out = localAct(s, r, action, note);
     writeLocal(s);
-    return clone(out);
+    return out;
   }
   return http('POST', `api/tawrs/${id}/${action}`, { note });
+}
+
+/** One step of the workflow on the browser's copy, once the role may take it. */
+function localAct(s, r, action, note) {
+  const rule = store.workflow.actions[action];
+  if (!rule.from.includes(r.status)) throw new Refused(`a ${r.status} request cannot be ${action}ed`, 409);
+  if (rule.unblocked) {
+    const blocking = (r.source?.flags || []).filter((f) => f.blocking);
+    if (blocking.length) throw new Refused(`fix what is flagged first: ${blocking.map((f) => f.message).join(' ')}`, 409);
+  }
+  if (rule.note && !String(note || '').trim()) throw new Refused('say why', 400);
+  if (action === 'discard') {
+    s.tawrs = s.tawrs.filter((t) => t.id !== r.id);
+    return { deleted: r.id };
+  }
+  const stamp = nowIso();
+  r.status = rule.to;
+  r.history = history(r, action, String(note || '').trim() || null);
+  r.updated_by = store.user.id;
+  r.updated_at = stamp;
+  if (action === 'submit') Object.assign(r, { submitted_by: store.user.id, submitted_at: stamp, decision_note: null });
+  if (action === 'approve' || action === 'reject') Object.assign(r, { decided_by: store.user.id, decided_at: stamp, decision_note: String(note || '').trim() || null });
+  let out = r;
+  if (rule.creates) {
+    out = {
+      ...clone(r), id: s.nextTawr++, status: 'draft', supersedes: r.id, merged_into: null, decision_note: null,
+      history: history(null, `revision of #${r.id}`), created_by: store.user.id, created_at: stamp,
+      submitted_by: null, submitted_at: null, decided_by: null, decided_at: null,
+    };
+    s.tawrs.push(out);
+  }
+  return clone(out);
+}
+
+/**
+ * The sample's weeks as they would stand by now, in this browser: each step
+ * taken as `act` takes it but in no one's role — the static site's roles are
+ * chosen, not checked, and these stand for weeks already dealt with. `steps`
+ * is `[[id, action], …]`, all or none.
+ */
+export function settleLocalSample(steps) {
+  if (!local()) throw new Refused('only the copy in this browser can be settled like this');
+  requireWrite();
+  const s = readLocal();
+  for (const [id, action] of steps) localAct(s, localTawr(s, id), action, null);
+  writeLocal(s);
 }
 
 export async function consolidate(ids, merge, record, note = null) {

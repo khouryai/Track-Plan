@@ -23,6 +23,7 @@
 
 import { samplePolys, bboxOf, limitText, limitsText, hasLink, linkArea, shortLocationName, sharedSpot, sliceRoute } from './links.js';
 import { el, esc, toast } from './ui.js';
+import { tawrShiftLabel } from './tawr.js';
 
 const L = window.L;
 const PAGE_W = 6552;
@@ -481,7 +482,7 @@ function tawrTip(t) {
     return `<div class="tip-clash">Conflicts with #${other.id} ${esc(other.location_name)} — ${esc(c.when.map((w) => dayName(w.date)).join(', '))}</div>`;
   }).join('');
   return `<div class="tip-head">TAWR #${t.id} · ${esc(cap(t.status))}</div>`
-    + `<div><b>${esc(t.location_name)}</b> · ${esc(cap(t.shift))} shift</div>`
+    + `<div><b>${esc(t.location_name)}</b> · ${esc(tawrShiftLabel(t.shift))} shift</div>`
     + `<div>Limits: ${esc(src.area || t.location_name)}</div>`
     + `<div>${esc(days)}</div>${rows}${clash}`;
 }
@@ -491,7 +492,7 @@ function activityTip(a) {
     + `<div><b>${esc([a.activity_id, a.description].filter(Boolean).join(' · ') || a.title)}</b></div>`
     + `${a.party ? `<div>Party to action: ${esc(a.party)}</div>` : ''}`
     + `<div>Limits: ${esc(linkArea(a.link))}</div>`
-    + `${a.days?.length ? `<div>This week: ${esc(a.days.map((d) => `${dayName(d.date)}${d.shift ? ` (${d.shift})` : ''}`).join(', '))}</div>` : ''}`;
+    + `${a.days?.length ? `<div>This week: ${esc(a.days.map((d) => `${dayName(d.date)}${d.shift ? ` (${tawrShiftLabel(d.shift)})` : ''}`).join(', '))}</div>` : ''}`;
 }
 
 const tipOptions = { sticky: true, direction: 'top', className: 'map-tip', opacity: 1, offset: [0, -10] };
@@ -675,7 +676,7 @@ function renderOnMapList() {
     const li = el('li', { class: state.conflict === c ? 'sel' : '', style: `--c:${CONFLICT}`, dataset: { conflict: `${c.a.id}-${c.b.id}` } }, [
       el('div', { class: 't', text: `#${c.a.id} ${c.a.location_name}  ↔  #${c.b.id} ${c.b.location_name}` }),
       el('div', { class: 'm', text: c.when.map((w) => `${dayName(w.date)}: ${w.a} / ${w.b}`).join(' · ') }),
-      el('div', { class: 'm', text: `${cap(c.a.status)} and ${c.b.status} · ${c.a.shift === c.b.shift ? `both ${c.a.shift} shift — can be consolidated` : `${c.a.shift} and ${c.b.shift} shifts overlap`}` }),
+      el('div', { class: 'm', text: `${cap(c.a.status)} and ${c.b.status} · ${c.a.shift === c.b.shift ? `both ${tawrShiftLabel(c.a.shift)} shift — can be consolidated` : `${tawrShiftLabel(c.a.shift)} and ${tawrShiftLabel(c.b.shift)} shifts overlap`}` }),
     ]);
     li.addEventListener('click', () => focusConflict(c));
     cl.append(li);
@@ -691,7 +692,7 @@ function renderOnMapList() {
     const li = el('li', { class: glowing().has(t.id) ? 'sel' : '', style: `--c:${STATUS_COLOR[t.status]}`, dataset: { tawr: t.id } }, [
       el('div', { class: 't' }, [`#${t.id} ${t.location_name} `, el('span', { class: 'pill', style: `--c:${STATUS_COLOR[t.status]}`, text: t.status }),
         clashing.has(t.id) ? el('span', { class: 'pill', style: `--c:${CONFLICT}`, text: 'conflict' }) : null]),
-      el('div', { class: 'm', text: `${cap(t.shift)} shift · ${(t.source?.days || []).map((d) => dayName(d.date)).join(', ')}` }),
+      el('div', { class: 'm', text: `${tawrShiftLabel(t.shift)} shift · ${(t.source?.days || []).map((d) => dayName(d.date)).join(', ')}` }),
       el('div', { class: 'm', text: (t.source?.activities || []).map((a) => [a.title, a.party && `(${a.party})`].filter(Boolean).join(' ')).join('; ') }),
       el('div', { class: 'btns' }, [el('button', { type: 'button', class: 'secondary', text: 'Open', onClick: (e) => { e.stopPropagation(); o.onOpenTawr?.(t); } })]),
     ]);
