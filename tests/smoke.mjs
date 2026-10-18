@@ -230,13 +230,15 @@ async function flow(page, { mode }) {
   await page.waitForTimeout(200);
   check('picking a conflict makes both requests glow', await page.locator('#viewport path.tawr-glow').count() >= 2);
   const pt = await lineUnderMouse(page);
-  check('a request line is in view to hover', Boolean(pt));
-  await page.mouse.move(pt.x, pt.y, { steps: 4 });
-  await page.waitForSelector('.leaflet-tooltip.map-tip', { timeout: 5000 });
-  const tipText = await page.textContent('.leaflet-tooltip.map-tip');
-  await shot(page, `${mode}-2b-hover`);
-  check('hovering a request shows its party, description and limits', /Party to action: BART/.test(tipText) && /IXL SIM Testing|Cable pull/.test(tipText) && /Limits: W2 MP/.test(tipText), tipText);
-  await page.mouse.move(5, 300);
+  check('a request line is in view to hover', !pt.why, pt.why);
+  if (!pt.why) {
+    await page.mouse.move(pt.x, pt.y, { steps: 4 });
+    await page.waitForSelector('.leaflet-tooltip.map-tip', { timeout: 5000 });
+    const tipText = await page.textContent('.leaflet-tooltip.map-tip');
+    await shot(page, `${mode}-2b-hover`);
+    check('hovering a request shows its party, description and limits', /Party to action: BART/.test(tipText) && /IXL SIM Testing|Cable pull/.test(tipText) && /Limits: W2 MP/.test(tipText), tipText);
+    await page.mouse.move(5, 300);
+  }
   await page.click('.status-filter [data-status=draft]');
   check('a status switched off is not drawn', await page.locator('#viewport path.tawr-line').count() === 0);
   await page.click('.status-filter [data-status=draft]');
@@ -380,6 +382,7 @@ async function sampleData(page, { mode }) {
  * is short enough (Leaflet's threshold, which a few pixels of panel width
  * decide), and a point found mid-zoom is elsewhere when it stops; so no zoom
  * may be running, and the same point has to be found twice, 100 ms apart.
+ * When there is none, `why` says what is on top of each line instead.
  */
 async function lineUnderMouse(page) {
   await page.evaluate(() => { globalThis.__lineUnderMouse = null; });
@@ -401,7 +404,25 @@ async function lineUnderMouse(page) {
     globalThis.__lineUnderMouse = at;
     return at && before && at.x === before.x && at.y === before.y ? at : null;
   }, null, { polling: 100, timeout: 5000 }).catch(() => null);
-  return found && found.jsonValue();
+  if (found) return found.jsonValue();
+  return {
+    why: await page.evaluate(() => {
+      const name = (e) => (e ? `${e.tagName.toLowerCase()}${e.id ? `#${e.id}` : ''}${(e.getAttribute('class') || '').trim().split(/\s+/).filter(Boolean).map((c) => `.${c}`).join('')}` : 'nothing');
+      const lines = [...document.querySelectorAll('#viewport path.tawr-line')];
+      const out = [`${lines.length} lines`, `window ${globalThis.innerWidth}x${globalThis.innerHeight}`, `map pane ${name(document.querySelector('#viewport .leaflet-map-pane'))}`];
+      for (const p of lines.slice(0, 4)) {
+        const len = p.getTotalLength();
+        const m = p.getScreenCTM();
+        const q = p.getPointAtLength(len / 2);
+        const x = Math.round(q.x * m.a + q.y * m.c + m.e);
+        const y = Math.round(q.x * m.b + q.y * m.d + m.f);
+        const r = p.getBoundingClientRect();
+        out.push(`line ${Math.round(len)} long, middle ${x},${y}, box ${Math.round(r.left)},${Math.round(r.top)} ${Math.round(r.width)}x${Math.round(r.height)}, pointer-events ${getComputedStyle(p).pointerEvents}, on top ${name(document.elementFromPoint(x, y))}`);
+      }
+      out.push(`dialogs ${document.querySelectorAll('.modal').length}`, `toasts "${[...document.querySelectorAll('.toast')].map((t) => t.textContent).join(' / ')}"`);
+      return out.join('; ');
+    }),
+  };
 }
 
 async function fitted(page) {
