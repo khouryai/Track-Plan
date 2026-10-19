@@ -92,7 +92,14 @@ data extracted automatically from the drawing.
    it. A TCR request and a track request are never consolidated. Requests that want
    the same track (or room) **at the same time** — whatever their shift: a Blanket
    from midnight meets the night shift before it — are marked as conflicts in their
-   rows and on the track plan. Then *Approve* or
+   rows and on the track plan. Two more checks are made on the week: a **power
+   clash** — two requests in the same power section at the same time, one with
+   the third rail OFF on its form and the other ON (cancelled and denied
+   requests no longer count) — and **BART support over what BART can provide**:
+   the support each day asks for is added up across the requests still counting
+   (drafts, submitted, approved), shift by shift, against *Setup → What BART can
+   provide*, and a day over is said once for the week and marked on each request
+   in it. Then *Approve* or
    *Reject* (with a reason the requester sees), one by one or in bulk. An approved
    request is final: changing it is a *Revise*, which keeps the approved version
    as superseded. If two approved requests still repeat each other, the page says
@@ -270,6 +277,8 @@ is kept at `db/tawr_template.pdf` — outside `web/`, ignored by git.
   - **Draw along track**: click the start, then click along the route through
     any crossover to the end
   - **Add / remove pieces**: click individual crossovers or yard tracks
+  - **an interlocking** (*Pick an interlocking*: `W45`, `C35`): its limits on
+    each track, as the drawing's dimension arrows give them
   - a typed track and milepost range
 - the week's TAWRs are drawn colour-coded by status, with the linked activities;
   hover any of them for the party to action, description, limits and days;
@@ -322,6 +331,20 @@ is kept at `db/tawr_template.pdf` — outside `web/`, ignored by git.
    line. Anchors that don't run in order along the rail are dropped. Between
    consecutive anchors, the milepost is interpolated by distance along the
    drawn track.
+7. **Power and interlockings** (`pipeline/facilities.py`, which also runs on its
+   own and only adds to `web/data/map.json`). Substations (the sheet's
+   triangles) and gap breaker stations (its hexagons) stand on leaders that run
+   through a milepost box, so each is pinned to that milepost; between two of
+   them on a line is a **power section** — 54 substations, 41 gap breaker
+   stations, 89 sections. Their codes (`MXS`, `WXA`) are read where the stroke
+   glyphs read cleanly, otherwise a section is named by milepost. Each
+   **interlocking** drawn with a dimension arrow between extension lines
+   (`C35`, `W45`) becomes a milepost range on every track the arrow covers —
+   the nearest arrow above or below a track claims it — 47 of them. Where the
+   drawing squeezes a long stretch into an interlocking's width (the Berkeley
+   Hills tunnel under C25), a track whose range comes out more than three times
+   the others' takes theirs, marked `adjusted`. An interlocking labelled at a
+   point without arrows (a station's) has no limits.
 
 ### Accuracy, and what needs a human
 
@@ -387,7 +410,7 @@ is kept at `db/tawr_template.pdf` — outside `web/`, ignored by git.
 
 ```
 source/   the original PDF
-pipeline/ extraction (pdfmap, labels, tracks, linref, build), glyph prototypes, fonts.conf, overrides
+pipeline/ extraction (pdfmap, labels, tracks, linref, facilities, build), glyph prototypes, fonts.conf, overrides
 web/      the application: index.html, style.css, js/ (ES modules, no build step), data/map.json,
           data/tawr_workflow.json, map.svg, vendor/leaflet; tiles/ is generated
 db/       schema.sql (the map), operations.sql (accounts, look-ahead, TAWRs); the .db files are generated

@@ -48,7 +48,7 @@ import {
 } from './lookahead.js';
 import {
   hasLink, linkForLocation, resolveLocationText, unionLinks, unionArea, linksOverlap,
-  shortLocationName, limitsText, linkParts, partKey, partArea, PART_KINDS,
+  shortLocationName, limitsText, linkParts, partKey, partArea, PART_KINDS, lineOf,
 } from './links.js';
 
 export { PART_KINDS };
@@ -562,12 +562,16 @@ function finish(g, { register, expanded, shiftHours }) {
       return fallback;
     });
     const hours = combineHours(ranges, g.shift);
+    // What BART is asked for that day, every code (witnesses too): what BART's capacity is checked against.
+    const support = {};
+    for (const e of entries) for (const [code, n] of e.counts) support[code] = (support[code] || 0) + n;
     return {
       date,
       start: hours ? hhmm(hours.start) : '',
       end: hours ? hhmm(hours.end) : '',
       fromShift,
       rows: [...new Set(entries.map((e) => e.row))],
+      support,
     };
   });
   for (const text of unreadable) {
@@ -856,6 +860,109 @@ export function repetitions(records) {
 }
 
 /* ── After approval: BART, and the access ─────────────────────────────── */
+
+/* ── Power sections, and what BART can provide ──────────────────────── */
+
+/**
+ * The power sections a request's track limits run through (`sections` is the
+ * map's `power.sections`, read off the drawing between substations and gap
+ * breaker stations): a Set of their ids.
+ */
+export function sectionsOf(record, sections) {
+  const out = new Set();
+  for (const l of record?.source?.place?.limits || []) {
+    if (!l.track) continue;
+    const line = lineOf(l.track);
+    const lo = Math.min(l.from_mp, l.to_mp);
+    const hi = Math.max(l.from_mp, l.to_mp);
+    for (const s of sections || []) if (s.line === line && s.from_mp < hi && lo < s.to_mp) out.add(s.id);
+  }
+  return out;
+}
+
+/** What a request's form says about the traction power on a day: 'on', 'off', 'na', or null if it does not say. */
+export function powerOn(record, iso) {
+  const f = record?.fields || {};
+  const date = formDate(iso);
+  for (let n = 1; n <= FORM_ROWS; n++) {
+    if (f[`row${n}_date`] !== date) continue;
+    return f[`row${n}_power_off`] ? 'off' : f[`row${n}_power_on`] ? 'on' : f[`row${n}_power_na`] ? 'na' : null;
+  }
+  return null;
+}
+
+/**
+ * Requests that need the third rail differently in the same power section at
+ * the same time — one asks for the power off, the other for it on:
+ * `{ a, b, sections: [ids], when: [{ date, a, b }] }`, each pair once.
+ */
+export function powerConflicts(records, sections) {
+  if (!sections?.length) return [];
+  const live = (records || []).filter((r) => LIVE.includes(r.status));
+  const secs = new Map(live.map((r) => [r, sectionsOf(r, sections)]));
+  const out = [];
+  for (let i = 0; i < live.length; i++) {
+    for (let j = i + 1; j < live.length; j++) {
+      const a = live[i];
+      const b = live[j];
+      const shared = [...secs.get(a)].filter((id) => secs.get(b).has(id));
+      if (!shared.length) continue;
+      const when = [];
+      for (const x of occupancy(a)) {
+        for (const y of occupancy(b)) {
+          if (!(x.from < y.to && y.from < x.to)) continue;
+          const pa = powerOn(a, x.date);
+          const pb = powerOn(b, y.date);
+          if ((pa === 'off' && pb === 'on') || (pa === 'on' && pb === 'off')) when.push({ date: x.date, a: pa, b: pb });
+        }
+      }
+      if (when.length) out.push({ a, b, sections: shared, when });
+    }
+  }
+  return out;
+}
+
+/** What BART can provide, from its setting: `{ code: { shift: n } }`, the numbers only. */
+export function parseCapacity(text) {
+  let raw;
+  try { raw = JSON.parse(text || '{}'); } catch { return {}; }
+  const out = {};
+  for (const [code, shifts] of Object.entries(raw && typeof raw === 'object' ? raw : {})) {
+    for (const [shift, n] of Object.entries(shifts && typeof shifts === 'object' ? shifts : {})) {
+      if (Number.isInteger(n) && n >= 0) (out[code] = out[code] || {})[shift] = n;
+    }
+  }
+  return out;
+}
+
+/**
+ * BART support asked for by every request that still counts — drafts,
+ * submitted and approved — added up day by day and shift by shift, against what
+ * BART can provide: `[{ date, shift, code, asked, capacity, ids }]` for each day
+ * and shift that asks for more than BART has. A request saved before support
+ * was kept by the day counts its busiest day on every day.
+ */
+export function supportOver(records, capacity) {
+  const totals = new Map();
+  for (const r of records || []) {
+    if (!['draft', 'submitted', 'approved'].includes(r.status)) continue;
+    const peak = Object.fromEntries((r.source?.support || []).map((x) => [x.code, x.count]));
+    for (const d of r.source?.days || []) {
+      for (const [code, n] of Object.entries(d.support || peak)) {
+        if (!n) continue;
+        const key = `${d.date}|${r.shift}|${code}`;
+        const t = totals.get(key) || { date: d.date, shift: r.shift, code, asked: 0, ids: [] };
+        t.asked += n;
+        t.ids.push(r.id);
+        totals.set(key, t);
+      }
+    }
+  }
+  return [...totals.values()]
+    .filter((t) => Number.isInteger(capacity?.[t.code]?.[t.shift]) && t.asked > capacity[t.code][t.shift])
+    .map((t) => ({ ...t, capacity: capacity[t.code][t.shift] }))
+    .sort((a, b) => a.date.localeCompare(b.date) || a.shift.localeCompare(b.shift) || a.code.localeCompare(b.code));
+}
 
 /** The hours one day asked for: 2230–0430 is 6. Null where the hours are unknown. */
 export function dayHours(day) {

@@ -178,6 +178,17 @@ function renderRequests(host) {
     ]));
   }
 
+  /* More BART support than BART can give on a shift: said once for the week. */
+  const overs = T.supportOver(app.tawrs.filter(live), T.parseCapacity(settings.support_capacity))
+    .filter((o) => o.date >= week && o.date <= T.addDaysISO(week, 6));
+  if (overs.length) {
+    host.append(el('div', { class: 'notice notice-warn', role: 'status', dataset: { notice: 'support-over' } }, [el('div', {}, [
+      el('strong', { text: 'More BART support asked for than BART can provide. ' }),
+      overs.map((o) => `${dayLabel(o.date)}, ${T.tawrShiftLabel(o.shift).toLowerCase()} shift: ${o.asked} × ${codeName(o.code)} asked for, BART provides ${o.capacity} (${o.ids.map((i) => `#${i}`).join(', ')})`).join(' · '),
+      '. Move work to another shift or day, or check with BART first.',
+    ])]));
+  }
+
   /* Approved twice for the same thing: what consolidating exists to prevent. */
   for (const rep of T.repetitions(approved)) {
     host.append(notice('bad', `#${rep.a.id} ${rep.a.location_name} and #${rep.b.id} ${rep.b.location_name} are both approved for the same track on ${rep.days.map(dayLabel).join(', ')}.`,
@@ -197,13 +208,14 @@ function renderRequests(host) {
     });
     all.checked = pickable.length > 0 && pickable.every((id) => V.picked.has(id));
     const clashes = T.conflicts(records.filter(live));
+    const power = T.powerConflicts(records.filter(live), app.data?.power?.sections);
     const table = el('table', { class: 'tawr-table' }, [
       el('thead', {}, [el('tr', {}, [
         el('th', { class: 'c-pick' }, [pickable.length ? all : null]),
         ...['Request', 'When', 'Work', 'BART support', 'Status and next step'].map((h) => el('th', { text: h })),
         el('th', { class: 'c-act' }, [el('span', { class: 'sr-only', text: 'Actions' })]),
       ])]),
-      ...items.map((item) => card(item, items, clashes)),
+      ...items.map((item) => card(item, items, clashes, { power, overs })),
     ]);
     host.append(el('div', { class: 'scroll-x' }, [table]));
   }
@@ -393,7 +405,18 @@ function setOpen(node, open) {
   if (open) V.open.add(key); else V.open.delete(key);
 }
 
-function card(item, items, clashes = []) {
+/** A support code as people say it: "EIC", the register's name, or the code itself. */
+function codeName(code) {
+  return V.app.la.codes.find((c) => c.code === code)?.name || code;
+}
+
+/** "M line MP 13.53–14.13, between MBP and gap breaker 14.13". */
+function sectionText(id) {
+  const s = (V.app.data?.power?.sections || []).find((x) => x.id === id);
+  return s ? `${s.line} line MP ${s.from_mp.toFixed(2)}–${s.to_mp.toFixed(2)}, between ${s.from} and ${s.to}` : id;
+}
+
+function card(item, items, clashes = [], { power = [], overs = [] } = {}) {
   const { group, record } = item;
   const app = V.app;
   const status = record?.status || 'none';
@@ -410,12 +433,17 @@ function card(item, items, clashes = []) {
   const view = frozen ? { ...(record.source || {}) } : group || src;
   const flags = group ? (frozen ? record.source?.flags || [] : group.flags) : [...goneFlag(record), ...(record?.source?.flags || [])];
   const blocking = flags.filter((f) => f.blocking);
-  const changed = frozen && fresh ? T.changedSince(record.generated, fresh) : [];
+  /* A field the learning memory filled is not the look-ahead's to change: the
+     look-ahead read afresh does not carry the prediction, and that is no change. */
+  const predictedFields = new Set(Object.keys(record?.source?.predicted || {}).flatMap((k) => Learn.fieldsOf(k, record.generated || {})));
+  const changed = frozen && fresh ? T.changedSince(record.generated, fresh).filter((k) => !predictedFields.has(k)) : [];
   const edited = record ? T.editedKeys(record.fields, record.generated) : [];
   const overlaps = (group?.overlaps || []).map((o) => ({ ...o, item: items.find((i) => i.group?.key === o.key) })).filter((o) => o.item);
   const merged = String(record?.group_key || group?.key || '').startsWith('merge:');
   const mine = clashes.filter((x) => record && (x.a.id === record.id || x.b.id === record.id));
-  const next = nextStep(record, blocking, due, mine.length > 0);
+  const myPower = power.filter((x) => record && (x.a.id === record.id || x.b.id === record.id));
+  const myOver = overs.filter((o) => record && o.ids.includes(record.id));
+  const next = nextStep(record, blocking, due, mine.length > 0 || myPower.length > 0);
   const after = record ? T.afterApproval(record, app.today) : null;
   const predictions = record ? standing(record) : [];
   const pairs = partners(item, kind, items);
@@ -480,6 +508,8 @@ function card(item, items, clashes = []) {
 
   const attention = [];
   for (const c of mine) attention.push(el('span', { class: 'chip-bad', text: `Conflict with #${(c.a.id === record.id ? c.b : c.a).id}` }));
+  for (const c of myPower) attention.push(el('span', { class: 'chip-bad', title: 'The same power section at the same time, one needing the power off and the other on', text: `Power clash with #${(c.a.id === record.id ? c.b : c.a).id}` }));
+  for (const code of new Set(myOver.map((o) => o.code))) attention.push(el('span', { class: 'chip-warn', title: 'More of this BART resource asked for than BART can provide on the shift', text: `Over BART's ${codeName(code)}` }));
   if (changed.length) attention.push(el('span', { class: 'chip-bad', text: 'Look-ahead has changed' }));
   if (overlaps.length && S.isManager()) attention.push(el('span', { class: 'chip-info', text: `Overlaps ${overlaps.map((o) => (o.item.record ? `#${o.item.record.id}` : o.locationName)).join(', ')} — can consolidate` }));
 
@@ -554,6 +584,19 @@ function card(item, items, clashes = []) {
       `Conflicts with #${other.id} ${other.location_name} (${statusName(other.status).toLowerCase()}): the same ${record.source?.kind === 'tcr' ? 'room' : 'track'} at the same time on ${c.when.map((w) => `${dayLabel(w.date)} (${w.a} / ${w.b})`).join(', ')}. `,
       el('button', { type: 'button', class: 'mini secondary', text: 'See it on the track plan', onClick: () => app.showTawrOnMap(record) }),
     ]));
+  }
+  for (const c of myPower) {
+    const me = c.a.id === record.id ? 'a' : 'b';
+    const other = me === 'a' ? c.b : c.a;
+    const w = c.when[0];
+    needs.append(el('li', { class: 'block clash power' }, [
+      `Power clash with #${other.id} ${other.location_name} (${statusName(other.status).toLowerCase()}): in the same power section (${sectionText(c.sections[0])}), `
+      + `this one needs the third rail ${w[me].toUpperCase()} and #${other.id} needs it ${w[me === 'a' ? 'b' : 'a'].toUpperCase()}, on ${c.when.map((x) => dayLabel(x.date)).join(', ')}. `
+      + 'One has to move, or BART\'s power desk has to agree to both.',
+    ]));
+  }
+  for (const o of myOver) {
+    needs.append(el('li', { class: 'warn support-over', text: `${dayLabel(o.date)}, ${T.tawrShiftLabel(o.shift).toLowerCase()} shift: ${o.asked} × ${codeName(o.code)} asked for across ${o.ids.map((i) => `#${i}`).join(', ')}, and BART provides ${o.capacity}.` }));
   }
   if (changed.length) needs.append(el('li', { class: 'block', text: `The look-ahead has changed since this was ${status} (${changed.map(label).join(', ')}). ${status === 'approved' ? 'Revise it if the request should follow, or cancel it and release the track if the work is off.' : status === 'submitted' ? 'Withdraw it to bring it up to date.' : 'Reopen it to bring it up to date.'}` }));
   if (record?.decision_note && record.status === 'rejected') needs.append(el('li', { class: 'block', text: `Rejected: ${record.decision_note}` }));
@@ -1272,7 +1315,7 @@ function renderSetup(host) {
   }
   row('Form filler', 'The version of the code that fills the form, stamped inside every PDF it writes.', el('code', { text: `TAWR filler ${FILLER_VERSION}` }));
 
-  host.append(phasesSection(), learningSection(), codesSection(), legendSection(), descriptionsSection());
+  host.append(phasesSection(), learningSection(), codesSection(), capacitySection(), legendSection(), descriptionsSection());
   if (S.store.mode === 'local') host.append(backupSection());
   if (V.setupAt) {
     const at = host.querySelector(`#setup-${V.setupAt}`);
@@ -1571,6 +1614,50 @@ function signaturePad(savedText) {
   });
   requestAnimationFrame(draw);
   return el('div', { class: 'signature' }, [canvas, el('div', { class: 'inline' }, [clearBtn, saveBtn])]);
+}
+
+/* ── What BART can provide ────────────────────────────────────────────── */
+
+function capacitySection() {
+  const app = V.app;
+  const cap = T.parseCapacity(app.settings?.support_capacity);
+  const shifts = T.TAWR_SHIFTS.filter((x) => x.id !== 'unmapped');
+  const inputs = [];
+  const rows = app.la.codes.filter((c) => c.active !== false).map((c) => el('tr', {}, [
+    el('td', { text: `${c.code} — ${c.name || c.code}` }),
+    ...shifts.map((x) => {
+      const input = el('input', {
+        type: 'number', min: '0', max: '99', step: '1', inputmode: 'numeric', value: String(cap[c.code]?.[x.id] ?? ''),
+        'aria-label': `${c.code} on a ${x.label} shift`, dataset: { code: c.code, shift: x.id },
+      });
+      inputs.push(input);
+      return el('td', {}, [input]);
+    }),
+  ]));
+  return el('section', { class: 'settings-block', id: 'setup-capacity' }, [
+    el('h3', { class: 'settings-group', text: 'What BART can provide' }),
+    el('p', { class: 'small', text: 'How many of each BART resource BART can give on one shift. The requests that still count — drafts, submitted and approved — are added up day by day and shift by shift, and a day that asks for more is flagged on the TAWRs. Blank is no limit.' }),
+    el('table', { class: 'grid-table capacity-table' }, [
+      el('thead', {}, [el('tr', {}, ['Support', ...shifts.map((x) => x.label)].map((h) => el('th', { text: h })))]),
+      el('tbody', {}, rows),
+    ]),
+    el('div', { class: 'inline' }, [el('button', {
+      type: 'button', class: 'mini', dataset: { action: 'capacity-save' }, text: 'Save',
+      onClick: async () => {
+        const out = {};
+        for (const input of inputs) {
+          if (input.value === '') continue;
+          const n = Number(input.value);
+          if (!Number.isInteger(n) || n < 0 || n > 99) { toast('Each is a whole number from 0 to 99, or blank for no limit.', 'warn'); input.focus(); return; }
+          (out[input.dataset.code] = out[input.dataset.code] || {})[input.dataset.shift] = n;
+        }
+        try {
+          app.settings = await S.setSettings({ support_capacity: JSON.stringify(out) });
+          toast('What BART can provide is saved.', 'good');
+        } catch (err) { toast(err.message, 'bad'); }
+      },
+    })]),
+  ]);
 }
 
 function codesSection() {

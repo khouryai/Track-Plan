@@ -19,6 +19,7 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import labels as labelmod  # noqa: E402
+import facilities  # noqa: E402
 import linref  # noqa: E402
 import pdfmap  # noqa: E402
 import segments as segmod  # noqa: E402
@@ -205,6 +206,8 @@ def main():
         locations=locs,
         switches=[dict(text=w["text"], bbox=[round(v, 2) for v in w["bbox"]]) for w in words if w["text"].startswith("SW")],
     )
+    log("reading power facilities and interlocking limits ...")
+    facilities.add_to(data, prim, log=log)
     with open(os.path.join(WEB, "data", "map.json"), "w") as f:
         json.dump(data, f, separators=(",", ":"))
     log(f"wrote web/data/map.json ({os.path.getsize(os.path.join(WEB, 'data', 'map.json')) / 1e6:.1f} MB)")

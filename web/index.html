@@ -66,6 +66,14 @@
               <button type="button" class="tool secondary" data-tool="piece" title="Click track pieces (crossovers, yard tracks...) to add or remove them">✚ Add / remove pieces</button>
             </div>
           </details>
+          <details id="by-interlocking">
+            <summary>Pick an interlocking</summary>
+            <div class="row">
+              <label>Interlocking<select id="pick-ixl" aria-label="Interlocking"></select></label>
+              <button type="button" id="pick-ixl-add" class="secondary mini">Add its limits</button>
+            </div>
+            <p class="small">Its limits on each track, as the drawing's dimension arrows give them. An interlocking drawn without arrows is not listed: click its track instead.</p>
+          </details>
           <details id="typed-limits">
             <summary>Type a track and milepost range</summary>
             <div class="row">

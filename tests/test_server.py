@@ -274,6 +274,12 @@ class Workflow(Base):
         self.refused(ops.clear_memory, self.con, self.requester, WF, status=403)
         self.assertEqual(ops.clear_memory(self.con, self.manager, WF), {"forgotten": 1})
 
+    def test_what_bart_can_provide_is_checked(self):
+        ops.set_settings(self.con, {"support_capacity": json.dumps({"X": {"night": 4, "day": 6}})}, self.requester, WF)
+        self.assertEqual(json.loads(ops.get_settings(self.con)["support_capacity"])["X"]["night"], 4)
+        for bad in ("[1]", "{", json.dumps({"X": {"night": 4.5}}), json.dumps({"X": {"evening": 1}}), json.dumps({"X": {"night": 100}}), json.dumps({"X": {"night": True}})):
+            self.refused(ops.set_settings, self.con, {"support_capacity": bad}, self.requester, WF, status=400)
+
     def test_the_learning_settings_are_checked(self):
         ops.set_settings(self.con, {"learn_predict": "off", "learn_threshold": "0.75"}, self.requester, WF)
         self.assertEqual(ops.get_settings(self.con)["learn_threshold"], "0.75")

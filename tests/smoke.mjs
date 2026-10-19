@@ -626,6 +626,7 @@ async function learning(page, { mode }) {
   await page.click('.modal [data-action=review-submit]');
   await page.waitForSelector('.modal-back', { state: 'detached' });
   await page.waitForFunction(() => [...document.querySelectorAll('.tawr-card')].some((c) => c.dataset.tawrStatus === 'submitted' && /M1\+M2 MP 12\.000/.test(c.querySelector('h3')?.textContent)));
+  check('a prediction sent is not taken for the look-ahead changing', !/look-ahead has changed/i.test(await card(page, 'M1+M2 MP 12.000–12.800').textContent()));
 
   await page.click('.subtabs [data-section=setup]');
   await page.waitForSelector('#setup-learning [data-learn=stats]');
@@ -676,6 +677,64 @@ async function learning(page, { mode }) {
   check('and Review says so too', /When this request was sent before, it was rejected/.test(await page.textContent('.modal [data-learned=rejected]')));
   await page.keyboard.press('Escape');
   await shot(page, `${mode}-6-learning`);
+  await page.click('.week-btn[data-week="2026-11-09"]'); // where the sample left the track plan
+}
+
+/** What BART can provide, power sections, and picking track by interlocking — on the sample. */
+async function moreConflicts(page, { mode }) {
+  console.log(`\n${mode}: power, BART's capacity and interlockings`);
+  await page.click('nav.views [data-view=tawr]');
+  await page.click('.subtabs [data-section=setup]');
+  await page.fill('#setup-capacity input[data-code=X][data-shift=night]', '1');
+  await page.click('[data-action=capacity-save]');
+  await page.waitForSelector('.toast-good >> text=/What BART can provide is saved/');
+  await page.click('.subtabs [data-section=requests]');
+  await page.click('.week-btn[data-week="2026-11-09"]');
+  await page.waitForSelector('[data-notice=support-over]');
+  const over = await page.textContent('[data-notice=support-over]');
+  check('more BART support than BART can provide on a shift is said for the week', /Tue 10 Nov, night shift: 2 × EIC asked for, BART provides 1 \(#\d+, #\d+\)/.test(over)
+    && /Thu 12 Nov, night shift: 2 × EIC/.test(over), over);
+  check('and on each request asking for it', await page.locator('.tawr-card .chip-warn', { hasText: 'Over BART\'s EIC' }).count() === 3);
+  await page.click(`.week-btn[data-week="${WEEK}"]`);
+  check('a week within what BART can provide says nothing', await page.locator('[data-notice=support-over]').count() === 0);
+
+  // The sample's day and swing shifts on W1 meet; one needs the third rail off, the other on.
+  const power = async (name, value) => {
+    await card(page, name).locator('[data-action=tawr-review]').click();
+    await page.waitForSelector('.modal .form');
+    for (const sel of await page.locator('.modal select[aria-label$="power status"]').all()) {
+      if (await sel.evaluate((n) => n.closest('tr').querySelector('[data-field$=_date]')?.value)) await sel.selectOption(value);
+    }
+    await page.click('.modal [data-action=review-save]');
+    await page.waitForSelector('.modal-back', { state: 'detached' });
+  };
+  const day = (await page.locator('.tawr-card', { has: page.locator('h3', { hasText: 'W1 MP 20.700–21.300' }) }).locator('h3').textContent()).trim();
+  const swing = (await page.locator('.tawr-card', { has: page.locator('h3', { hasText: 'W1+W2 MP 21.000–21.600' }) }).locator('h3').textContent()).trim();
+  await power(day, 'OFF');
+  await power(swing, 'ON');
+  await page.waitForSelector('.tawr-card .chip-bad >> text=/Power clash/');
+  check('power off and power on in the same section at the same time is a clash, on both', await card(page, day).locator('.chip-bad', { hasText: 'Power clash with #' }).count() === 1
+    && await card(page, swing).locator('.chip-bad', { hasText: 'Power clash with #' }).count() === 1);
+  const said = await card(page, day).locator('li.power').textContent();
+  check('which says which section, from the drawing\'s substations and gap breakers', /same power section \(W line MP 20\.95–22\.33, between WXA and gap breaker 22\.33\)/.test(said)
+    && /this one needs the third rail OFF/.test(said), said);
+  await shot(page, `${mode}-8-power-and-capacity`);
+
+  // Track by interlocking, in the location picker.
+  await page.click('nav.views [data-view=lookahead]');
+  const row = page.locator('tr.la-activity td.la-m2.loc-linked').first();
+  await row.click({ button: 'right' });
+  await page.click('[data-action=select-on-track-plan]');
+  await page.waitForSelector('#tab-pick.active');
+  await page.click('#by-interlocking summary');
+  await page.click('#sel-clear');
+  await page.selectOption('#pick-ixl', 'W45');
+  await page.click('#pick-ixl-add');
+  const picked = await page.textContent('#sel-list');
+  check('track can be picked by interlocking, its limits on each track', /^W1\+W2\+W3\+W4 MP 24\.\d{3}–24\.\d{3}/.test(picked), picked);
+  await page.click('#pick-cancel');
+  await page.waitForSelector('body[data-view=lookahead]');
+  await page.click('nav.views [data-view=tawr]');
   await page.click('.week-btn[data-week="2026-11-09"]'); // where the sample left the track plan
 }
 
@@ -791,6 +850,7 @@ try {
     await importBook(page, { mode: 'static site' });
     await sampleData(page, { mode: 'static site' });
     await learning(page, { mode: 'static site' });
+    await moreConflicts(page, { mode: 'static site' });
     await phases(page, { mode: 'static site' });
     await withBart(page, { mode: 'static site' });
     check('no console errors (static site)', !errors.length, errors.join(' | '));

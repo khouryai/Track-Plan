@@ -307,6 +307,50 @@ console.log('\nAfter approval: BART, and the access');
   check('BART\'s denial is remembered as a rejection, marked as BART\'s', denied.length === 1 && denied[0].kind === 'reject' && denied[0].data.by_bart === true);
 }
 
+console.log('\nPower sections and BART\'s capacity');
+{
+  const P = MAP.power;
+  const subs = P.facilities.filter((f) => f.kind === 'substation');
+  check('substations and gap breaker stations are read off the drawing, each at its milepost', subs.length >= 50 && P.facilities.filter((f) => f.kind === 'gap_breaker').length >= 40
+    && P.facilities.every((f) => Number.isFinite(f.mp) && f.lines.length));
+  const balboa = P.sections.find((s) => s.line === 'M' && s.from_mp <= 13.6 && s.to_mp >= 13.6);
+  check('a line is cut into power sections between them', P.sections.length > 60 && balboa?.from_mp === 13.53 && balboa?.to_mp === 14.13, JSON.stringify(balboa));
+  const req = (id, status, limits, rows, shift = 'night') => ({
+    id, status, shift, week_start: MON,
+    source: { place: { limits }, days: rows.map(([date]) => ({ date, start: '2300', end: '0500' })), activities: [] },
+    fields: Object.fromEntries(rows.flatMap(([date, power], i) => [[`row${i + 1}_date`, T.formDate(date)], [`row${i + 1}_power_${power}`, true]])),
+  });
+  const offM = req(1, 'approved', [{ track: 'M1', from_mp: 13.6, to_mp: 13.8 }], [[day(0), 'off'], [day(1), 'off']]);
+  const onM = req(2, 'submitted', [{ track: 'M2', from_mp: 13.9, to_mp: 14.0 }], [[day(1), 'on']]);
+  const onElsewhere = req(3, 'draft', [{ track: 'M2', from_mp: 14.5, to_mp: 14.6 }], [[day(1), 'on']]);
+  const na = req(4, 'draft', [{ track: 'M1', from_mp: 13.7, to_mp: 13.75 }], [[day(1), 'na']]);
+  check('a request\'s power is read off its form, day by day', T.powerOn(offM, day(0)) === 'off' && T.powerOn(na, day(1)) === 'na' && T.powerOn(offM, day(3)) === null);
+  check('its limits fall in power sections', [...T.sectionsOf(offM, P.sections)].join() === balboa.id && T.sectionsOf(onElsewhere, P.sections).has(balboa.id) === false);
+  const clashes = T.powerConflicts([offM, onM, onElsewhere, na], P.sections);
+  check('power off and power on in the same section at the same time clash — another section, or no need either way, does not', clashes.length === 1
+    && clashes[0].a.id === 1 && clashes[0].b.id === 2 && clashes[0].when.map((w) => w.date).join() === day(1), JSON.stringify(clashes.map((c) => [c.a.id, c.b.id])));
+  check('a cancelled request clashes with nothing', T.powerConflicts([offM, { ...onM, status: 'cancelled' }], P.sections).length === 0);
+
+  const cap = T.parseCapacity(JSON.stringify({ X: { night: 2, day: 4 }, TCE: { night: 'two' } }));
+  check('what BART can provide is read as numbers, never guessed', cap.X.night === 2 && cap.X.day === 4 && !cap.TCE && Object.keys(T.parseCapacity('nonsense')).length === 0);
+  const asks = (id, status, perDay, shift = 'night') => ({ id, status, shift, source: { days: Object.entries(perDay).map(([date, support]) => ({ date, support })) } });
+  const over = T.supportOver([
+    asks(1, 'approved', { [day(0)]: { X: 1 }, [day(1)]: { X: 2 } }),
+    asks(2, 'draft', { [day(1)]: { X: 1, TCE: 3 } }),
+    asks(3, 'rejected', { [day(1)]: { X: 5 } }),
+    asks(4, 'submitted', { [day(1)]: { X: 1 } }, 'day'),
+  ], cap);
+  check('support asked for beyond what BART has is found, day by day and shift by shift', over.length === 1 && over[0].date === day(1) && over[0].code === 'X'
+    && over[0].asked === 3 && over[0].capacity === 2 && over[0].ids.join() === '1,2', JSON.stringify(over));
+  const g = T.extractWeek(sample(), MON, { locations: MAP.locations }).groups.find((x) => x.days.some((d) => Object.keys(d.support).length));
+  check('each day of a request says what it asks BART for', Boolean(g) && g.days.every((d) => typeof d.support === 'object'));
+
+  const ix = Object.fromEntries(MAP.interlockings.map((i) => [i.name, i]));
+  check('interlockings drawn with limits are read as limits on each track', MAP.interlockings.length >= 40 && ix.W45?.limits.map((l) => l.track).join() === 'W1,W2,W3,W4'
+    && ix.C25?.limits.every((l) => l.from_mp === 8.62 && l.to_mp === 8.88), JSON.stringify(ix.C25));
+  check('a track the drawing squeezed is steadied to its neighbour', ix.C25.limits.some((l) => l.adjusted));
+}
+
 console.log('\nThe sample data');
 {
   const { start, rows, cells } = SAMPLE.sampleLookahead('2026-10-17', MAP);

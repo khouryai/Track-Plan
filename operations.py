@@ -793,8 +793,9 @@ SETTING_KEYS = {
     "requestor_name", "requestor_cell_phone", "requestor_signature",
     "person_in_charge_name", "person_in_charge_cell_phone", "project_rep_name", "project_rep_cell_phone",
     "category_default", "category_tcr", "category_track", "hours_day", "hours_swing", "hours_night", "hours_possession", "auto_lead_days",
-    "template_info", "phases", "learn_predict", "learn_threshold",
+    "template_info", "phases", "learn_predict", "learn_threshold", "support_capacity",
 }
+SHIFT_IDS = ("day", "swing", "night", "possession")
 # What a viewer may read of them: the phases, for looking at the track plan by phase.
 PUBLIC_SETTING_KEYS = {"phases"}
 MAX_PHASES = 50
@@ -833,6 +834,24 @@ def _check_phases(text):
             raise Refused(f"the note on phase {name!r} is too long", 400)
 
 
+def _check_capacity(text):
+    """What BART can provide: `{code: {shift: n}}`, whole numbers from 0 to 99."""
+    try:
+        cap = json.loads(text)
+    except ValueError:
+        raise Refused("support_capacity must be JSON", 400)
+    if not isinstance(cap, dict) or len(cap) > 50:
+        raise Refused("support_capacity is an object of support codes", 400)
+    for code, shifts in cap.items():
+        if not isinstance(code, str) or not 0 < len(code) <= 10 or not isinstance(shifts, dict):
+            raise Refused("support_capacity is an object of support codes, each an object of shifts", 400)
+        for shift, n in shifts.items():
+            if shift not in SHIFT_IDS:
+                raise Refused(f"unknown shift {shift!r} in support_capacity", 400)
+            if not isinstance(n, int) or isinstance(n, bool) or not 0 <= n <= 99:
+                raise Refused(f"what BART provides of {code} on a {shift} shift is a whole number from 0 to 99", 400)
+
+
 def _threshold_ok(v):
     try:
         return 0.5 <= float(v) <= 0.95
@@ -853,6 +872,8 @@ def set_settings(con, values, actor, workflow):
                 raise Refused(f"{k} must be text", 400)
             if k == "phases" and v:
                 _check_phases(v)
+            if k == "support_capacity" and v:
+                _check_capacity(v)
             if k == "learn_predict" and v not in (None, "", "on", "off"):
                 raise Refused("learn_predict is on or off", 400)
             if k == "learn_threshold" and v and not _threshold_ok(v):

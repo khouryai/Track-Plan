@@ -371,6 +371,19 @@ function onDraftChanged() {
   renderDraft();
 }
 
+/** An interlocking's limits, track by track, added to what is selected (the drawing's arrows, `facilities.py`). */
+function addInterlocking(name) {
+  const ix = (state.data.interlockings || []).find((i) => i.name === name);
+  if (!ix) return;
+  const added = ix.limits.flatMap((l) => sliceTrack(l.track, l.from_mp, l.to_mp));
+  for (const pts of added) state.draft.push({ type: 'poly', pts });
+  onDraftChanged();
+  if (added.length) {
+    const [x0, y0, x1, y1] = bboxOf(added);
+    zoomTo(x0 - 60, y0 - 60, x1 + 60, y1 + 60, 0);
+  }
+}
+
 function pickedLocation() {
   return locationById($('#pick-location').value);
 }
@@ -1025,6 +1038,7 @@ export function pickLocation({ title, link = null }) {
   $('#pick-title').textContent = title;
   $('#pick-msg').textContent = '';
   $('#typed-limits').open = false;
+  $('#by-interlocking').open = false;
   $('#more-ways').open = false;
   document.querySelector('[data-tab=pick]').hidden = false;
   showTab('pick');
@@ -1100,6 +1114,9 @@ function renderStations() {
 function populateTracks() {
   const opts = state.data.tracks.map((t) => `<option value="${t.id}">${t.id} (MP ${t.from_mp}–${t.to_mp})</option>`).join('');
   $('#pick-form').elements.track_id.innerHTML = `<option value="">—</option>${opts}`;
+  $('#pick-ixl').replaceChildren(el('option', { value: '', text: '—' }), ...(state.data.interlockings || []).map((ix) => el('option', {
+    value: ix.name, text: `${ix.name} — ${ix.limits.map((l) => l.track).join(', ')}`,
+  })));
   $('#find-mp').elements.track.innerHTML = opts;
   const tb = $('#track-table tbody'); tb.replaceChildren();
   for (const t of state.data.tracks) {
@@ -1213,6 +1230,7 @@ export function initMap(data, tileIndex) {
   document.querySelectorAll('.tool').forEach((b) => { b.onclick = () => setTool(b.dataset.tool); });
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && state.tool) setTool(state.tool); });
   $('#sel-clear').onclick = () => { state.draft = []; state.path = null; onDraftChanged(); };
+  $('#pick-ixl-add').onclick = () => addInterlocking($('#pick-ixl').value);
   for (const n of ['track_id', 'from_mp', 'to_mp']) $('#pick-form').elements[n].addEventListener('input', onDraftChanged);
   $('#pick-location').addEventListener('change', () => {
     const loc = pickedLocation();
