@@ -135,6 +135,21 @@ file to import.
    *Cancel and release the track* ends an approved request with a reason, and
    asks whether BART has been told the track is free — *BART told…* records it
    later if not. A cancelled or denied request no longer conflicts with anything.
+8. **Reports** (*TAWRs → Reports*, for every role) say what the requests came to
+   over the last 4, 8, 12 or 26 weeks and the 4 ahead (`web/js/reports.js`
+   works them out; `reports_view.js` draws them): how often the Track
+   Allocation Manager approved and how often BART granted; how many went in by
+   their deadline, and how early (against the deadline of each request's own
+   first day, on the reader's calendar); and the track hours approved against
+   those used, where the access was recorded. Each week's requests are a column
+   stacked by how they ended (approved, rejected, denied by BART, cancelled,
+   not decided yet); how early they went in, and the hours approved and used,
+   are columns too. Every column says its values on hovering or when reached
+   with Tab, and every value is also in *Week by week*, which downloads as a
+   CSV. Under it, each reason a request was rejected or denied, newest first.
+   Decisions are counted from each request's history, so a request rejected,
+   corrected and approved counts one of each; a revised or consolidated request
+   is counted once as raised, but what was decided on it before still counts.
 
 **Sample data.** *Look-ahead → Sample data…* loads four weeks of W and M line
 work from the coming Monday — cable trough and signal cable on the W line,
@@ -149,7 +164,12 @@ on M2. On the static site it can clear the browser's TAWRs for a clean start.
 The weeks whose deadline has already passed come as they would be by now: a
 week past its deadline is submitted, and approved once the deadline is a week
 gone — except the requests in a conflict, which wait for the Track Allocation
-Manager. On a server, only the steps the signed-in account may take are taken.
+Manager. On the static site each step is dated when it would have been taken
+(submitted two days before the deadline, approved the day before, BART's answer
+three days after the deadline), so the reports read the sample as they would a
+real week.
+On a server, only the steps the signed-in account may take are taken, dated by
+the server.
 
 The *Track plan* view opens fitted to the whole sheet and shows the week's
 TAWRs drawn where they are, coloured by status, with every linked activity.
@@ -444,6 +464,7 @@ server.py, operations.py
 |---|---|
 | `main.js` | loads everything, switches between the four views |
 | `today.js`, `today_view.js` | what needs whom today, the deadlines ahead, the access approved; the calendar file |
+| `reports.js`, `reports_view.js` | what the requests came to over the weeks: decisions, BART's answers, how early, hours used; the charts and the CSV |
 | `lookahead.js` | the look-ahead's rows, cells and ops (undo), the legend and support codes, the workbook import |
 | `links.js` | a track plan link: its label, Area, key, and whether two overlap |
 | `tawr.js` | a week of the look-ahead read into TAWRs; conflicts; the form's values; the workflow table's rules |
@@ -469,7 +490,7 @@ came from.
 ```bash
 npm install                 # once: Playwright, for the browser test
 npm test                    # all three suites
-node tests/test_tawr.mjs    # look-ahead, links, TAWR reading, consolidation, workflow table, workbook import, the form filled, phases, the learning memory (Node)
+node tests/test_tawr.mjs    # look-ahead, links, TAWR reading, consolidation, workflow table, workbook import and export, the form filled, phases, the learning memory, after approval, power and capacity, today and the calendar, reports (Node)
 python3 -m unittest tests/test_server.py   # what the server allows and refuses (Python)
 node tests/smoke.mjs        # the whole flow in Chromium, on the static site and against server.py
 ```
@@ -484,5 +505,10 @@ runs all three on every push.
   the fixes in `overrides.json`.
 - For many users, move to Postgres/PostGIS. The schema maps directly, and
   `geometry` becomes a `LINESTRING` with `ST_LineSubstring` for MP ranges.
-- Extract interlocking limits (the `W45` dimension arrows) so requests can be
-  made by interlocking as well as by MP.
+- Share one copy of the data on the published site: GitHub Pages keeps
+  everything in each browser, so the team needs `server.py` (or a hosted
+  database) to work from one set of requests.
+- Show another person's changes without a reload, and keep the look-ahead's
+  history (who changed which day, and a reading per week to compare).
+- Print the track plan with a week's requests on it; a phone view for the
+  field; import a P6 schedule into the look-ahead.

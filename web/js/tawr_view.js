@@ -19,7 +19,10 @@
  * An approved request is final, downloaded as BART's own form filled and
  * signed (`tawr_pdf.js`), or all of a week's together as one .zip.
  *
- * Imports: tawr, tawr_sync, tawr_pdf, zip, store, lookahead, links, ui, map.
+ * Reports (`reports_view.js`) say what the requests came to over the weeks.
+ *
+ * Imports: tawr, tawr_sync, tawr_pdf, zip, store, lookahead, links, ui, map,
+ * phases, learn, reports_view.
  */
 
 import * as T from './tawr.js';
@@ -35,6 +38,7 @@ import {
 import { STATUS_COLOR } from './map.js';
 import { parsePhases, phasesText, newPhaseId, coversText } from './phases.js';
 import * as Learn from './learn.js';
+import * as ReportsView from './reports_view.js';
 
 const V = { app: null, root: null, section: 'requests', picked: new Set(), open: new Set(), history: false, focus: null, setupAt: null };
 
@@ -65,7 +69,7 @@ export function render(root, app) {
   V.app = app;
   V.root = root;
   clear(root);
-  const nav = el('div', { class: 'subtabs', role: 'tablist' }, [['requests', 'Requests'], ['setup', 'Setup']].map(([id, text]) => el('button', {
+  const nav = el('div', { class: 'subtabs', role: 'tablist' }, [['requests', 'Requests'], ['reports', 'Reports'], ['setup', 'Setup']].map(([id, text]) => el('button', {
     type: 'button', role: 'tab', 'aria-selected': String(V.section === id), dataset: { section: id }, text,
     onClick: () => { V.section = id; render(root, app); },
   })));
@@ -73,6 +77,7 @@ export function render(root, app) {
   const host = el('div', { class: 'tawr' });
   root.append(host);
   if (V.section === 'setup') renderSetup(host);
+  else if (V.section === 'reports') ReportsView.render(host, app);
   else renderRequests(host);
 }
 

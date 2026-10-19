@@ -29,6 +29,7 @@ const PH = await import(path.join(ROOT, 'web/js/phases.js'));
 const LEARN = await import(path.join(ROOT, 'web/js/learn.js'));
 const XL = await import(path.join(ROOT, 'web/js/la_xlsx.js'));
 const TODAY = await import(path.join(ROOT, 'web/js/today.js'));
+const REP = await import(path.join(ROOT, 'web/js/reports.js'));
 const { readZip } = await import(path.join(ROOT, 'web/js/xlsx.js'));
 const MAP = JSON.parse(fs.readFileSync(path.join(ROOT, 'web/data/map.json'), 'utf8'));
 const WORKFLOW = JSON.parse(fs.readFileSync(path.join(ROOT, 'web/data/tawr_workflow.json'), 'utf8'));
@@ -391,6 +392,47 @@ console.log('\nToday, and the deadlines as a calendar');
   check('text is escaped and long lines folded at 75 octets, as the server writes them', ics.replace(/\r\n /g, '').includes('DESCRIPTION:C-M301 ATC loop cable\\, Glen Park\\nApproved\\, not yet sent to BART.')
     && lines.every((l) => new globalThis.TextEncoder().encode(l).length <= 75) && ics.endsWith('END:VCALENDAR\r\n'));
   check('a long line folds without splitting a character', TODAY.foldLine(`SUMMARY:${'—'.repeat(40)}`).split('\r\n ').every((l) => new globalThis.TextEncoder().encode(l).length <= 75));
+}
+
+console.log('\nReports');
+{
+  const dayOf = (stamp) => stamp.slice(0, 10); // the tests' calendar is Greenwich's
+  const h = (action, at, note) => ({ action, at, by: 'Terry Manager', ...(note ? { note } : {}) });
+  const rec = (id, status, week, extra = {}) => ({
+    id, status, week_start: week, first_day: week, location_name: `Place ${id}`, shift: 'night', history: [],
+    source: { days: [{ date: week, start: '2200', end: '0400' }, { date: addDay(week, 1), start: '2200', end: '0400' }] }, ...extra,
+  });
+  const addDay = (iso, n) => la.addDaysISO(iso, n);
+  const records = [
+    // Went in two days early, rejected, corrected, approved, granted, both nights used.
+    rec(1, 'approved', '2026-10-05', { submitted_at: '2026-09-16T10:00:00Z', bart: { answer: 'granted' }, access: { days: { '2026-10-05': true, '2026-10-06': false } },
+      history: [h('submit', '2026-09-10T10:00:00Z'), h('reject', '2026-09-12T10:00:00Z', 'No flagger named'), h('submit', '2026-09-16T10:00:00Z'), h('approve', '2026-09-17T10:00:00Z')] }),
+    // Late, approved, then denied by BART.
+    rec(2, 'denied', '2026-10-05', { submitted_at: '2026-09-20T10:00:00Z', bart: { answer: 'denied', note: 'Single tracking not available' },
+      history: [h('submit', '2026-09-20T10:00:00Z'), h('approve', '2026-09-21T10:00:00Z'), h('deny', '2026-09-23T10:00:00Z', 'Single tracking not available')] }),
+    rec(3, 'cancelled', '2026-10-12', { submitted_at: '2026-09-25T10:00:00Z', history: [h('submit', '2026-09-25T10:00:00Z'), h('approve', '2026-09-26T10:00:00Z'), h('cancel', '2026-10-01T10:00:00Z', 'Rain')] }),
+    rec(4, 'draft', '2026-10-12'),
+    // Approved and granted, then revised: replaced by a new draft, but the decision and the answer stand.
+    rec(5, 'superseded', '2026-10-12', { submitted_at: '2026-09-20T10:00:00Z', bart: { answer: 'granted' }, history: [h('submit', '2026-09-20T10:00:00Z'), h('approve', '2026-09-22T10:00:00Z')] }),
+    // Rejected, resubmitted, then merged into another request.
+    rec(7, 'consolidated', '2026-10-12', { submitted_at: '2026-09-24T14:00:00Z', history: [h('submit', '2026-09-24T10:00:00Z'), h('reject', '2026-09-24T12:00:00Z', 'Wrong limits'), h('submit', '2026-09-24T14:00:00Z')] }),
+    rec(6, 'approved', '2026-12-07'),
+  ];
+  const rep = REP.report(records, { from: '2026-10-05', to: '2026-10-12', dayOf });
+  check('every week in the range is a row, its requests by how they ended', rep.weeks.map((w) => w.week).join() === '2026-10-05,2026-10-12'
+    && rep.weeks[0].counts.approved === 1 && rep.weeks[0].counts.denied === 1 && rep.weeks[1].counts.cancelled === 1 && rep.weeks[1].counts.waiting === 1 && rep.totals.raised === 4,
+    JSON.stringify(rep.weeks.map((w) => w.counts)));
+  check('decisions are counted from the history: a rejection put right is still a rejection', rep.totals.approvals === 4 && rep.totals.rejections === 2,
+    `${rep.totals.approvals} approvals, ${rep.totals.rejections} rejections`);
+  check('a request revised or consolidated is not raised twice, but what was decided on it counts', rep.totals.raised === 4 && rep.weeks[1].raised === 2
+    && rep.reasons.some((x) => x.id === 7) && rep.totals.sent === 3);
+  check('how early each went in, against its deadline', REP.leadDays(records[0], dayOf) === 2 && REP.leadDays(records[1], dayOf) === -2 && REP.leadDays(records[3], dayOf) === null
+    && rep.lead['1-3'] === 1 && rep.lead.late === 1 && rep.totals.late === 1 && rep.totals.onTime === 2, JSON.stringify(rep.lead));
+  check('BART\'s answers are counted, a revised request\'s too', rep.totals.granted === 2 && rep.totals.denied === 1);
+  check('track hours approved, and used where it was recorded', rep.totals.hoursApproved === 12 && rep.totals.hoursRecorded === 12 && rep.totals.hoursUsed === 6
+    && REP.percent(rep.totals.hoursUsed, rep.totals.hoursRecorded) === '50%' && REP.percent(1, 0) === '—');
+  check('the reasons for rejections and denials, newest first, and only those', rep.reasons.map((x) => `${x.id} ${x.kind}`).join() === '7 rejected,2 denied,1 rejected'
+    && rep.reasons[2].note === 'No flagger named', rep.reasons.map((x) => `${x.id} ${x.kind}`).join());
 }
 
 console.log('\nThe sample data');

@@ -466,7 +466,8 @@ export async function recordAccess(id, body) {
  * The sample's weeks as they would stand by now, in this browser: each step
  * taken as `act` takes it but in no one's role — the static site's roles are
  * chosen, not checked, and these stand for weeks already dealt with. `steps`
- * is `[[id, action], …]`, all or none.
+ * is `[[id, action, at?], …]`, all or none; `at` stamps the step when the
+ * sample's story says it was taken.
  */
 export function settleLocalSample(steps, fills = {}, barts = {}) {
   if (!local()) throw new Refused('only the copy in this browser can be settled like this');
@@ -477,14 +478,31 @@ export function settleLocalSample(steps, fills = {}, barts = {}) {
     const r = localTawr(s, Number(id));
     r.fields = { ...r.fields, ...clone(fields) };
   }
-  for (const [id, action] of steps) localAct(s, localTawr(s, id), action, null);
-  // And what happened with BART once they were approved.
+  // Each step stamped when the sample's story says it was taken, where it says.
+  for (const [id, action, at] of steps) {
+    const r = localTawr(s, id);
+    localAct(s, r, action, null);
+    if (at) backdate(r, action, at);
+  }
+  // And what happened with BART once they were approved: noted on the day of its latest news.
   for (const [id, bart] of Object.entries(barts)) {
     const r = localTawr(s, Number(id));
     r.bart = { ...clone(bart), by: store.user.name };
     r.history = history(r, [`sent to BART ${bart.sent_on}`, bart.ref && `BART reference ${bart.ref}`, bart.answer === 'granted' && 'BART granted it'].filter(Boolean).join('; '));
+    const day = bart.answered_on || bart.sent_on;
+    if (day) r.history[r.history.length - 1].at = new Date(`${day}T16:00:00`).toISOString();
   }
   writeLocal(s);
+}
+
+/** A sample's step stamped when its story says it was taken, not when the sample was loaded — and raised before it. */
+function backdate(r, action, at) {
+  r.history[r.history.length - 1].at = at;
+  r.updated_at = at;
+  if (action === 'submit') r.submitted_at = at;
+  if (action === 'approve' || action === 'reject') r.decided_at = at;
+  const made = r.history[0];
+  if (made?.action === 'created' && Date.parse(made.at) > Date.parse(at)) made.at = r.created_at = new Date(Date.parse(at) - 3600e3).toISOString();
 }
 
 export async function consolidate(ids, merge, record, note = null) {

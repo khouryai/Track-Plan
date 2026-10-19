@@ -158,8 +158,11 @@ export async function autoRaise(app) {
  * passed was submitted, and approved once it passed a week ago — all but the
  * requests in a conflict, which wait for the Track Allocation Manager. An
  * approved request went to BART on its deadline, and BART granted it three
- * days later where that day has come. On the static site every step is taken;
- * on a server, those this account may take. Answers how many steps were taken.
+ * days later where that day has come. On the static site every step is taken,
+ * and stamped when this story says it was (submitted two days before the
+ * deadline, approved the day before), so what Reports says of the sample is
+ * what it says of a real week; on a server, those steps this account may
+ * take, stamped by the server as now. Answers how many steps were taken.
  */
 export async function settleSample(app) {
   const steps = [];
@@ -171,8 +174,8 @@ export async function settleSample(app) {
     const approve = T.addDaysISO(deadline, 7) < app.today;
     for (const t of live) {
       if (t.status !== 'draft' || (t.source?.flags || []).some((f) => f.blocking)) continue;
-      steps.push([t.id, 'submit']);
-      if (approve && !clashing.has(t.id)) steps.push([t.id, 'approve']);
+      steps.push([t.id, 'submit', localStamp(T.addDaysISO(deadline, -2), 10)]);
+      if (approve && !clashing.has(t.id)) steps.push([t.id, 'approve', localStamp(T.addDaysISO(deadline, -1), 15)]);
     }
   }
   /* As a requester would have filled them in before sending them — which is
@@ -202,6 +205,12 @@ export async function settleSample(app) {
   }
   if (taken.length) await app.reloadTawrs();
   return taken.length;
+}
+
+/** A moment on a day, on this computer's clock: when one of the sample's steps was taken. */
+function localStamp(day, hour) {
+  const [y, m, d] = day.split('-').map(Number);
+  return new Date(y, m - 1, d, hour, 0, 0).toISOString();
 }
 
 /**

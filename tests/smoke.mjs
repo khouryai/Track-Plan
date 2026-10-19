@@ -826,6 +826,43 @@ async function withBart(page, { mode }) {
   await shot(page, `${mode}-7-after-approval`);
 }
 
+/** Reports, on what the sample and the steps before it left: decisions, BART's answers, how early, hours. */
+async function reports(page, { mode }) {
+  console.log(`\n${mode}: reports`);
+  await page.click('nav.views [data-view=tawr]');
+  await page.click('.subtabs [data-section=reports]');
+  await page.waitForSelector('[data-report=figures]');
+  const tile = async (label) => (await page.locator('.stat-tile', { hasText: label }).innerText()).replace(/\s+/g, ' ');
+  const decided = await tile('Approved by the Track Allocation Manager');
+  check('decisions are counted from the history — the rejection put right among them', /75% 3 approved · 1 rejected$/.test(decided), decided);
+  const bart = await tile('Granted by BART');
+  check('and BART\'s answers, its denial among them', /67% 2 granted · 1 denied$/.test(bart), bart);
+  const onTime = await tile('Sent in on time');
+  check('how many went in by their deadline', /100% \d+ of \d+ by their deadline · 0 late$/.test(onTime), onTime);
+  const hours = await tile('Track hours used');
+  check('the track hours used, where it was recorded', /67% 12 h of 18 h approved, where recorded$/.test(hours), hours);
+  const outcomes = page.locator('.chart-card').first();
+  const said = await outcomes.locator('.viz-hit').nth(7).getAttribute('aria-label');
+  check('each week\'s requests stacked by how they ended, and said', await outcomes.locator('.viz-col').count() === 12
+    && said === '19 Oct: 1 Approved, 0 Rejected, 0 Denied by BART, 1 Cancelled, 2 Not decided yet', said);
+  await outcomes.locator('.viz-hit').nth(8).focus();
+  const tip = (await outcomes.locator('.viz-tip:not([hidden])').innerText()).replace(/\s+/g, ' ');
+  check('a column shows its values to the keyboard as well as the pointer', /^26 Oct .*1 Denied by BART/.test(tip), tip);
+  const reasons = page.locator('[data-report=reasons] tbody tr');
+  check('why requests were rejected or denied, newest first, BART\'s said as BART\'s',
+    /Single tracking not available that night/.test(await reasons.first().textContent()) && /^BART/.test(await reasons.first().locator('td').nth(3).textContent())
+      && await reasons.filter({ hasText: 'No flagger named for the work' }).count() === 1);
+  const dl = page.waitForEvent('download');
+  await page.click('[data-action=report-csv]');
+  const csv = fs.readFileSync(await (await dl).path(), 'utf8').split('\r\n');
+  check('the weeks download as a CSV, with what the table says', csv[0] === 'Week of,Raised,Approved,Rejected,Denied by BART,Cancelled,Not decided yet,Sent in,On time,Late,Hours approved,Hours used'
+    && csv.includes('2026-10-19,4,1,0,0,1,2,4,4,0,18,12'), csv.find((l) => l.startsWith('2026-10-19')));
+  await page.selectOption('[data-report=range]', '4');
+  await page.waitForFunction(() => document.querySelectorAll('.chart-card .viz-chart')[0]?.querySelectorAll('.viz-col').length === 8);
+  check('fewer weeks, fewer columns', true);
+  await shot(page, `${mode}-10-reports`);
+}
+
 /** The start page and the calendar link, on the server. */
 async function serverToday(page) {
   console.log('\nserver: today');
@@ -859,6 +896,21 @@ async function serverBart(page) {
   await waitNext(page, name, /^Granted by BART · BT-1234$/);
   const kept = await page.evaluate(async () => (await (await fetch('api/tawrs')).json()).find((t) => t.bart?.ref === 'BT-1234')?.bart);
   check('the server keeps what BART said, and when', kept?.answer === 'granted' && /^\d{4}-\d{2}-\d{2}$/.test(kept.sent_on), JSON.stringify(kept));
+}
+
+/** Reports, read from the server's requests. */
+async function serverReports(page) {
+  console.log('\nserver: reports');
+  await page.click('nav.views [data-view=tawr]');
+  await page.click('.subtabs [data-section=reports]');
+  await page.waitForSelector('[data-report=figures]');
+  const bart = (await page.locator('.stat-tile', { hasText: 'Granted by BART' }).innerText()).replace(/\s+/g, ' ');
+  check('the server\'s requests are reported, with what BART said', /100% 1 granted · 0 denied$/.test(bart), bart);
+  const dl = page.waitForEvent('download');
+  await page.click('[data-action=report-csv]');
+  const csv = fs.readFileSync(await (await dl).path(), 'utf8').split('\r\n');
+  const row = csv.find((l) => l.startsWith(`${WEEK},`)) || '';
+  check('and download as a CSV', csv[0].startsWith('Week of,Raised,') && Number(row.split(',')[1]) > 0 && Number(row.split(',')[2]) === 1, row);
 }
 
 /** The server keeps the memory too, for those who raise and decide. */
@@ -903,6 +955,7 @@ try {
     await moreConflicts(page, { mode: 'static site' });
     await phases(page, { mode: 'static site' });
     await withBart(page, { mode: 'static site' });
+    await reports(page, { mode: 'static site' });
     check('no console errors (static site)', !errors.length, errors.join(' | '));
     await context.close();
     srv.close();
@@ -957,6 +1010,7 @@ try {
       await manage(page, { mode: 'server' });
       await serverToday(page);
       await serverBart(page);
+      await serverReports(page);
       await serverMemory(page);
       check('no console errors (server)', !errors.length, errors.join(' | '));
       await context.close();
