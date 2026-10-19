@@ -454,6 +454,16 @@ export function lookaheadSheets(buffer) {
 }
 
 /**
+ * The 4WLA's own fixed shading — the darker weekends and the grey section
+ * bands, measured off BART's workbook and written by the export (`la_xlsx.js`).
+ * Read as shading on import: never asked about, and never work.
+ */
+export const SHEET_SHADING = [
+  { argb: '7F7F7F', meaning: 'Weekend shading', role: 'ignore' },
+  { argb: 'D9D9D9', meaning: 'Section band', role: 'divider' },
+];
+
+/**
  * What a workbook would bring in, before anything is changed: its sheet read
  * as a calendar, the colours its own key names, and the colours it uses that
  * neither its key nor the legend knows — for somebody to say what they are.
@@ -467,7 +477,8 @@ export function readWorkbook(buffer, { sheetName = null, legend = DEFAULT_LEGEND
   const fromKey = key.filter((k) => !known.has(String(k.argb).toUpperCase()))
     .map((k) => ({ argb: String(k.argb).toUpperCase(), meaning: k.meaning, role: 'shift' }));
   const merged = [...(legend || []), ...fromKey];
-  const applied = applyLegend(grid, merged);
+  // The sheet's own greys are read as what they are, after anything the legend says about them.
+  const applied = applyLegend(grid, [...merged, ...SHEET_SHADING]);
   const view = readGrid(applied, { anchorISO });
   return {
     sheet: names[0],

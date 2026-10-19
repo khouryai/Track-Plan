@@ -339,12 +339,13 @@ export const EXPECTED = {
  * "IXL Regression" later by that many days, which is what a re-read of next
  * week's file looks like to the timeline's suggestions.
  *
- * The key names yellow (Day Shift) and orange (Swing Shift); the grey is in no
- * key. What it should read as with the grey categorised as Work, and without:
+ * The key names yellow (Day Shift) and orange (Swing Shift); the pale green is
+ * in no key (not the sheet's own grey, which is known as shading). What it
+ * should read as with the green categorised as Work, and without:
  *
  *   IXL Regression   Mon–Wed of week one, Mon–Tue of week two   2 runs
  *   Cable pull       Thu–Fri of week one, swing shift            1 run
- *   Only shading     grey Mon–Fri                                1 run, or none
+ *   Only shading     pale green Mon–Fri                          1 run, or none
  */
 export function buildLookaheadWorkbook({ shift = 0 } = {}) {
   const COLS = 'CDEFGHIJKLMNOP'.split('');
@@ -353,7 +354,7 @@ export function buildLookaheadWorkbook({ shift = 0 } = {}) {
   const num = (ref, v) => `<c r="${ref}"><v>${v}</v></c>`;
   const fill = (ref, style) => `<c r="${ref}" s="${style}"/>`;
   const YELLOW = 1;
-  const GREY = 2;
+  const GREY = 2; // a pale green highlight (C6E0B4) that no key names
   const ORANGE = 3;
 
   const days = (row, marks) => marks.map(([i, style, text]) =>
@@ -391,7 +392,7 @@ ${rows.join('\n')}
 <fill><patternFill patternType="none"/></fill>
 <fill><patternFill patternType="gray125"/></fill>
 <fill><patternFill patternType="solid"><fgColor rgb="FFFFFF00"/></patternFill></fill>
-<fill><patternFill patternType="solid"><fgColor rgb="FFD9D9D9"/></patternFill></fill>
+<fill><patternFill patternType="solid"><fgColor rgb="FFC6E0B4"/></patternFill></fill>
 <fill><patternFill patternType="solid"><fgColor rgb="FFFFC000"/></patternFill></fill>
 </fills>
 <borders count="1"><border/></borders>

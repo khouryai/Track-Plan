@@ -39,8 +39,14 @@ data extracted automatically from the drawing.
    colour as well as its text — within the calendar, and into Excel — and one
    day copied onto several fills them all. An existing 4WLA workbook can be
    imported (*Import 4WLA (.xlsx)*): the calendar sheet is found by its row of
-   weekday letters, the workbook's own colour key is read, and a colour nobody has
-   named is asked about, never guessed.
+   weekday letters, the workbook's own colour key is read, the sheet's own
+   weekend and section-band greys are read as shading, and any other colour
+   nobody has named is asked about, never guessed. *Excel (4WLA)* writes the
+   weeks on screen back out in BART's layout — the six columns, month band, day
+   numbers and weekday letters, each day in its shift colour with its support,
+   a struck-out code red and struck through, the legend and support codes keyed
+   underneath — ready to paste into the master look-ahead (with or without the
+   Resource rows). It reads back through the same import, which the tests check.
 2. **Link each activity's location** — hover its Location cell and press *Link*
    (or right-click it → *Select on track plan…*). Once linked, *Map* shows it on
    the track plan, and the cell's *#21* opens the TAWR made from it. After any
@@ -406,10 +412,12 @@ server.py, operations.py
 | `map.js` | the map, Select on track plan, TAWRs drawn on it |
 | `lookahead_view.js`, `tawr_view.js` | the two planning views |
 | `tawr_pdf.js`, `pdf_metrics.js`, `xlsx.js`, `la_read.js`, `inflate.js`, `zip.js` | BART's form filled; the workbook read; zip |
+| `la_xlsx.js`, `xlsx_write.js` | the look-ahead written out as BART's 4WLA workbook |
 
-The four-week look-ahead, the TAWR rules and BART's form filler are rebuilt from
-**cx-timeline** (its `core/la_edit.js`, `core/tawr.js`, `io/tawr_pdf.js`,
-`io/lookahead.js`), with the track plan link in place of its location register.
+The four-week look-ahead, the TAWR rules, BART's form filler and the 4WLA
+export are rebuilt from **cx-timeline** (its `core/la_edit.js`, `core/tawr.js`,
+`io/tawr_pdf.js`, `io/lookahead.js`, `io/la_xlsx.js`, `io/xlsx_write.js`), with
+the track plan link in place of its location register.
 The readers and the form filler are copied unchanged; each file says where it
 came from.
 

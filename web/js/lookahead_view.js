@@ -35,6 +35,7 @@ import { STATUS_COLOR } from './map.js';
 import { sampleLookahead, sampleStart } from './sample.js';
 import { settleSample } from './tawr_sync.js';
 import { suggestLink, suggestFields, linkEntry, restoreLink } from './learn.js';
+import { lookaheadWorkbook, lookaheadFileName } from './la_xlsx.js';
 
 const META = LA.FIELDS.length;
 const LOC = LA.FIELDS.findIndex((f) => f.key === 'location');
@@ -230,6 +231,10 @@ function toolbar() {
     }) : null,
     writer() ? el('button', { type: 'button', class: 'secondary mini', dataset: { action: 'import' }, text: 'Import 4WLA (.xlsx)…', onClick: importWorkbook }) : null,
     writer() ? el('button', { type: 'button', class: 'secondary mini', dataset: { action: 'sample' }, text: 'Sample data…', title: 'Four weeks of W and M line work, with conflicts, from the coming Monday', onClick: loadSample }) : null,
+    el('button', {
+      type: 'button', class: 'secondary mini', dataset: { action: 'export-xlsx' }, text: 'Excel (4WLA)',
+      title: 'The weeks on screen in BART\'s 4WLA layout, to paste into the master look-ahead', onClick: exportXlsx,
+    }),
     el('button', { type: 'button', class: 'secondary mini', text: 'CSV', title: 'The weeks on screen as a CSV', onClick: exportCsv }),
     writer() ? el('span', { class: 'la-status la-status-saved', role: 'status', text: 'All changes saved' }) : el('span', { class: 'small', text: 'Read only' }),
   ]));
@@ -1250,6 +1255,31 @@ function loadSample() {
             }
           } catch (err) { toast(`Could not move the earlier weeks on: ${err.message}`, 'bad'); }
           if (V.app.view === 'lookahead') draw();
+        },
+      },
+    ],
+  });
+}
+
+/** The weeks on screen as BART's 4WLA workbook (`la_xlsx.js`). */
+function exportXlsx() {
+  const names = el('input', { type: 'checkbox', checked: true, 'aria-label': 'Include the Resource rows' });
+  const span = `${dayLabel(V.days[0])} – ${dayLabel(V.days[V.days.length - 1])} ${V.days[V.days.length - 1].slice(0, 4)}`;
+  openModal({
+    title: 'Export the look-ahead as BART\'s 4WLA (.xlsx)',
+    body: el('div', { class: 'form-grid' }, [
+      el('p', { text: `${span}: the rows with work in these weeks, laid out as BART's 4WLA — the six columns, the month band, day numbers and weekday letters, each day in its shift colour with its support, and the legend under it — ready to paste into the master look-ahead.` }),
+      el('label', { class: 'check' }, [names, ' Include the Resource rows (who is on each activity)']),
+    ]),
+    actions: [
+      { label: 'Cancel' },
+      {
+        label: 'Download', kind: 'primary', id: 'export-xlsx-confirm',
+        onClick: () => {
+          const bytes = lookaheadWorkbook({
+            model: model(), days: V.days, legend: V.app.la.legend, codes: V.app.la.codes, title: `4 Week Look Ahead — ${span}`, resources: names.checked,
+          });
+          saveFile(lookaheadFileName(V.days), bytes, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
         },
       },
     ],

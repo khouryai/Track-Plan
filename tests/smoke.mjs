@@ -28,6 +28,7 @@ const WEB = path.join(ROOT, 'web');
 const T = await import(path.join(ROOT, 'web/js/tawr.js'));
 const pdf = await import(path.join(ROOT, 'web/js/tawr_pdf.js'));
 const { readZip } = await import(path.join(ROOT, 'web/js/xlsx.js'));
+const LA = await import(path.join(ROOT, 'web/js/lookahead.js'));
 
 const args = process.argv.slice(2);
 const only = args.includes('--only') ? args[args.indexOf('--only') + 1] : null;
@@ -423,6 +424,15 @@ async function sampleData(page, { mode }) {
   check('the four weeks fit side by side, opened at the first', fit.fits && fit.left === 0 && fit.seen, JSON.stringify(fit));
   await shot(page, `${mode}-5a-sample-lookahead`);
   check('the look-ahead shows them from the coming Monday', (await page.locator('.la-week').first().getAttribute('data-week')) === '2026-10-19');
+  await page.click('[data-action=export-xlsx]');
+  const xdl = page.waitForEvent('download');
+  await page.click('.modal [data-action=export-xlsx-confirm]');
+  const xfile = await xdl;
+  const xbytes = fs.readFileSync(await xfile.path());
+  const xread = LA.readWorkbook(xbytes.buffer.slice(xbytes.byteOffset, xbytes.byteOffset + xbytes.byteLength), { anchorISO: '2026-10-19' });
+  const xmodel = LA.modelFromView(xread.view, { fromISO: '2026-10-19', legend: xread.legend }).model;
+  check('the weeks on screen export as BART\'s 4WLA, which reads back whole', xfile.suggestedFilename() === '4WLA 2026-10-19 to 2026-11-15.xlsx'
+    && xmodel.rows.filter((r) => r.kind === 'activity').length === 16 && xread.unknown.length === 0, `${xfile.suggestedFilename()} ${xmodel.rows.length} rows`);
   // Read the browser's copy: the badge counts only what waits on whoever is acting.
   await page.waitForFunction(() => {
     const tawrs = JSON.parse(localStorage.getItem('trackplan.ops.v1') || '{}').tawrs || [];

@@ -27,6 +27,7 @@ const zip = await import(path.join(ROOT, 'web/js/zip.js'));
 const SAMPLE = await import(path.join(ROOT, 'web/js/sample.js'));
 const PH = await import(path.join(ROOT, 'web/js/phases.js'));
 const LEARN = await import(path.join(ROOT, 'web/js/learn.js'));
+const XL = await import(path.join(ROOT, 'web/js/la_xlsx.js'));
 const { readZip } = await import(path.join(ROOT, 'web/js/xlsx.js'));
 const MAP = JSON.parse(fs.readFileSync(path.join(ROOT, 'web/data/map.json'), 'utf8'));
 const WORKFLOW = JSON.parse(fs.readFileSync(path.join(ROOT, 'web/data/tawr_workflow.json'), 'utf8'));
@@ -350,15 +351,41 @@ console.log('\nThe 4WLA workbook');
   const read = la.readWorkbook(ab, { anchorISO: '2026-09-01' });
   check('the days are dated', read.dated && read.view.days[0].date === '2026-09-07');
   check('the workbook\'s own key is read', read.fromKey.length === 0 && read.legend.some((e) => e.argb === 'FFC000'));
-  check('a colour nobody named is reported, not guessed', read.unknown.some((u) => u.hex === 'D9D9D9'));
+  check('a colour nobody named is reported, not guessed', read.unknown.some((u) => u.hex === 'C6E0B4'));
   const { model, report } = la.modelFromView(read.view, { fromISO: '2026-09-07', legend: read.legend });
   const ixl = model.rows.find((r) => r.description === 'IXL Regression');
   check('activities come across with their location', ixl?.location === 'TPSS 12');
   check('their Resource row comes with them', model.rows.some((r) => r.kind === 'resource' && r.parent_id === ixl.id));
   check('the paint comes across as the shift', la.getCell(model, ixl.id, '2026-09-07')?.color === 'FFFF00');
   check('shading is left behind', report.droppedColours > 0 && !model.rows.some((r) => r.description === 'Only shading'));
-  const chosen = la.modelFromView(read.view, { fromISO: '2026-09-07', legend: read.legend, choices: { D9D9D9: '0070C0' } });
+  const chosen = la.modelFromView(read.view, { fromISO: '2026-09-07', legend: read.legend, choices: { C6E0B4: '0070C0' } });
   check('a colour somebody says is a shift comes across as it', chosen.model.rows.some((r) => r.description === 'Only shading'));
+
+  // Written out in BART's layout, and read straight back by the reader that imports BART's file.
+  const start = SAMPLE.sampleStart('2026-10-16');
+  const { rows, cells } = SAMPLE.sampleLookahead('2026-10-16', MAP);
+  const out = la.makeModel(rows, cells);
+  const witRow = rows.find((r) => r.kind === 'activity');
+  const witDay = cells.find((c) => c.row_id === witRow.id).day;
+  la.applyOps(out, [{ op: 'cell', row_id: witRow.id, day: witDay, color: la.getCell(out, witRow.id, witDay).color, text: 'X.~WIT' }]);
+  const days = la.windowDays(start, 4);
+  const bytes = XL.lookaheadWorkbook({ model: out, days, legend: la.DEFAULT_LEGEND, codes: la.DEFAULT_CODES, title: '4 Week Look Ahead' });
+  const back = la.readWorkbook(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength), { anchorISO: start });
+  check('the export is a workbook the import reads, dated', back.dated && back.view.days[0].date === start && back.view.days.length === 28, back.view.days[0]?.date);
+  check('every colour in it is the legend\'s, or the sheet\'s own weekend and band greys', back.unknown.length === 0, JSON.stringify(back.unknown));
+  const again = la.modelFromView(back.view, { fromISO: start, legend: back.legend }).model;
+  const acts = (m) => la.orderedRows(m.rows).filter((r) => r.kind === 'activity');
+  check('every activity comes back, in order, with its columns', acts(again).map((r) => [r.activity_id, r.description, r.location, r.sswp, r.party, r.work_hours].join('|')).join('\n')
+    === acts(out).map((r) => [r.activity_id, r.description, r.location, r.sswp, r.party, r.work_hours].join('|')).join('\n'));
+  const painted = (m) => acts(m).flatMap((r) => days.map((d) => la.getCell(m, r.id, d)).filter((c) => c?.color).map((c) => `${c.day} ${c.color} ${c.text}`)).sort().join(';');
+  check('and every painted day with its shift and support', painted(again) === painted(out));
+  check('a struck-out witness comes back struck out', la.getCell(again, acts(again)[0].id, witDay)?.text === 'X.~WIT', la.getCell(again, acts(again)[0].id, witDay)?.text);
+  check('sections and Resource rows come back too', again.rows.filter((r) => r.kind === 'section').length === out.rows.filter((r) => r.kind === 'section').length
+    && again.rows.some((r) => r.kind === 'resource'));
+  const plain = XL.lookaheadWorkbook({ model: out, days, legend: la.DEFAULT_LEGEND, codes: la.DEFAULT_CODES, resources: false });
+  const noNames = la.readWorkbook(plain.buffer.slice(plain.byteOffset, plain.byteOffset + plain.byteLength), { anchorISO: start });
+  check('without names, only the work is written', !la.modelFromView(noNames.view, { fromISO: start, legend: noNames.legend }).model.rows.some((r) => r.kind === 'resource'));
+  check('the file is named for its window', XL.lookaheadFileName(days) === `4WLA ${start} to ${days[27]}.xlsx`);
 }
 
 console.log('\nBART\'s form, filled');
