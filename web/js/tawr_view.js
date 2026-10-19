@@ -264,6 +264,7 @@ function flowStrip() {
     ['Draft', 'the requester reviews and submits', 'requester'],
     ['Submitted', 'the Track Allocation Manager approves', 'manager'],
     ['Approved', 'downloaded as BART\'s form', null],
+    ['With BART', 'sent, answered, the access recorded', null],
   ];
   return el('ol', { class: 'flow', 'aria-label': 'How a TAWR moves along' }, steps.map(([name, what, who]) => el('li', { class: who && who === role ? 'mine' : '' }, [
     el('b', { text: name }), ` ${what}`, who && who === role ? el('span', { class: 'you', text: ' — you' }) : null,

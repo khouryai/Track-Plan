@@ -228,6 +228,39 @@ class Workflow(Base):
         finally:
             con.close()
 
+    def test_a_calendar_link_is_one_per_person_and_can_be_stopped(self):
+        first = ops.make_calendar_token(self.con, self.viewer)["token"]
+        self.assertEqual(ops.calendar_user(self.con, first)["id"], self.viewer["id"])
+        second = ops.make_calendar_token(self.con, self.viewer)["token"]
+        self.assertIsNone(ops.calendar_user(self.con, first))  # the new link replaces the old
+        self.assertEqual(ops.calendar_user(self.con, second)["id"], self.viewer["id"])
+        self.assertEqual(ops.stop_calendar_token(self.con, self.viewer), {"stopped": True})
+        self.assertIsNone(ops.calendar_user(self.con, second))
+        self.refused(ops.make_calendar_token, self.con, None, status=401)
+
+    def test_the_calendar_says_the_deadlines_and_the_access(self):
+        from datetime import date, datetime, timezone
+        rec = record("loc:tcr:Colma|night", shift="night")
+        rec["source"]["days"] = [{"date": MON, "start": "2230", "end": "0430"}, {"date": "2026-11-03", "start": "", "end": ""}]
+        rec["source"]["activities"] = [{"activityId": "C-M301", "title": "ATC loop cable, Glen Park"}]
+        r = ops.create_tawr(self.con, rec, self.requester, WF)
+        ops.act_on_tawr(self.con, r["id"], "submit", self.requester, WF)
+        ops.act_on_tawr(self.con, r["id"], "approve", self.manager, WF)
+        ops.record_bart(self.con, r["id"], {"sent_on": "2026-10-16", "ref": "BT-1", "answer": "granted"}, self.requester, WF)
+        ics = ops.calendar_ics(self.con, today=date(2026, 10, 16), stamp=datetime(2026, 10, 16, 22, 0, tzinfo=timezone.utc))
+        lines = ics.split("\r\n")
+        self.assertTrue(ics.startswith("BEGIN:VCALENDAR\r\n") and ics.endswith("END:VCALENDAR\r\n"))
+        self.assertIn("UID:deadline-2026-11-02@track-plan", lines)
+        self.assertIn("DTSTART;VALUE=DATE:20261016", lines)  # 17 days before Mon 2 Nov
+        self.assertIn("TRIGGER:-PT15H", lines)
+        self.assertIn("DTSTART:20261102T223000", lines)
+        self.assertIn("DTEND:20261103T043000", lines)  # a night shift ends the next morning
+        self.assertIn("DTSTART;VALUE=DATE:20261103", lines)  # a day without hours is the whole day
+        self.assertIn("STATUS:CONFIRMED", lines)
+        unfolded = ics.replace("\r\n ", "")
+        self.assertIn("DESCRIPTION:C-M301 ATC loop cable\\, Glen Park\\nGranted by BART (BT-1).", unfolded)
+        self.assertTrue(all(len(line.encode()) <= 75 for line in lines))
+
     def test_submitted_is_the_managers_to_edit(self):
         r = ops.act_on_tawr(self.con, self.draft()["id"], "submit", self.requester, WF)
         self.refused(ops.update_tawr, self.con, r["id"], {"fields": {"a": "b"}}, self.requester, WF, status=403)
@@ -408,6 +441,12 @@ class Http(unittest.TestCase):
         rc = rc.split(";")[0]
         status, t, _ = self.call("POST", "/api/tawrs", record("k|day"), cookie=rc)
         self.assertEqual((status, t["status"]), (201, "draft"))
+        status, made, _ = self.call("POST", "/api/calendar/token", {}, cookie=rc)
+        self.assertEqual(status, 201)
+        self.assertEqual(self.call("GET", "/api/calendar.ics?token=nope")[0], 404)
+        status, ics, _ = self.call("GET", f"/api/calendar.ics?token={made['token']}")
+        self.assertEqual(status, 200)
+        self.assertTrue(ics.startswith(b"BEGIN:VCALENDAR") if isinstance(ics, bytes) else ics.startswith("BEGIN:VCALENDAR"))
         status, _, _ = self.call("POST", f"/api/tawrs/{t['id']}/submit", {}, cookie=rc)
         self.assertEqual(status, 200)
         status, err, _ = self.call("POST", f"/api/tawrs/{t['id']}/approve", {}, cookie=rc)

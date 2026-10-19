@@ -150,3 +150,12 @@ CREATE TABLE IF NOT EXISTS memory (
     created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 );
 CREATE INDEX IF NOT EXISTS memory_kind ON memory(kind, created_at);
+
+-- A link a calendar subscribes to: the TAWR deadlines and the approved access
+-- (operations.calendar_ics). A calendar cannot sign in, so the link carries a
+-- token; only its hash is kept, one per person, replaced when a new one is made.
+CREATE TABLE IF NOT EXISTS calendar_feeds (
+    user_id     INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    token_hash  TEXT NOT NULL UNIQUE,
+    created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);

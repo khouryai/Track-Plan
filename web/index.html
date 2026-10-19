@@ -7,7 +7,7 @@
 <link rel="stylesheet" href="vendor/leaflet/leaflet.css">
 <link rel="stylesheet" href="style.css">
 </head>
-<body data-view="lookahead">
+<body data-view="today">
 <!-- Paint servers the map's overlay refers to by id: the picked request's halo, and a conflict's hatching. -->
 <svg class="svg-defs" width="0" height="0" aria-hidden="true" focusable="false">
   <defs>
@@ -20,6 +20,7 @@
   <button id="toggle-panel" class="map-only" title="Show / hide panel" aria-label="Toggle panel">☰</button>
   <h1>Track Plan</h1>
   <nav class="views" role="tablist" aria-label="Views">
+    <button type="button" role="tab" data-view="today">Today</button>
     <button type="button" role="tab" data-view="lookahead">Look-ahead</button>
     <button type="button" role="tab" data-view="tawr">TAWRs <span id="tawr-count" class="count" hidden></span></button>
     <button type="button" role="tab" data-view="map">Track plan</button>
@@ -145,6 +146,7 @@
     <div id="viewport" tabindex="0" aria-label="Track map"></div>
   </section>
 
+  <section id="view-today" class="view" aria-label="What needs attention today"></section>
   <section id="view-lookahead" class="view" aria-label="Four-week look-ahead"></section>
   <section id="view-tawr" class="view" aria-label="Track access work requests"></section>
   <div id="loading">Loading…</div>

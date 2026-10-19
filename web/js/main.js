@@ -23,12 +23,13 @@ import * as M from './map.js';
 import { el, clear, toast, openModal, dayLabel } from './ui.js';
 import * as LookaheadView from './lookahead_view.js';
 import * as TawrView from './tawr_view.js';
+import * as TodayView from './today_view.js';
 import { parsePhases } from './phases.js';
 import { buildIndex } from './learn.js';
 
 const $ = (s) => document.querySelector(s);
-const VIEWS = ['lookahead', 'tawr', 'map'];
-const VIEW_NAMES = { lookahead: 'the look-ahead', tawr: 'TAWRs', map: 'the track plan' };
+const VIEWS = ['today', 'lookahead', 'tawr', 'map'];
+const VIEW_NAMES = { today: 'Today', lookahead: 'the look-ahead', tawr: 'TAWRs', map: 'the track plan' };
 
 export const app = {
   data: null,
@@ -124,7 +125,7 @@ app.lookaheadChanged = () => {
  */
 app.go = (view, { week = null, focus = null, back = null } = {}) => {
   if (week) app.week = week;
-  if (!VIEWS.includes(view)) view = 'lookahead';
+  if (!VIEWS.includes(view)) view = 'today';
   setBack(view === 'map' ? back : null);
   if (app.view === 'lookahead' && view !== 'lookahead') LookaheadView.leave?.();
   app.view = view;
@@ -141,7 +142,8 @@ app.setWeek = (week) => {
 };
 
 function render() {
-  if (app.view === 'lookahead') LookaheadView.render($('#view-lookahead'), app);
+  if (app.view === 'today') TodayView.render($('#view-today'), app);
+  else if (app.view === 'lookahead') LookaheadView.render($('#view-lookahead'), app);
   else if (app.view === 'tawr') TawrView.render($('#view-tawr'), app);
 }
 app.render = render;
@@ -416,7 +418,7 @@ function poll() {
     await app.reloadTawrs();
     $('#loading').remove();
     const v = location.hash.slice(1);
-    app.go(VIEWS.includes(v) ? v : 'lookahead');
+    app.go(VIEWS.includes(v) ? v : 'today');
     app.raise().then((r) => { if (r && (r.made || r.updated) && app.view !== 'map') render(); });
     poll();
   } catch (err) {

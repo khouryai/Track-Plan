@@ -28,6 +28,23 @@ data extracted automatically from the drawing.
                                                                or reject → BART's form (PDF)
 ```
 
+**Today** is the page that opens first: what needs the person looking, most
+pressing first, each with a button to where it is dealt with — drafts coming
+due (by the week, late ones first), requests waiting for the Track Allocation
+Manager, rejections and BART's denials to put right, approved requests to send
+to BART, access to account for, cancellations BART has not been told of,
+conflicts and power clashes ahead, BART support over what BART can provide,
+and look-ahead activities still to link (with how many the learning memory can
+link as before). Under it, each week's deadline and where its requests stand,
+and the access approved for this week and next. **The deadlines in a
+calendar**: on a server, *Make my calendar link* gives each person a private
+link that Outlook, Google or Apple Calendar subscribes to — each week's
+deadline as an all-day event with a reminder the day before, and every day of
+approved access with its hours — kept current by the server (the link answers
+to its own token, never a session; making a new one or *Stop my link* ends the
+old). On the static site, *Download the calendar (.ics)* gives the same as a
+file to import.
+
 1. **Fill in the look-ahead** (*Look-ahead* view). The same 4WLA as in Excel:
    Activity ID, Description, Location, SSWP#, Party to Action, Work Hours, then a
    column per day for four or five weeks. Paint a day in its shift colour (Day,
@@ -388,6 +405,7 @@ is kept at `db/tawr_template.pdf` — outside `web/`, ignored by git.
 | `tawr_merges` | consolidations: which requests the manager made one |
 | `tawr_settings`, `tawr_descriptions` | Setup: contacts, the requester's name, phone and signature, shift hours, lead time, phases, predicting; expanded wording for activities |
 | `memory` | the learning memory: each request's answers as sent, the locations linked, the rejections and why, and which predictions were kept |
+| `calendar_feeds` | each person's calendar link, as the hash of its token |
 
 ### API
 
@@ -400,6 +418,7 @@ is kept at `db/tawr_template.pdf` — outside `web/`, ignored by git.
 | `GET /api/lookahead`, `POST /api/lookahead/ops`, `/api/lookahead/replace`, `PUT /api/lookahead/legend`, `/codes` | the look-ahead |
 | `GET/POST /api/tawrs`, `PUT /api/tawrs/<id>`, `POST /api/tawrs/<id>/<action>`, `/api/tawrs/consolidate`, `/api/tawrs/<id>/split` | TAWRs and their workflow |
 | `PUT /api/tawrs/<id>/bart`, `PUT /api/tawrs/<id>/access` | after approval: sent to BART, BART's reference and answer, the track released; the access used |
+| `GET /api/calendar.ics?token=…`, `POST/DELETE /api/calendar/token` | the deadlines and approved access as a calendar to subscribe to (the link's token, not a session); make or stop the link |
 | `GET/PUT /api/tawr/settings`, `/api/tawr/template`, `/api/tawr/descriptions` | Setup |
 | `GET/POST /api/memory`, `DELETE /api/memory/<id>`, `POST /api/memory/clear` | the learning memory (the requester and the manager; clearing, the manager) |
 | `GET/POST /api/requests`, `PUT/DELETE /api/requests/<id>` | the earlier access requests |
@@ -423,7 +442,8 @@ server.py, operations.py
 
 | module | |
 |---|---|
-| `main.js` | loads everything, switches between the three views |
+| `main.js` | loads everything, switches between the four views |
+| `today.js`, `today_view.js` | what needs whom today, the deadlines ahead, the access approved; the calendar file |
 | `lookahead.js` | the look-ahead's rows, cells and ops (undo), the legend and support codes, the workbook import |
 | `links.js` | a track plan link: its label, Area, key, and whether two overlap |
 | `tawr.js` | a week of the look-ahead read into TAWRs; conflicts; the form's values; the workflow table's rules |

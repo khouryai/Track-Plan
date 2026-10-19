@@ -33,6 +33,8 @@ TAWRs (signed in; who may do what is web/data/tawr_workflow.json)
   POST   /api/tawrs/consolidate              {ids, merge, record, note}   (track allocation manager)
   POST   /api/tawrs/<id>/split                                             (track allocation manager)
   GET/PUT /api/tawr/settings, /api/tawr/template (application/pdf; 204 until uploaded)
+  GET    /api/calendar.ics?token=…           the TAWR deadlines and approved access as iCalendar (the link's token, no session)
+  POST/DELETE /api/calendar/token             make (or replace) / stop the signed-in person's calendar link
   GET/POST /api/memory, DELETE /api/memory/<id>, POST /api/memory/clear (manager)
                                              the learning memory: web/js/learn.js
   GET/POST /api/tawr/descriptions, PUT/DELETE /api/tawr/descriptions/<id>
@@ -293,6 +295,16 @@ class Handler(SimpleHTTPRequestHandler):
                 return self.send_json(ops.split(con, int(p[1]), need(), WORKFLOW))
             b = self.body() or {}
             return self.send_json(ops.act_on_tawr(con, int(p[1]), p[2], need(), WORKFLOW, b.get("note"), b.get("on"), b.get("released") is True))
+        # The deadlines as a calendar: the feed answers to its token, not a session — a calendar cannot sign in.
+        if p == ["calendar.ics"] and method == "GET":
+            if ops.calendar_user(con, q.get("token")) is None:
+                raise ops.Refused("no such calendar link", 404)
+            return self.send_bytes(ops.calendar_ics(con).encode(), "text/calendar; charset=utf-8")
+        if p == ["calendar", "token"]:
+            if method == "POST":
+                return self.send_json(ops.make_calendar_token(con, need()), HTTPStatus.CREATED)
+            if method == "DELETE":
+                return self.send_json(ops.stop_calendar_token(con, need()))
         if p == ["tawr", "settings"]:
             if method == "GET":
                 return self.send_json(ops.get_settings(con, need(), WORKFLOW))

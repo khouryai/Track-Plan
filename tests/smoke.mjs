@@ -99,8 +99,9 @@ async function open(browser, base) {
   page.on('response', (r) => {
     if (r.status() < 400) return;
     const p = new URL(r.url()).pathname;
-    // Expected: probing for a server on a static host, missing tiles in a checkout, a signed-out probe.
-    if (['/api/me', '/tiles/index.json', '/api/lookahead'].includes(p) || r.status() === 401 || r.status() === 403) return;
+    // Expected: probing for a server on a static host, missing tiles in a checkout, a signed-out probe,
+    // and the calendar link the test stops and then tries.
+    if (['/api/me', '/tiles/index.json', '/api/lookahead', '/api/calendar.ics'].includes(p) || r.status() === 401 || r.status() === 403) return;
     errors.push(`${r.status()} ${p}`);
   });
   page.on('pageerror', (e) => errors.push(`${e.message}\n${e.stack}`));
@@ -167,8 +168,8 @@ const waitNext = (page, name, re) => page.waitForFunction(([n, src]) => [...docu
 
 async function flow(page, { mode }) {
   console.log(`\n${mode}: the look-ahead`);
+  await page.click('nav.views [data-view=lookahead]');
   await page.waitForSelector('.la-grid');
-  check('the look-ahead opens first', await page.locator('body[data-view=lookahead]').count() === 1);
   check('the TAWR week is highlighted', (await page.locator('.la-week-on').getAttribute('data-week')) === WEEK);
 
   await addActivity(page, 'IXL SIM Testing');
@@ -680,6 +681,31 @@ async function learning(page, { mode }) {
   await page.click('.week-btn[data-week="2026-11-09"]'); // where the sample left the track plan
 }
 
+/** The start page, on the sample's weeks, as the Track Allocation Manager. */
+async function startPage(page, { mode }) {
+  console.log(`\n${mode}: today`);
+  await page.click('nav.views [data-view=today]');
+  await page.waitForSelector('.needs-you');
+  const need = (key) => page.locator(`.needs-you li[data-need="${key}"]`);
+  check('the drafts coming due are the first thing, with their deadline', (await page.locator('.needs-you li').first().getAttribute('data-need')) === `due:${WEEK}`
+    && /^6 drafts for the week of Mon 2 Nov to review and submit$/.test(await need(`due:${WEEK}`).locator('.need-title').textContent())
+    && /Due today/.test(await need(`due:${WEEK}`).textContent()));
+  check('what waits for the manager\'s approval is the manager\'s to do', /^7 requests waiting for your approval$/.test(await need('approve').locator('.need-title').textContent())
+    && await need('approve').evaluate((n) => n.classList.contains('tone-you')));
+  check('conflicts ahead are counted by the week', /track conflict/.test(await need(`clash:${WEEK}`).textContent()));
+  check('every deadline ahead is listed', await page.locator('table.deadlines tbody tr').count() >= 4);
+  check('and the access approved, day by day', await page.locator('table.on-track tbody tr').count() >= 6 && /Granted · BT-\d+/.test(await page.textContent('table.on-track')));
+  const dl = page.waitForEvent('download');
+  await page.click('[data-action=calendar-download]');
+  const ics = fs.readFileSync(await (await dl).path(), 'utf8');
+  check('the deadlines and the access download as a calendar', ics.startsWith('BEGIN:VCALENDAR') && ics.includes(`UID:deadline-${WEEK}@track-plan`)
+    && ics.includes('DTSTART;VALUE=DATE:20261016') && /UID:tawr-\d+-2026-10-20@track-plan/.test(ics));
+  await need(`due:${WEEK}`).locator('button').click();
+  await page.waitForSelector('body[data-view=tawr]');
+  check('each says where to go, and goes there', (await page.getAttribute('.week-btn.on', 'data-week')) === WEEK);
+  await shot(page, `${mode}-9-today`);
+}
+
 /** What BART can provide, power sections, and picking track by interlocking — on the sample. */
 async function moreConflicts(page, { mode }) {
   console.log(`\n${mode}: power, BART's capacity and interlockings`);
@@ -800,6 +826,26 @@ async function withBart(page, { mode }) {
   await shot(page, `${mode}-7-after-approval`);
 }
 
+/** The start page and the calendar link, on the server. */
+async function serverToday(page) {
+  console.log('\nserver: today');
+  await page.click('nav.views [data-view=today]');
+  await page.waitForSelector('#view-today .today');
+  check('an approved request not yet sent to BART is somebody\'s to do', /^1 approved request to send to BART$/.test(await page.textContent('.needs-you li[data-need=unsent] .need-title')));
+  await page.click('[data-action=calendar-link]');
+  await page.waitForSelector('[data-calendar=url]');
+  const url = await page.inputValue('[data-calendar=url]');
+  const feed = await page.evaluate(async (u) => {
+    const r = await fetch(u, { credentials: 'omit' });
+    return { status: r.status, type: r.headers.get('Content-Type'), text: await r.text() };
+  }, url);
+  check('the calendar link answers without signing in, as a calendar', feed.status === 200 && /text\/calendar/.test(feed.type) && feed.text.includes('UID:deadline-2026-11-02@track-plan'), `${feed.status} ${url}`);
+  await page.click('[data-action=calendar-stop]');
+  await confirm(page);
+  const stopped = await page.evaluate(async (u) => (await fetch(u, { credentials: 'omit' })).status, url);
+  check('and stops when it is stopped', stopped === 404);
+}
+
 /** BART's answer, kept by the server. */
 async function serverBart(page) {
   console.log('\nserver: after approval');
@@ -839,6 +885,9 @@ try {
     const { page, errors, context } = await open(browser, base);
     await page.fill('.modal input', 'Rae');
     await page.click('[data-action=acting]');
+    await page.waitForSelector('#view-today .today');
+    check('the start page opens first', await page.locator('body[data-view=today]').count() === 1
+      && /Nothing needs attention/.test(await page.textContent('#view-today')));
     await flow(page, { mode: 'static site' });
     await page.click('#who button');
     await page.selectOption('.modal select', 'manager');
@@ -849,6 +898,7 @@ try {
     await copyPaste(page, { mode: 'static site' });
     await importBook(page, { mode: 'static site' });
     await sampleData(page, { mode: 'static site' });
+    await startPage(page, { mode: 'static site' });
     await learning(page, { mode: 'static site' });
     await moreConflicts(page, { mode: 'static site' });
     await phases(page, { mode: 'static site' });
@@ -869,7 +919,7 @@ try {
       await inputs.nth(1).fill('tam');
       await inputs.nth(2).fill('manager-pass');
       await page.click('.modal [data-action=signin]');
-      await page.waitForSelector('.la-grid');
+      await page.waitForSelector('#view-today .today');
       check('and it is the Track Allocation Manager', /Track Allocation Manager/.test(await page.textContent('#who')));
       // The requester's account, added by the manager.
       const made = await page.evaluate(async () => (await fetch('api/users', {
@@ -905,6 +955,7 @@ try {
       await page.click('.modal [data-action=signin]');
       await page.waitForSelector('#loading', { state: 'detached' });
       await manage(page, { mode: 'server' });
+      await serverToday(page);
       await serverBart(page);
       await serverMemory(page);
       check('no console errors (server)', !errors.length, errors.join(' | '));

@@ -972,6 +972,122 @@ def clear_memory(con, actor, workflow):
     return {"forgotten": con.execute("DELETE FROM memory").rowcount}
 
 
+# ------------------------------------------------------------ the deadlines as a calendar
+
+LEAD_DAYS = 17
+SHIFT_LABELS = {"day": "Day", "swing": "Swing", "night": "Night", "possession": "Blanket", "unmapped": "Unmapped colour"}
+
+
+def make_calendar_token(con, actor):
+    """A new calendar link for whoever is signed in, replacing theirs: the token, shown once."""
+    if actor is None:
+        raise Refused("sign in first", 401)
+    token = secrets.token_urlsafe(24)
+    with Tx(con):
+        con.execute("INSERT INTO calendar_feeds(user_id, token_hash, created_at) VALUES (?, ?, ?) "
+                    "ON CONFLICT(user_id) DO UPDATE SET token_hash = excluded.token_hash, created_at = excluded.created_at",
+                    (actor["id"], hashlib.sha256(token.encode()).hexdigest(), now_iso()))
+    return {"token": token}
+
+
+def stop_calendar_token(con, actor):
+    if actor is None:
+        raise Refused("sign in first", 401)
+    return {"stopped": bool(con.execute("DELETE FROM calendar_feeds WHERE user_id = ?", (actor["id"],)).rowcount)}
+
+
+def calendar_user(con, token):
+    """Whose link a token is, while they still have an account."""
+    if not token:
+        return None
+    r = con.execute("SELECT u.* FROM calendar_feeds f JOIN users u ON u.id = f.user_id WHERE f.token_hash = ? AND u.active = 1",
+                    (hashlib.sha256(token.encode()).hexdigest(),)).fetchone()
+    return public_user(r) if r else None
+
+
+def _ics_text(s):
+    return str(s or "").replace("\\", "\\\\").replace(";", "\\;").replace(",", "\\,").replace("\r\n", "\\n").replace("\n", "\\n")
+
+
+def _fold(line):
+    """A content line folded at 75 octets (RFC 5545): the rest follows a space."""
+    out, cur, size = [], "", 0
+    for ch in line:
+        n = len(ch.encode())
+        if size + n > (74 if out else 75):
+            out.append(cur)
+            cur, size = "", 0
+        cur += ch
+        size += n
+    out.append(cur)
+    return "\r\n ".join(out)
+
+
+def calendar_ics(con, today=None, stamp=None, name="Track Plan — TAWRs"):
+    """
+    The TAWR deadlines and the approved access as iCalendar, as web/js/today.js
+    writes it for the static site: an all-day event on each week's deadline —
+    its first day of work less the lead time — with a reminder the day before,
+    for the week before this one and ten after; and an event for every day of
+    approved access, its hours as the look-ahead has them.
+    """
+    today = today or datetime.now().date()
+    dtstamp = (stamp or datetime.now(timezone.utc)).strftime("%Y%m%dT%H%M%SZ")
+    day = lambda iso: datetime.strptime(iso, "%Y-%m-%d").date()
+    monday = lambda d: d - timedelta(days=d.weekday())
+    start = monday(today) - timedelta(days=7)
+    tawrs = [tawr_out(r) for r in con.execute(
+        "SELECT * FROM tawrs WHERE status NOT IN ('superseded', 'consolidated') ORDER BY week_start, location_name, shift, id")]
+    weeks = {t["week_start"] for t in tawrs}
+    weeks |= {monday(day(r["day"])).isoformat() for r in con.execute("SELECT DISTINCT day FROM la_cells WHERE color IS NOT NULL")}
+    lines = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Track Plan//TAWR deadlines//EN", "CALSCALE:GREGORIAN", "METHOD:PUBLISH",
+             f"X-WR-CALNAME:{_ics_text(name)}"]
+    for week in sorted(w for w in weeks if start.isoformat() <= w <= (start + timedelta(days=7 * 11 - 1)).isoformat()):
+        these = [t for t in tawrs if t["week_start"] == week]
+        deadline = day(min([t["first_day"] or week for t in these] or [week])) - timedelta(days=LEAD_DAYS)
+        counts = {}
+        for t in these:
+            counts[t["status"]] = counts.get(t["status"], 0) + 1
+        said = ", ".join(f"{n} {s}" for s, n in counts.items())
+        lines += ["BEGIN:VEVENT", f"UID:deadline-{week}@track-plan", f"DTSTAMP:{dtstamp}",
+                  f"DTSTART;VALUE=DATE:{deadline:%Y%m%d}", f"DTEND;VALUE=DATE:{deadline + timedelta(days=1):%Y%m%d}",
+                  f"SUMMARY:{_ics_text(f'TAWRs due — week of {week}')}",
+                  "DESCRIPTION:" + _ics_text(f"The track access work requests for the week of {week} go to BART today."
+                                             + (f" Requests: {said}." if said else "")),
+                  "TRANSP:TRANSPARENT",
+                  "BEGIN:VALARM", "ACTION:DISPLAY", f"DESCRIPTION:{_ics_text(f'TAWRs due tomorrow — week of {week}')}",
+                  "TRIGGER:-PT15H", "END:VALARM", "END:VEVENT"]
+    access = []
+    for t in tawrs:
+        if t["status"] != "approved":
+            continue
+        for d in t["source"].get("days", []):
+            if start.isoformat() <= d.get("date", "") <= (start + timedelta(days=84)).isoformat():
+                access.append((d["date"], str(d.get("start") or ""), d, t))
+    for date, _, d, t in sorted(access, key=lambda a: (a[0], a[1])):
+        hours = re.fullmatch(r"\d{4}", d.get("start") or "") and re.fullmatch(r"\d{4}", d.get("end") or "")
+        ends = day(date) + timedelta(days=1) if hours and d["end"] <= d["start"] else day(date)
+        what = "; ".join(" ".join(x for x in (a.get("activityId"), a.get("title")) if x) for a in t["source"].get("activities", []))
+        b = t["bart"] or {}
+        if b.get("answer") == "granted":
+            bart = "Granted by BART" + (f" ({b['ref']})" if b.get("ref") else "") + "."
+        elif b.get("sent_on"):
+            bart = "Sent to BART, waiting for its answer."
+        else:
+            bart = "Approved, not yet sent to BART."
+        if hours:
+            when = [f"DTSTART:{date.replace('-', '')}T{d['start']}00", f"DTEND:{ends:%Y%m%d}T{d['end']}00"]
+        else:
+            when = [f"DTSTART;VALUE=DATE:{date.replace('-', '')}", f"DTEND;VALUE=DATE:{day(date) + timedelta(days=1):%Y%m%d}"]
+        summary = f"Track access #{t['id']} {t['location_name']} · {SHIFT_LABELS.get(t['shift'], t['shift'])}"
+        area = (t["fields"] or {}).get("row1_area") or t["location_name"]
+        lines += ["BEGIN:VEVENT", f"UID:tawr-{t['id']}-{date}@track-plan", f"DTSTAMP:{dtstamp}", *when,
+                  f"SUMMARY:{_ics_text(summary)}", f"LOCATION:{_ics_text(area)}", f"DESCRIPTION:{_ics_text(what + chr(10) + bart)}",
+                  f"STATUS:{'CONFIRMED' if b.get('answer') == 'granted' else 'TENTATIVE'}", "END:VEVENT"]
+    lines.append("END:VCALENDAR")
+    return "\r\n".join(_fold(line) for line in lines) + "\r\n"
+
+
 def save_template(data, actor, workflow, path=None):
     """BART's blank form, kept beside the database — never under web/, never committed."""
     require_write(actor, workflow)

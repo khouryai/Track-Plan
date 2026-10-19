@@ -28,6 +28,7 @@ const SAMPLE = await import(path.join(ROOT, 'web/js/sample.js'));
 const PH = await import(path.join(ROOT, 'web/js/phases.js'));
 const LEARN = await import(path.join(ROOT, 'web/js/learn.js'));
 const XL = await import(path.join(ROOT, 'web/js/la_xlsx.js'));
+const TODAY = await import(path.join(ROOT, 'web/js/today.js'));
 const { readZip } = await import(path.join(ROOT, 'web/js/xlsx.js'));
 const MAP = JSON.parse(fs.readFileSync(path.join(ROOT, 'web/data/map.json'), 'utf8'));
 const WORKFLOW = JSON.parse(fs.readFileSync(path.join(ROOT, 'web/data/tawr_workflow.json'), 'utf8'));
@@ -349,6 +350,47 @@ console.log('\nPower sections and BART\'s capacity');
   check('interlockings drawn with limits are read as limits on each track', MAP.interlockings.length >= 40 && ix.W45?.limits.map((l) => l.track).join() === 'W1,W2,W3,W4'
     && ix.C25?.limits.every((l) => l.from_mp === 8.62 && l.to_mp === 8.88), JSON.stringify(ix.C25));
   check('a track the drawing squeezed is steadied to its neighbour', ix.C25.limits.some((l) => l.adjusted));
+}
+
+console.log('\nToday, and the deadlines as a calendar');
+{
+  const rec = (id, status, week, extra = {}) => ({
+    id, status, week_start: week, first_day: week, location_name: `Place ${id}`, shift: 'night',
+    source: { days: [{ date: week, start: '2230', end: '0430' }], activities: [{ activityId: 'C-M301', title: 'ATC loop cable, Glen Park' }] }, ...extra,
+  });
+  const today = '2026-10-16';
+  const records = [
+    rec(1, 'draft', '2026-11-02'), rec(2, 'draft', '2026-11-02'), rec(3, 'draft', '2026-11-30'),
+    rec(4, 'submitted', '2026-10-26'), rec(5, 'rejected', '2026-11-09', { decision_note: 'No flagger' }),
+    rec(6, 'approved', '2026-10-19'), rec(7, 'approved', '2026-10-19', { bart: { sent_on: '2026-10-02' } }),
+    rec(8, 'cancelled', '2026-10-19'), rec(9, 'superseded', '2026-11-02'),
+  ];
+  const keys = (role) => TODAY.attention({ records, today, role }).map((i) => `${i.key}:${i.tone}`);
+  const manager = keys('manager');
+  check('the manager is told what is theirs to do first', manager[0] === 'due:2026-11-02:you' && manager.includes('approve:you') && manager.includes('unsent:you')
+    && manager.includes('release:8:you') && manager.includes('sent:wait') && !manager.some((k) => k.startsWith('due:2026-11-30')), manager.join(' '));
+  const requester = keys('requester');
+  check('the requester sees a rejection as theirs, and approval as somebody else\'s', requester.includes('rejected:5:you') && requester.includes('approve:wait'), requester.join(' '));
+  const viewer = keys('viewer');
+  check('a viewer is told, never asked', !viewer.some((k) => k.endsWith(':you')), viewer.join(' '));
+  check('a draft past its deadline is late', TODAY.attention({ records: [rec(1, 'draft', '2026-10-26')], today, role: 'requester' })[0].tone === 'bad');
+  check('activities still to link are the writers\' to do', TODAY.attention({ records: [], today, role: 'requester', unlinked: 3, suggestions: 2 })[0].title
+    === '3 activities on the look-ahead with no location linked');
+
+  const ahead = TODAY.deadlines(records, today, ['2026-10-19', '2026-11-02', '2026-11-30', '2027-01-04'], { weeks: 8 });
+  check('the deadlines ahead are each week\'s first day less the lead time', ahead.map((d) => `${d.week} ${d.deadline}`).join() === '2026-10-19 2026-10-02,2026-11-02 2026-10-16,2026-11-30 2026-11-13'
+    && ahead[1].counts.draft === 2 && !ahead[1].counts.superseded);
+  check('the access approved is listed day by day', TODAY.onTrack(records, '2026-10-19', '2026-10-25').map((a) => a.record.id).join() === '6,7');
+
+  const ics = TODAY.calendarIcs({ records, weekList: ['2026-10-19', '2026-11-02'], today, stamp: '2026-10-16T22:00:00.000Z' });
+  const lines = ics.split('\r\n');
+  check('the calendar has each week\'s deadline, all day, with a reminder the day before', lines.includes('UID:deadline-2026-11-02@track-plan')
+    && lines.includes('DTSTART;VALUE=DATE:20261016') && lines.includes('TRIGGER:-PT15H') && lines.includes('DTSTAMP:20261016T220000Z'));
+  check('and the approved access, a night shift ending the next morning', lines.includes('DTSTART:20261019T223000') && lines.includes('DTEND:20261020T043000')
+    && lines.includes('STATUS:TENTATIVE') && !ics.includes('tawr-8-'));
+  check('text is escaped and long lines folded at 75 octets, as the server writes them', ics.replace(/\r\n /g, '').includes('DESCRIPTION:C-M301 ATC loop cable\\, Glen Park\\nApproved\\, not yet sent to BART.')
+    && lines.every((l) => new globalThis.TextEncoder().encode(l).length <= 75) && ics.endsWith('END:VCALENDAR\r\n'));
+  check('a long line folds without splitting a character', TODAY.foldLine(`SUMMARY:${'—'.repeat(40)}`).split('\r\n ').every((l) => new globalThis.TextEncoder().encode(l).length <= 75));
 }
 
 console.log('\nThe sample data');

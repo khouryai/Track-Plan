@@ -607,6 +607,20 @@ export async function clearMemory() {
   return http('POST', 'api/memory/clear', {});
 }
 
+// ── the deadlines as a calendar (server only: a calendar subscribes to a link)
+
+/** A new calendar link for whoever is signed in, replacing any before it: the URL to subscribe to. */
+export async function calendarLink() {
+  if (local()) throw new Refused('a calendar link needs the server; download the calendar instead', 409);
+  const { token } = await http('POST', 'api/calendar/token', {});
+  return new URL(`api/calendar.ics?token=${encodeURIComponent(token)}`, document.baseURI).href;
+}
+
+export async function stopCalendarLink() {
+  if (local()) return { stopped: false };
+  return http('DELETE', 'api/calendar/token');
+}
+
 export async function setSettings(values) {
   if (local()) {
     requireWrite();
