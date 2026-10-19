@@ -24,6 +24,7 @@
 import { samplePolys, bboxOf, limitText, limitsText, hasLink, linkArea, shortLocationName, sharedSpot, sliceRoute } from './links.js';
 import { el, esc, toast } from './ui.js';
 import { tawrShiftLabel } from './tawr.js';
+import { insideBox, coversText } from './phases.js';
 
 const L = window.L;
 const PAGE_W = 6552;
@@ -45,6 +46,8 @@ const state = {
   data: null, tool: null, draft: [], path: null, pick: null, overlay: null, selected: null,
   // The track plan's own view of the week: which statuses to draw, conflicts only, the conflict in focus.
   statuses: new Set(['draft', 'submitted', 'approved', 'rejected']), conflictsOnly: false, conflict: null,
+  // Phases: the ones defined, the one being looked at, whether its requests are listed alone, one being drawn.
+  phases: [], phase: null, phaseOnly: true, phaseDraw: null,
 };
 const SHOWN_STATUSES = ['draft', 'submitted', 'approved', 'rejected'];
 const CONFLICT = '#d1242f';
@@ -398,6 +401,8 @@ const inkWidth = () => Math.max(6, 7.5 * scale());
 /* How strongly each status inks the paper: grey needs more to read at all. */
 const INK_OPACITY = { draft: 0.7, submitted: 0.55, approved: 0.5, rejected: 0.55 };
 const multi = (geometry) => geometry.map(llPoly);
+const PHASE = 'phase';
+const PHASE_COLOR = '#5b4bc4';
 
 function renderSegs() {
   layers.segs.clearLayers();
@@ -511,12 +516,18 @@ function activityTip(a) {
 
 const tipOptions = { sticky: true, direction: 'top', className: 'map-tip', opacity: 1, offset: [0, -10] };
 
+/** The week's requests in view: all of them, or those in the phase being looked at when it is to list them alone. */
+function poolTawrs() {
+  const ph = state.phaseOnly ? phaseById(state.phase) : null;
+  return (state.overlay?.tawrs || []).filter((t) => !ph || inPhase(t, ph));
+}
+
 /** The requests drawn: the statuses picked, or only those in a conflict. */
 function shownTawrs() {
   const o = state.overlay;
   if (!o) return [];
   const clashing = new Set((o.conflicts || []).flatMap((c) => [c.a.id, c.b.id]));
-  return (o.tawrs || []).filter((t) => state.statuses.has(t.status) && (!state.conflictsOnly || clashing.has(t.id)));
+  return poolTawrs().filter((t) => state.statuses.has(t.status) && (!state.conflictsOnly || clashing.has(t.id)));
 }
 
 /** The requests glowing: the one selected, or both sides of the conflict in focus. */
@@ -750,8 +761,19 @@ function renderOnMapList() {
     host.append(el('label', {}, ['Week', sel]));
   }
 
+  /* The phase being looked at, if one is: what it covers, and whether its requests are listed alone. */
+  const ph = phaseById(state.phase);
+  if (ph) {
+    const alone = el('input', { type: 'checkbox', dataset: { action: 'phase-only' }, onChange: (e) => { state.phaseOnly = e.target.checked; renderOverlay(); renderOnMapList(); } });
+    alone.checked = state.phaseOnly;
+    host.append(el('div', { class: 'phase-note' }, [
+      el('b', { text: ph.name }), ` covers ${coversText(state.data.routes, ph.bbox)}${ph.note ? ` — ${ph.note}` : ''}.`,
+      el('label', { class: 'check' }, [alone, ` Only requests in ${ph.name}`]),
+    ]));
+  }
+
   /* The status filter: which of the week's requests are drawn. */
-  const all = o.tawrs || [];
+  const all = poolTawrs();
   const count = (s) => all.filter((t) => t.status === s).length;
   const chips = el('div', { class: 'status-filter', role: 'group', 'aria-label': 'Show TAWRs by status' }, SHOWN_STATUSES.map((s) => el('button', {
     type: 'button', class: `chip${state.statuses.has(s) ? ' on' : ''}`, dataset: { status: s }, style: `--c:${STATUS_COLOR[s]}`,
@@ -768,7 +790,8 @@ function renderOnMapList() {
     el('label', { class: 'check' }, [only, ' Only requests in a conflict']), mapKey());
 
   /* Conflicts first: they are what needs doing. */
-  const clashes = o.conflicts || [];
+  const inView = state.phaseOnly ? ph : null;
+  const clashes = (o.conflicts || []).filter((c) => !inView || inPhase(c.a, inView) || inPhase(c.b, inView));
   host.append(el('h2', { class: clashes.length ? 'clash-head' : '', text: `Conflicts this week (${clashes.length})` }));
   if (!clashes.length) host.append(el('p', { class: 'small', text: 'No two requests want the same track or room at the same time.' }));
   const cl = el('ul', { class: 'req-list clash-list' });
@@ -825,13 +848,19 @@ function renderOnMapList() {
  */
 export function setOverlay(o) {
   if (state.overlay && o.week !== state.overlay.week) { state.selected = null; state.conflict = null; }
+  const first = !state.overlay;
   state.overlay = o;
+  state.phases = o.phases || [];
+  if (first) { try { state.phase = localStorage.getItem(PHASE_KEY); } catch { /* a convenience */ } }
+  if (!phaseById(state.phase)) state.phase = null;
   if (state.selected && !(o.tawrs || []).some((t) => t.id === state.selected)) state.selected = null;
   if (state.conflict) {
     const same = (o.conflicts || []).find((c) => c.a.id === state.conflict.a.id && c.b.id === state.conflict.b.id);
     state.conflict = same || null;
   }
   if (!map) return;
+  renderPhaseSelect();
+  renderPhase();
   renderOverlay();
   renderOnMapList();
 }
@@ -845,8 +874,135 @@ export function enter(focus = null) {
   if (!map) return;
   setTimeout(() => {
     map.invalidateSize();
-    if (!(focus && focus())) fitPage();
+    if (!(focus && focus())) fitView();
   }, 0);
+}
+
+/** Fit a box of the drawing — a phase's, while it is being redrawn. */
+export function showBox(bbox) {
+  if (!map) return false;
+  map.fitBounds(boxBounds(bbox).pad(0.12), { animate: false });
+  return true;
+}
+
+// ------------------------------------------------------------------ phases
+
+const PHASE_KEY = 'trackplan.phase';
+const phaseById = (id) => state.phases.find((p) => p.id === id) || null;
+const boxBounds = ([x0, y0, x1, y1]) => L.latLngBounds(ll(x0, y1), ll(x1, y0));
+
+/** The view to come back to: the phase being looked at, or the whole sheet. */
+function fitView() {
+  const ph = phaseById(state.phase);
+  if (ph) map.fitBounds(boxBounds(ph.bbox), { animate: false, padding: [14, 14] });
+  else fitPage();
+}
+
+/** Look at one phase — or none, for the whole sheet: fitted to it, the rest of the sheet set back. */
+export function setPhase(id, { fit = true } = {}) {
+  state.phase = phaseById(id) ? id : null;
+  try {
+    if (state.phase) localStorage.setItem(PHASE_KEY, state.phase); else localStorage.removeItem(PHASE_KEY);
+  } catch { /* a convenience only */ }
+  if (!map) return;
+  renderPhaseSelect();
+  renderPhase();
+  renderOverlay();
+  renderOnMapList();
+  if (fit) fitView();
+}
+
+/** Whether a request is in a phase: any of its track inside the box, or its room. */
+function inPhase(t, ph) {
+  const place = t.source?.place || {};
+  if ((place.geometry || []).some((pl) => pl.some((pt) => insideBox(pt, ph.bbox)))) return true;
+  return (place.places || []).some((p) => { const loc = locationById(p.id); return Boolean(loc && insideBox([loc.x, loc.y], ph.bbox)); });
+}
+
+function renderPhaseSelect() {
+  const sel = $('#phase-view');
+  const define = state.overlay?.onDefinePhases;
+  sel.replaceChildren(...[
+    el('option', { value: '', text: 'Whole sheet' }),
+    ...state.phases.map((p) => el('option', { value: p.id, text: p.name })),
+    define ? el('option', { value: '__define', text: state.phases.length ? 'Edit phases…' : 'Define phases…' }) : null,
+  ].filter(Boolean));
+  sel.value = state.phase || '';
+  sel.hidden = !state.phases.length && !define;
+}
+
+/** A phase's frame and name; on the whole sheet the name is a way in to it. */
+function phaseFrame(ph, current) {
+  const [x0, y0] = ph.bbox;
+  const tag = L.marker(ll(x0, y0), {
+    interactive: !current, keyboard: false,
+    icon: L.divIcon({ className: `phase-tag${current ? ' phase-tag-on' : ''}`, html: `<span>${esc(ph.name)}</span>`, iconSize: null, iconAnchor: [0, 22] }),
+  });
+  if (!current) tag.on('click', () => setPhase(ph.id)).bindTooltip(`Look at ${esc(ph.name)}`, { direction: 'top' });
+  return [
+    L.rectangle(boxBounds(ph.bbox), { pane: PHASE, color: PHASE_COLOR, weight: current ? 2 : 1.5, opacity: current ? 0.85 : 0.6, dashArray: current ? null : '10 7', fill: false, interactive: false }),
+    tag,
+  ];
+}
+
+function renderPhase() {
+  layers.phase.clearLayers();
+  const d = state.phaseDraw;
+  if (d) {
+    if (d.bbox) L.rectangle(boxBounds(d.bbox), { pane: PHASE, color: PHASE_COLOR, weight: 2, dashArray: '8 5', fillColor: PHASE_COLOR, fillOpacity: 0.08, interactive: false }).addTo(layers.phase);
+    return;
+  }
+  const ph = phaseById(state.phase);
+  if (ph) {
+    // The rest of the sheet set back: a veil over everything, with the phase cut out of it.
+    const P = 3000;
+    const outer = [ll(-P, -P), ll(PAGE_W + P, -P), ll(PAGE_W + P, PAGE_H + P), ll(-P, PAGE_H + P)];
+    const [x0, y0, x1, y1] = ph.bbox;
+    L.polygon([outer, [ll(x0, y0), ll(x1, y0), ll(x1, y1), ll(x0, y1)]], { pane: PHASE, stroke: false, fillColor: '#f3f4f6', fillOpacity: 0.75, interactive: false }).addTo(layers.phase);
+    for (const l of phaseFrame(ph, true)) l.addTo(layers.phase);
+  } else if ($('#lyr-phases').checked) {
+    for (const p of state.phases) for (const l of phaseFrame(p, false)) l.addTo(layers.phase);
+  }
+}
+
+let phaseResolve = null;
+
+/**
+ * Draw a phase's box on the drawing. Opens the Phase panel; answers the box,
+ * `[x0, y0, x1, y1]` in drawing points, or null if cancelled.
+ */
+export function drawPhase({ name, bbox = null }) {
+  if (phaseResolve) phaseResolve(null);
+  if (state.tool) setTool(state.tool);
+  state.phaseDraw = { name, bbox: bbox ? [...bbox] : null };
+  map.dragging.disable();
+  map.getContainer().classList.add('boxing');
+  $('#phase-draw-name').textContent = name;
+  document.querySelector('[data-tab=phase]').hidden = false;
+  showTab('phase');
+  $('#panel').classList.remove('hidden');
+  phaseDrawChanged();
+  return new Promise((resolve) => { phaseResolve = resolve; });
+}
+
+function phaseDrawChanged() {
+  const d = state.phaseDraw;
+  renderPhase();
+  $('#phase-draw-covers').textContent = d.bbox ? `The box covers ${coversText(state.data.routes, d.bbox)}.` : 'Nothing drawn yet.';
+  $('#phase-save').disabled = !d.bbox;
+}
+
+function endPhaseDraw(result) {
+  if (!state.phaseDraw) return;
+  state.phaseDraw = null;
+  map.dragging.enable();
+  map.getContainer().classList.remove('boxing');
+  document.querySelector('[data-tab=phase]').hidden = true;
+  showTab('onmap');
+  renderPhase();
+  const r = phaseResolve;
+  phaseResolve = null;
+  if (r) r(result && result.map((v) => Math.round(v)));
 }
 
 // ------------------------------------------------------------------ linking an activity
@@ -1021,6 +1177,7 @@ export function initMap(data, tileIndex) {
   // The overlay's panes: ink above the other vectors, white dots above the ink, markers above both.
   map.createPane(INK).style.zIndex = 450;
   map.createPane(DOTS).style.zIndex = 460;
+  map.createPane(PHASE).style.zIndex = 300; // a phase's frame and the veil over the rest: above the sheet, under everything drawn on it
   if (tileIndex) {
     // high-density screens get the next zoom level's tiles at half size
     const R = window.devicePixelRatio >= 1.5 ? 1 : 0;
@@ -1029,9 +1186,10 @@ export function initMap(data, tileIndex) {
       minNativeZoom: -4 - R, maxNativeZoom: 4 - R, bounds: PAGE_BOUNDS, noWrap: true, keepBuffer: 3,
     }).addTo(map);
   } else {
-    L.imageOverlay('map.svg', PAGE_BOUNDS, { interactive: false }).addTo(map);
+    // In the tile pane like the tiles, so a phase's veil and the ink lie over it the same way.
+    L.imageOverlay('map.svg', PAGE_BOUNDS, { interactive: false, pane: 'tilePane' }).addTo(map);
   }
-  for (const k of ['segs', 'routes', 'anchors', 'qa', 'activities', 'tawrs', 'places', 'draft', 'hover']) layers[k] = L.layerGroup().addTo(map);
+  for (const k of ['phase', 'segs', 'routes', 'anchors', 'qa', 'activities', 'tawrs', 'places', 'draft', 'hover']) layers[k] = L.layerGroup().addTo(map);
   fitPage();
   indexRoutes();
   indexSegments();
@@ -1042,7 +1200,14 @@ export function initMap(data, tileIndex) {
 
   $('#zoom-in').onclick = () => map.zoomIn();
   $('#zoom-out').onclick = () => map.zoomOut();
-  $('#zoom-fit').onclick = fitPage;
+  $('#zoom-fit').onclick = fitView;
+  $('#phase-view').addEventListener('change', (e) => {
+    if (e.target.value === '__define') { e.target.value = state.phase || ''; state.overlay?.onDefinePhases?.(); return; }
+    setPhase(e.target.value);
+  });
+  $('#phase-save').onclick = () => endPhaseDraw(state.phaseDraw?.bbox || null);
+  $('#phase-cancel').onclick = () => endPhaseDraw(null);
+  $('#lyr-phases').onchange = renderPhase;
   $('#toggle-panel').onclick = () => { $('#panel').classList.toggle('hidden'); invalidate(); };
   document.querySelectorAll('#panel .tabs button').forEach((b) => { b.onclick = () => showTab(b.dataset.tab); });
   document.querySelectorAll('.tool').forEach((b) => { b.onclick = () => setTool(b.dataset.tool); });
@@ -1109,6 +1274,28 @@ export function initMap(data, tileIndex) {
     onDraftChanged();
   });
   c.addEventListener('pointercancel', () => { start = null; renderDraft(); });
+
+  // drawing a phase: drag a box anywhere on the sheet; drag again to redraw it
+  let from = null;
+  c.addEventListener('pointerdown', (e) => {
+    if (!state.phaseDraw || e.button > 0 || e.target.closest('.leaflet-control, .leaflet-marker-icon')) return;
+    from = toXY(map.mouseEventToLatLng(e));
+    try { c.setPointerCapture(e.pointerId); } catch { /* pointer already released */ }
+    e.preventDefault();
+  });
+  c.addEventListener('pointermove', (e) => {
+    if (!from || !state.phaseDraw) return;
+    const [x, y] = toXY(map.mouseEventToLatLng(e));
+    state.phaseDraw.bbox = [Math.min(from[0], x), Math.min(from[1], y), Math.max(from[0], x), Math.max(from[1], y)];
+    renderPhase();
+  });
+  c.addEventListener('pointerup', () => {
+    if (!from || !state.phaseDraw) { from = null; return; }
+    from = null;
+    const b = state.phaseDraw.bbox;
+    if (b && (b[2] - b[0] < 10 || b[3] - b[1] < 10)) state.phaseDraw.bbox = null; // a click, not a box
+    phaseDrawChanged();
+  });
 
   $('#find-mp').addEventListener('submit', (e) => {
     e.preventDefault();

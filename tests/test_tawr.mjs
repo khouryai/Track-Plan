@@ -25,6 +25,7 @@ const L = await import(path.join(ROOT, 'web/js/links.js'));
 const pdf = await import(path.join(ROOT, 'web/js/tawr_pdf.js'));
 const zip = await import(path.join(ROOT, 'web/js/zip.js'));
 const SAMPLE = await import(path.join(ROOT, 'web/js/sample.js'));
+const PH = await import(path.join(ROOT, 'web/js/phases.js'));
 const { readZip } = await import(path.join(ROOT, 'web/js/xlsx.js'));
 const MAP = JSON.parse(fs.readFileSync(path.join(ROOT, 'web/data/map.json'), 'utf8'));
 const WORKFLOW = JSON.parse(fs.readFileSync(path.join(ROOT, 'web/data/tawr_workflow.json'), 'utf8'));
@@ -350,6 +351,23 @@ console.log('\nBART\'s form, filled');
   const z = zip.zipStore([{ name: 'a.pdf', data: bytes }, { name: 'b.pdf', data: bytes }]);
   const files = readZip(z.buffer.slice(z.byteOffset, z.byteOffset + z.byteLength));
   check('the week downloads as one zip', files.size === 2 && files.get('a.pdf').length === bytes.length);
+}
+
+console.log('\nphases');
+{
+  const text = JSON.stringify([
+    { id: 'p2', name: ' Phase 2 ', note: 'W and Y lines', bbox: [150, 930, 1900, 1265.4] },
+    { name: 'no box' }, { name: 'backwards', bbox: [10, 0, 0, 10] }, { name: '', bbox: [0, 0, 1, 1] }, 'junk',
+  ]);
+  const phases = PH.parsePhases(text);
+  check('only well-formed phases are read, named and boxed', phases.length === 1 && phases[0].name === 'Phase 2' && phases[0].bbox[3] === 1265, JSON.stringify(phases));
+  check('a broken setting reads as no phases, never a throw', PH.parsePhases('{').length === 0 && PH.parsePhases(null).length === 0);
+  check('and is written back the same', PH.parsePhases(PH.phasesText(phases))[0].note === 'W and Y lines');
+  const cover = PH.linesInBox(MAP.routes, phases[0].bbox);
+  check('a box covers the tracks with a calibrated point inside it', cover.lines.join() === 'W,Y' && cover.tracks.includes('Y1') && !cover.tracks.some((t) => t.startsWith('M')), cover.tracks.join(','));
+  check('said in words', PH.coversText(MAP.routes, phases[0].bbox) === 'the W and Y lines');
+  check('a box over no track says so', PH.coversText(MAP.routes, [0, 0, 10, 10]) === 'no calibrated track');
+  check('inside a box', PH.insideBox([200, 1000], phases[0].bbox) && !PH.insideBox([2000, 1000], phases[0].bbox));
 }
 
 console.log(`\n${passed} passed, ${failures.length} failed`);

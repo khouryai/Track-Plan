@@ -495,6 +495,55 @@ async function lineUnderMouse(page) {
   };
 }
 
+async function phases(page, { mode }) {
+  console.log(`\n${mode}: phases`);
+  await page.click('nav.views [data-view=tawr]');
+  await page.click('.subtabs [data-section=setup]');
+  await page.fill('[data-action=phase-new-name]', 'Phase 2');
+  await page.click('[data-action=phase-draw]');
+  await page.waitForSelector('#tab-phase.active');
+  await page.waitForTimeout(400); // the map fits the sheet first
+  const sheet = await page.evaluate(() => {
+    const b = document.querySelector('#viewport img.leaflet-image-layer, #viewport .leaflet-tile-container').getBoundingClientRect();
+    return { left: b.left, top: b.top, width: b.width, height: b.height };
+  });
+  const at = (x, y) => [sheet.left + (x / 6552) * sheet.width, sheet.top + (y / 1440) * sheet.height];
+  const [ax, ay] = at(150, 930);
+  const [bx, by] = at(1900, 1265);
+  await page.mouse.move(ax, ay);
+  await page.mouse.down();
+  await page.mouse.move(bx, by, { steps: 8 });
+  await page.mouse.up();
+  check('a phase is a box dragged on the sheet, which says what it covers', /the W and Y lines/.test(await page.textContent('#phase-draw-covers')), await page.textContent('#phase-draw-covers'));
+  await page.click('#phase-save');
+  await page.waitForSelector('tr[data-phase]');
+  check('and is kept in Setup', /the W and Y lines/.test(await page.textContent('tr[data-phase]')) && (await page.inputValue('tr[data-phase] input')) === 'Phase 2');
+  await page.click('[data-action=phase-view]');
+  await page.waitForSelector('body[data-view=map]');
+  await page.waitForTimeout(400);
+  const framed = () => page.evaluate(() => {
+    const frame = [...document.querySelectorAll('.leaflet-phase-pane path')].find((n) => n.getAttribute('fill') === 'none');
+    if (!frame) return false;
+    const vp = document.querySelector('#viewport').getBoundingClientRect();
+    const r = frame.getBoundingClientRect();
+    return r.width >= vp.width * 0.8 || r.height >= vp.height * 0.8;
+  });
+  check('looking at it fits the map to its box', await framed());
+  check('with the rest of the sheet set back', await page.locator('.leaflet-phase-pane path[fill="#f3f4f6"]').count() === 1);
+  check('the header says which phase', (await page.$eval('#phase-view', (sel) => sel.options[sel.selectedIndex].text)) === 'Phase 2');
+  const listed = (await page.textContent('#onmap')).match(/TAWRs this week \((\d+) of (\d+)\)/);
+  check('and only its requests are listed', /Phase 2 covers the W and Y lines/.test(await page.textContent('#onmap .phase-note')) && listed && listed[2] === '2', listed?.[0]);
+  await page.click('#zoom-in');
+  await page.click('#zoom-in');
+  await page.waitForTimeout(400);
+  await page.click('#zoom-fit');
+  await page.waitForTimeout(200);
+  check('Fit comes back to the phase', await framed());
+  await page.selectOption('#phase-view', '');
+  await page.waitForTimeout(300);
+  check('the whole sheet again, with the phase outlined on it', await fitted(page) && await page.locator('.phase-tag').count() === 1);
+}
+
 async function fitted(page) {
   return page.evaluate(() => {
     const img = document.querySelector('#viewport img.leaflet-image-layer, #viewport .leaflet-tile-container');
@@ -538,6 +587,7 @@ try {
     await copyPaste(page, { mode: 'static site' });
     await importBook(page, { mode: 'static site' });
     await sampleData(page, { mode: 'static site' });
+    await phases(page, { mode: 'static site' });
     check('no console errors (static site)', !errors.length, errors.join(' | '));
     await context.close();
     srv.close();

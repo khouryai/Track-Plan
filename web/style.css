@@ -408,6 +408,17 @@ details .row { margin-top: 6px; }
 .leaflet-ink-pane > svg, .leaflet-dots-pane > svg { pointer-events: none; } /* only the paths take the mouse */
 .leaflet-ink-pane path.tawr-glow { filter: url(#tp-glow); animation: tawr-breathe 2.2s ease-in-out infinite alternate; }
 .svg-defs { position: absolute; width: 0; height: 0; overflow: hidden; }
+/* Phases: a frame and a name on the sheet, a veil over the rest while one is looked at. */
+.leaflet-phase-pane > svg { pointer-events: none; }
+.phase-tag span { display: inline-block; font: 600 12px system-ui, sans-serif; color: #fff; background: #5b4bc4; border-radius: 6px 6px 6px 0; padding: 2px 8px; white-space: nowrap; box-shadow: 0 1px 4px rgba(0,0,0,.25); cursor: pointer; }
+.phase-tag-on span { cursor: default; }
+#phase-view { max-width: 200px; font-size: 13px; padding: 4px 6px; border: 1px solid #c7c2ef; border-radius: 6px; background: #f6f5fd; color: #3d3291; }
+#phase-view[hidden] { display: none; }
+.phase-note { background: #f6f5fd; border: 1px solid #ddd8f6; border-left: 4px solid #5b4bc4; border-radius: 6px; padding: 6px 8px; margin: 8px 0; font-size: 12px; }
+.phase-note .check { display: block; margin-top: 4px; }
+.phase-table input { width: 100%; min-width: 120px; }
+.phase-add { margin: 8px 0; }
+.phase-add input { max-width: 200px; }
 .loc-pin-lit span { box-shadow: 0 0 0 3px #fff, 0 0 14px 6px #14d3a0; }
 /* A request's number on its line, in its status colour. */
 .req-tag span, .req-tag-key { display: inline-block; font: 700 11px system-ui, sans-serif; color: #fff; background: var(--c, #666b73); border: 2px solid #fff; border-radius: 9px; padding: 0 6px; box-shadow: 0 1px 4px rgba(0,0,0,.35); white-space: nowrap; cursor: pointer; }

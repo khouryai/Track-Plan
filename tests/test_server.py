@@ -168,7 +168,20 @@ class Workflow(Base):
         r = self.draft()
         self.refused(ops.act_on_tawr, self.con, r["id"], "submit", self.viewer, WF, status=403)
         self.refused(ops.create_tawr, self.con, record("v|day"), self.viewer, WF, status=403)
-        self.refused(ops.get_settings, self.con, self.viewer, WF, status=403)
+        self.refused(ops.set_settings, self.con, {"phases": "[]"}, self.viewer, WF, status=403)
+
+    def test_a_viewer_reads_the_phases_and_nothing_else_of_the_setup(self):
+        phases = '[{"id": "p2", "name": "Phase 2", "note": "W and Y lines", "bbox": [150, 940, 2010, 1260]}]'
+        ops.set_settings(self.con, {"phases": phases, "person_in_charge_cell_phone": "415-555-0100"}, self.requester, WF)
+        self.assertEqual(ops.get_settings(self.con, self.viewer, WF), {"phases": phases})
+        self.assertEqual(ops.get_settings(self.con, self.requester, WF)["person_in_charge_cell_phone"], "415-555-0100")
+
+    def test_a_phase_needs_a_name_and_a_box(self):
+        for bad in ('{"name": "x"}', '[{"bbox": [0, 0, 10, 10]}]', '[{"name": "P", "bbox": [10, 0, 0, 10]}]',
+                    '[{"name": "P", "bbox": [0, 0, 10]}]', '[{"name": "P", "bbox": [0, 0, "a", 10]}]', 'not json'):
+            self.refused(ops.set_settings, self.con, {"phases": bad}, self.requester, WF, status=400)
+        ok = ops.set_settings(self.con, {"phases": '[{"name": "Phase 1", "bbox": [0, 0, 10.5, 10]}]'}, self.manager, WF)
+        self.assertIn("Phase 1", ok["phases"])
 
     def consolidated(self):
         a = ops.act_on_tawr(self.con, self.draft("a|day")["id"], "submit", self.requester, WF)

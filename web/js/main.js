@@ -23,6 +23,7 @@ import * as M from './map.js';
 import { el, clear, toast, openModal, dayLabel } from './ui.js';
 import * as LookaheadView from './lookahead_view.js';
 import * as TawrView from './tawr_view.js';
+import { parsePhases } from './phases.js';
 
 const $ = (s) => document.querySelector(s);
 const VIEWS = ['lookahead', 'tawr', 'map'];
@@ -56,7 +57,7 @@ app.reloadTawrs = async () => {
     S.listTawrs(since),
     S.listMerges(),
     S.listDescriptions().catch(() => []),
-    S.writer() ? S.getSettings().catch(() => ({})) : Promise.resolve({}),
+    S.getSettings().catch(() => ({})), // a viewer is given the phases alone
   ]);
   app.tawrs = tawrs;
   app.merges = merges;
@@ -137,6 +138,27 @@ function render() {
 app.render = render;
 
 /** Pick an activity's location on the map, then come back to where we were. */
+/** Draw a phase's box on the track plan, then come back to where we were. */
+app.drawPhase = async ({ name, bbox }) => {
+  const back = app.view;
+  app.go('map', { focus: bbox ? () => M.showBox(bbox) : null });
+  const drawn = await M.drawPhase({ name, bbox });
+  app.go(back);
+  return drawn;
+};
+
+/** The track plan, looking at one phase. */
+app.viewPhase = (id) => {
+  M.setPhase(id, { fit: false }); // entering the map fits it
+  app.go('map');
+};
+
+/** Setup, scrolled to one of its sections. */
+app.openSetup = (section) => {
+  TawrView.openSetup(section);
+  app.go('tawr');
+};
+
 app.pickLocation = async ({ title, link }) => {
   const back = app.view;
   app.go('map', { focus: link ? () => M.showLink(link) : null });
@@ -207,8 +229,10 @@ function pushOverlay() {
     tawrs,
     conflicts: T.conflicts(tawrs),
     activities,
+    phases: parsePhases(app.settings?.phases),
     onWeek: (w) => { app.week = w; pushOverlay(); },
     onOpenTawr: (t) => app.openTawr(t),
+    onDefinePhases: S.writer() ? () => app.openSetup('phases') : null,
   });
 }
 app.pushOverlay = pushOverlay;

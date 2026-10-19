@@ -33,11 +33,15 @@ import {
   el, clear, toast, openModal, confirmDialog, promptDialog, dayLabel, stampLabel, saveFile, csvField,
 } from './ui.js';
 import { STATUS_COLOR } from './map.js';
+import { parsePhases, phasesText, newPhaseId, coversText } from './phases.js';
 
-const V = { app: null, root: null, section: 'requests', picked: new Set(), open: new Set(), history: false, focus: null };
+const V = { app: null, root: null, section: 'requests', picked: new Set(), open: new Set(), history: false, focus: null, setupAt: null };
 
 /** Open with one request in view (from the map). */
 export function focus(id) { V.focus = id; }
+
+/** Open Setup at one of its sections (`phases`). */
+export function openSetup(section) { V.section = 'setup'; V.setupAt = section; }
 
 const live = (r) => !['superseded', 'consolidated'].includes(r.status);
 const label = (name) => T.FIELD_LABEL.get(name) || name;
@@ -989,8 +993,96 @@ function renderSetup(host) {
   }
   row('Form filler', 'The version of the code that fills the form, stamped inside every PDF it writes.', el('code', { text: `TAWR filler ${FILLER_VERSION}` }));
 
-  host.append(codesSection(), legendSection(), descriptionsSection());
+  host.append(phasesSection(), codesSection(), legendSection(), descriptionsSection());
   if (S.store.mode === 'local') host.append(backupSection());
+  if (V.setupAt) {
+    const at = host.querySelector(`#setup-${V.setupAt}`);
+    if (at) requestAnimationFrame(() => at.scrollIntoView({ block: 'start' }));
+    V.setupAt = null;
+  }
+}
+
+/* ── Phases ───────────────────────────────────────────────────────────── */
+
+function phasesSection() {
+  const app = V.app;
+  const phases = parsePhases(app.settings?.phases);
+  const wrap = el('section', { class: 'settings-block', id: 'setup-phases' }, [
+    el('h3', { class: 'settings-group', text: 'Phases of the work' }),
+    el('p', { class: 'small', text: 'A phase is a box drawn on the track plan — "Phase 2" around the W and Y lines, say. On the track plan, choose it to fit the view to it, set the rest of the sheet back, and list its requests on their own.' }),
+  ]);
+  const save = async (list, said) => {
+    try {
+      app.settings = await S.setSettings({ phases: phasesText(list) });
+      app.pushOverlay();
+      toast(said, 'good');
+    } catch (err) { toast(err.message, 'bad'); }
+    rerender();
+  };
+  /* The list as it is now, not as it was drawn: a box may have been drawn meanwhile. */
+  const current = () => parsePhases(app.settings?.phases);
+  const draw = async (ph = null, fresh = null) => {
+    const bbox = await app.drawPhase({ name: ph?.name || fresh.name, bbox: ph?.bbox || null });
+    if (!bbox) { rerender(); return; }
+    const list = current();
+    if (ph) {
+      const i = list.findIndex((p) => p.id === ph.id);
+      if (i >= 0) list[i] = { ...list[i], bbox };
+      await save(list, `${ph.name}: box redrawn.`);
+    } else {
+      list.push({ id: newPhaseId(), name: fresh.name, note: fresh.note, bbox });
+      await save(list, `${fresh.name} added. Choose it on the track plan to look at it.`);
+    }
+  };
+  const rename = async (ph, changes) => {
+    const list = current();
+    const i = list.findIndex((p) => p.id === ph.id);
+    if (i < 0) return;
+    list[i] = { ...list[i], ...changes };
+    if (!list[i].name) { toast('A phase needs a name.', 'warn'); rerender(); return; }
+    await save(list, `${list[i].name} saved.`);
+  };
+
+  if (phases.length) {
+    wrap.append(el('table', { class: 'grid-table phase-table' }, [
+      el('thead', {}, [el('tr', {}, ['Phase', 'Note', 'Covers', ''].map((h) => el('th', { text: h })))]),
+      el('tbody', {}, phases.map((ph) => {
+        const name = el('input', { value: ph.name, 'aria-label': `Name of ${ph.name}`, dataset: { phaseName: ph.id } });
+        const note = el('input', { value: ph.note, placeholder: 'What it is', 'aria-label': `Note on ${ph.name}` });
+        name.addEventListener('change', () => rename(ph, { name: name.value.trim() }));
+        note.addEventListener('change', () => rename(ph, { note: note.value.trim() }));
+        return el('tr', { dataset: { phase: ph.id } }, [
+          el('td', {}, [name]), el('td', {}, [note]),
+          el('td', { class: 'small', text: coversText(app.data.routes, ph.bbox) }),
+          el('td', { class: 'inline' }, [
+            el('button', { type: 'button', class: 'mini', dataset: { action: 'phase-view' }, text: 'View', onClick: () => app.viewPhase(ph.id) }),
+            el('button', { type: 'button', class: 'secondary mini', dataset: { action: 'phase-redraw' }, text: 'Redraw box', onClick: () => draw(ph) }),
+            el('button', {
+              type: 'button', class: 'secondary mini danger', dataset: { action: 'phase-delete' }, text: 'Delete',
+              onClick: async () => {
+                if (!(await confirmDialog({ title: `Delete ${ph.name}?`, message: 'Only the box goes; nothing on the look-ahead or in any request changes.', confirmLabel: 'Delete', danger: true }))) return;
+                await save(current().filter((p) => p.id !== ph.id), `${ph.name} deleted.`);
+              },
+            }),
+          ]),
+        ]);
+      })),
+    ]));
+  }
+  const name = el('input', { placeholder: `Phase ${phases.length + 1}`, 'aria-label': 'Name of the new phase', dataset: { action: 'phase-new-name' } });
+  const note = el('input', { placeholder: 'W and Y lines', 'aria-label': 'Note on the new phase' });
+  wrap.append(el('div', { class: 'inline phase-add' }, [
+    name, note,
+    el('button', {
+      type: 'button', class: 'mini', dataset: { action: 'phase-draw' }, text: 'Draw its box on the track plan',
+      onClick: () => {
+        const n = name.value.trim() || name.placeholder;
+        if (current().some((p) => p.name.toLowerCase() === n.toLowerCase())) { toast(`There is a phase called ${n} already.`, 'warn'); return; }
+        draw(null, { name: n, note: note.value.trim() });
+      },
+    }),
+  ]));
+  return wrap;
 }
 
 async function uploadTemplate(file) {

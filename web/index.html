@@ -26,10 +26,11 @@
   </nav>
   <button type="button" id="map-back" class="map-only secondary" hidden></button>
   <div id="readout" class="map-only" aria-live="polite">Hover a track for its milepost</div>
+  <select id="phase-view" class="map-only" aria-label="Look at a phase" title="Look at one phase of the work, or the whole sheet" hidden></select>
   <div class="zoom map-only">
     <button id="zoom-in" title="Zoom in">+</button>
     <button id="zoom-out" title="Zoom out">−</button>
-    <button id="zoom-fit" title="Fit whole sheet">Fit</button>
+    <button id="zoom-fit" title="Fit the phase being looked at, or the whole sheet">Fit</button>
   </div>
   <div id="who"></div>
 </header>
@@ -39,6 +40,7 @@
     <aside id="panel">
       <nav class="tabs" role="tablist">
         <button role="tab" data-tab="pick" hidden>Link location</button>
+        <button role="tab" data-tab="phase" hidden>Phase</button>
         <button role="tab" data-tab="onmap" class="active" title="The week's TAWRs and conflicts on the map">TAWRs</button>
         <button role="tab" data-tab="find">Find</button>
         <button role="tab" data-tab="layers">Layers</button>
@@ -86,6 +88,16 @@
         </form>
       </section>
 
+      <section id="tab-phase" class="tab">
+        <h2>Draw a phase</h2>
+        <p class="pick-for">Drawing <b id="phase-draw-name"></b></p>
+        <p class="small">Drag a box on the drawing around everything the phase covers. Drag again to redraw it; zoom and scroll with the wheel and the buttons.</p>
+        <p id="phase-draw-covers" class="small"></p>
+        <div class="row actions">
+          <button type="button" id="phase-save">Save the box</button>
+          <button type="button" id="phase-cancel" class="secondary">Cancel</button>
+        </div>
+      </section>
       <section id="tab-onmap" class="tab active">
         <div id="onmap"></div>
       </section>
@@ -111,6 +123,7 @@
         <h2>Overlays</h2>
         <label class="check"><input type="checkbox" id="lyr-tawrs" checked> TAWRs, by status</label>
         <label class="check"><input type="checkbox" id="lyr-activities" checked> Linked look-ahead activities</label>
+        <label class="check"><input type="checkbox" id="lyr-phases" checked> Phase outlines, on the whole sheet</label>
         <label class="check"><input type="checkbox" id="lyr-segs"> All selectable track, by type</label>
         <label class="check"><input type="checkbox" id="lyr-routes"> Calibrated track centrelines</label>
         <label class="check"><input type="checkbox" id="lyr-anchors"> Milepost anchor points</label>

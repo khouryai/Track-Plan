@@ -126,6 +126,18 @@ the work and hours of each, and where and when they meet — and marked on the
 map; the request, or both sides of a conflict, picked from the list or the map
 glows. *Open TAWR* goes to it in the TAWRs view.
 
+**Phases.** A phase is a box on the drawing — *Phase 2* around the W and Y
+lines, say — defined in *TAWRs → Setup → Phases of the work*: name it, press
+*Draw its box on the track plan*, drag the box, save. Setup says which lines it
+covers, and a phase can be renamed, redrawn or deleted there. On the track plan
+the phase picker in the header fits the view to the phase, frames it and sets
+the rest of the sheet back; the sidebar lists that phase's requests on their
+own (or all of them), and *Fit* comes back to it. *Whole sheet* outlines every
+phase, and clicking a phase's name looks at it. The phases are one setting
+(`phases`, checked on the server), so everybody sees the same ones — a viewer
+too, who is given them and nothing else of the setup; the phase being looked at
+is remembered in this browser.
+
 ### Roles
 
 | | Requester | Track Allocation Manager | Viewer |

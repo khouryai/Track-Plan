@@ -12,6 +12,7 @@ db/operations.sql), apart from the map database that the extraction rebuilds.
 import hashlib
 import hmac
 import json
+import math
 import os
 import re
 import secrets
@@ -657,15 +658,44 @@ SETTING_KEYS = {
     "requestor_name", "requestor_cell_phone", "requestor_signature",
     "person_in_charge_name", "person_in_charge_cell_phone", "project_rep_name", "project_rep_cell_phone",
     "category_default", "category_tcr", "category_track", "hours_day", "hours_swing", "hours_night", "hours_possession", "auto_lead_days",
-    "template_info",
+    "template_info", "phases",
 }
+# What a viewer may read of them: the phases, for looking at the track plan by phase.
+PUBLIC_SETTING_KEYS = {"phases"}
+MAX_PHASES = 50
 
 
 def get_settings(con, actor=None, workflow=None):
-    """Phone numbers and a signature: the requester's and the manager's to read, not a viewer's."""
+    """Phone numbers and a signature: the requester's and the manager's to read.
+    A viewer is answered with the public ones alone, not refused."""
+    rows = {r["key"]: r["value"] for r in con.execute("SELECT key, value FROM tawr_settings")}
     if workflow is not None:
-        require_write(actor, workflow)
-    return {r["key"]: r["value"] for r in con.execute("SELECT key, value FROM tawr_settings")}
+        if actor is None:
+            raise Refused("sign in first", 401)
+        if actor["role"] not in workflow["write"]:
+            return {k: v for k, v in rows.items() if k in PUBLIC_SETTING_KEYS}
+    return rows
+
+
+def _check_phases(text):
+    """Phases are `[{id, name, note, bbox: [x0, y0, x1, y1]}]` in drawing points: web/js/phases.js."""
+    try:
+        phases = json.loads(text)
+    except ValueError:
+        raise Refused("phases must be JSON", 400)
+    if not isinstance(phases, list) or len(phases) > MAX_PHASES:
+        raise Refused(f"phases must be a list of at most {MAX_PHASES}", 400)
+    for ph in phases:
+        name = ph.get("name") if isinstance(ph, dict) else None
+        if not isinstance(name, str) or not name.strip() or len(name) > 80:
+            raise Refused("every phase needs a name of up to 80 characters", 400)
+        box = ph.get("bbox")
+        if (not isinstance(box, list) or len(box) != 4
+                or not all(isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) for v in box)
+                or box[0] >= box[2] or box[1] >= box[3]):
+            raise Refused(f"phase {name!r} needs a box on the drawing", 400)
+        if len(str(ph.get("note") or "")) > 300:
+            raise Refused(f"the note on phase {name!r} is too long", 400)
 
 
 def set_settings(con, values, actor, workflow):
@@ -679,6 +709,8 @@ def set_settings(con, values, actor, workflow):
         for k, v in values.items():
             if v is not None and (not isinstance(v, str) or len(v) > 200_000):
                 raise Refused(f"{k} must be text", 400)
+            if k == "phases" and v:
+                _check_phases(v)
             con.execute("INSERT INTO tawr_settings(key, value, updated_by, updated_at) VALUES (?, ?, ?, ?) "
                         "ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_by = excluded.updated_by, "
                         "updated_at = excluded.updated_at", (k, v, actor["id"], now_iso()))
