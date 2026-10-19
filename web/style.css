@@ -403,8 +403,11 @@ details .row { margin-top: 6px; }
 .sel-inside { list-style: none; margin-left: -18px; }
 .clash-pin span { display: grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; background: #d1242f; color: #fff; font: 700 14px system-ui, sans-serif; border: 2px solid #fff; box-shadow: 0 0 0 2px rgba(209,36,47,.45), 0 2px 6px rgba(0,0,0,.3); cursor: pointer; }
 .clash-pin-lit span, .clash-pin span:hover { box-shadow: 0 0 0 6px rgba(209,36,47,.35), 0 0 18px 6px rgba(209,36,47,.55); }
-.leaflet-overlay-pane path.tawr-glow { animation: tawr-breathe 1.4s ease-in-out infinite alternate; }
-.leaflet-overlay-pane path.tawr-lit { filter: drop-shadow(0 0 3px rgba(255,255,255,.95)); }
+/* The overlay is ink on the drawing: multiplied into the paper, so the sheet's lines and lettering stay crisp through it. */
+.leaflet-ink-pane { mix-blend-mode: multiply; }
+.leaflet-ink-pane > svg, .leaflet-dots-pane > svg { pointer-events: none; } /* only the paths take the mouse */
+.leaflet-ink-pane path.tawr-glow { filter: url(#tp-glow); animation: tawr-breathe 2.2s ease-in-out infinite alternate; }
+.svg-defs { position: absolute; width: 0; height: 0; overflow: hidden; }
 .loc-pin-lit span { box-shadow: 0 0 0 3px #fff, 0 0 14px 6px #14d3a0; }
 /* A request's number on its line, in its status colour. */
 .req-tag span, .req-tag-key { display: inline-block; font: 700 11px system-ui, sans-serif; color: #fff; background: var(--c, #666b73); border: 2px solid #fff; border-radius: 9px; padding: 0 6px; box-shadow: 0 1px 4px rgba(0,0,0,.35); white-space: nowrap; cursor: pointer; }
@@ -418,5 +421,5 @@ details .row { margin-top: 6px; }
 #onmap .hint { color: var(--muted); }
 .req-list .m.hint { color: #6a35a8; }
 .req-list > li:hover { box-shadow: 0 1px 4px rgba(0,0,0,.12); }
-@keyframes tawr-breathe { from { stroke-opacity: .25; } to { stroke-opacity: .75; } }
-@media (prefers-reduced-motion: reduce) { .leaflet-overlay-pane path.tawr-glow { animation: none; stroke-opacity: .4; } }
+@keyframes tawr-breathe { from { opacity: .55; } to { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .leaflet-ink-pane path.tawr-glow { animation: none; } }

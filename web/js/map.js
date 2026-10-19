@@ -312,8 +312,8 @@ function showReadout(e) {
   layers.hover.clearLayers();
   if (!hit) { $('#readout').textContent = toolPrompt() || 'Hover a track for its milepost'; return; }
   $('#readout').innerHTML = hit.html + (state.tool ? ` — ${esc(toolPrompt(true))}` : '');
-  if (hit.sid != null) L.polyline(llPoly(NET[hit.sid].pts), { color: HOVER, weight: 3, opacity: 0.6, interactive: false }).addTo(layers.hover);
-  L.circleMarker(ll(hit.x, hit.y), { radius: 5, color: '#fff', weight: 1.5, fillColor: HOVER, fillOpacity: 1, interactive: false }).addTo(layers.hover);
+  if (hit.sid != null) L.polyline(llPoly(NET[hit.sid].pts), { pane: INK, color: HOVER, weight: inkWidth() * 0.8, opacity: 0.45, lineCap: 'round', lineJoin: 'round', interactive: false }).addTo(layers.hover);
+  L.circleMarker(ll(hit.x, hit.y), { pane: DOTS, radius: 5, color: '#fff', weight: 1.5, fillColor: HOVER, fillOpacity: 1, interactive: false }).addTo(layers.hover);
 }
 
 // ------------------------------------------------------------------ selection tools
@@ -374,17 +374,30 @@ function pickedLocation() {
 
 function renderDraft() {
   layers.draft.clearLayers();
-  for (const pl of draftGeometry().concat(typedGeometry())) {
-    L.polyline(llPoly(pl), { color: HOVER, weight: reqWeight(false), opacity: 0.5, interactive: false }).addTo(layers.draft);
-  }
-  if (state.path) L.circleMarker(ll(state.path.x, state.path.y), { radius: 6, color: '#fff', weight: 1.5, fillColor: HOVER, fillOpacity: 1, interactive: false }).addTo(layers.draft);
+  const geometry = draftGeometry().concat(typedGeometry());
+  if (geometry.length) L.polyline(multi(geometry), { pane: INK, color: HOVER, weight: inkWidth(), opacity: 0.55, lineCap: 'round', lineJoin: 'round', interactive: false }).addTo(layers.draft);
+  if (state.path) L.circleMarker(ll(state.path.x, state.path.y), { pane: DOTS, radius: 6, color: '#fff', weight: 1.5, fillColor: HOVER, fillOpacity: 1, interactive: false }).addTo(layers.draft);
   const loc = state.pick ? pickedLocation() : null;
   if (loc) locationMarker(loc, HOVER).addTo(layers.draft);
 }
 
 // ------------------------------------------------------------------ overlays
 
-const reqWeight = (sel) => Math.max(sel ? 11 : 8, Math.min(70, (sel ? 5.5 : 4.5) * scale()));
+/* ── How the overlay is drawn ──────────────────────────────────────────────
+   Requests are ink on the drawing rather than paint over it. They are drawn in
+   their own pane, blended with "multiply" (style.css), so the drawing's black
+   linework and lettering stay crisp through them and only the paper takes the
+   colour, as a highlighter does on a printed sheet. A band therefore has to be
+   wider than the track line it lies on, or it vanishes into it: the sheet's
+   running tracks are about 4 pt, so a band is 7.5 pt at any zoom. Each request
+   is one path however many pieces of track it covers, so nothing darkens where
+   the pieces meet. Dots that must stay white sit in a pane of their own above. */
+const INK = 'ink';
+const DOTS = 'dots';
+const inkWidth = () => Math.max(6, 7.5 * scale());
+/* How strongly each status inks the paper: grey needs more to read at all. */
+const INK_OPACITY = { draft: 0.7, submitted: 0.55, approved: 0.5, rejected: 0.55 };
+const multi = (geometry) => geometry.map(llPoly);
 
 function renderSegs() {
   layers.segs.clearLayers();
@@ -518,43 +531,47 @@ function renderOverlay() {
   const o = state.overlay;
   if (!o) return;
   const quiet = Boolean(state.pick || state.tool); // picking: the overlay is for looking, not clicking
+  const w = inkWidth();
   if ($('#lyr-activities').checked) {
     for (const a of o.activities || []) {
       if (!hasLink(a.link)) continue;
-      for (const pl of a.link.geometry || []) {
-        L.polyline(llPoly(pl), { color: ACTIVITY, weight: 3, opacity: 0.85, dashArray: '6 5', interactive: !quiet })
-          .bindTooltip(activityTip(a), tipOptions).addTo(layers.activities);
+      const geometry = a.link.geometry || [];
+      if (geometry.length) {
+        // Where the look-ahead has work: a lighter, dashed band — quieter than a request.
+        L.polyline(multi(geometry), {
+          pane: INK, color: ACTIVITY, weight: w * 0.75, opacity: 0.45, dashArray: `${w * 0.9} ${w * 0.8}`, lineCap: 'butt', lineJoin: 'round',
+          interactive: !quiet, className: 'act-ink',
+        }).bindTooltip(activityTip(a), tipOptions).addTo(layers.activities);
       }
       const loc = a.link.location_id && locationById(a.link.location_id);
-      if (loc && !(a.link.geometry || []).length) locationMarker(loc, ACTIVITY, shortLocationName(loc.name)).addTo(layers.activities);
+      if (loc && !geometry.length) locationMarker(loc, ACTIVITY, shortLocationName(loc.name)).addTo(layers.activities);
     }
   }
   if (!$('#lyr-tawrs').checked) return;
   const shown = shownTawrs();
   const glow = glowing();
-  const clashing = new Set((o.conflicts || []).flatMap((c) => [c.a.id, c.b.id]));
   for (const t of shown) {
     const place = t.source?.place || {};
     const col = STATUS_COLOR[t.status] || '#666';
     const lit = glow.has(t.id);
-    for (const pl of place.geometry || []) {
+    const geometry = place.geometry || [];
+    if (geometry.length) {
       if (lit) {
-        // The glow: a wide, soft line under the request, breathing.
-        L.polyline(llPoly(pl), { color: GLOW, weight: reqWeight(true) * 2.6, opacity: 0.45, lineCap: 'round', interactive: false, className: 'tawr-glow' }).addTo(layers.tawrs);
+        // Picked: a soft halo under the band, blurred (#tp-glow in index.html) and breathing.
+        L.polyline(multi(geometry), { pane: INK, color: GLOW, weight: w * 2.4, opacity: 0.5, lineCap: 'round', lineJoin: 'round', interactive: false, className: 'tawr-glow' }).addTo(layers.tawrs);
       }
-      const line = L.polyline(llPoly(pl), {
-        color: col, weight: reqWeight(lit), opacity: lit ? 0.95 : 0.55, lineCap: 'butt', interactive: !quiet,
+      // The others step back while one is picked, so the eye goes where it was sent.
+      const opacity = lit ? 0.9 : glow.size ? 0.25 : INK_OPACITY[t.status] ?? 0.55;
+      const band = L.polyline(multi(geometry), {
+        pane: INK, color: col, weight: w, opacity, lineCap: 'round', lineJoin: 'round', interactive: !quiet,
         className: `tawr-line st-${t.status}${lit ? ' tawr-lit' : ''}`,
       }).bindTooltip(tawrTip(t), tipOptions);
-      if (!quiet) line.on('click', () => selectTawr(t));
-      line.addTo(layers.tawrs);
-      if (clashing.has(t.id)) {
-        L.polyline(llPoly(pl), { color: CONFLICT, weight: 2, opacity: 0.95, dashArray: '4 4', interactive: false, className: 'tawr-clash-edge' }).addTo(layers.tawrs);
-      }
+      if (!quiet) band.on('click', () => selectTawr(t));
+      band.addTo(layers.tawrs);
     }
     /* Its number on the line, so which line is which needs no hovering — and a
        track request can be found when the whole sheet is fitted, too small to see. */
-    const mid = midpointOf(place.geometry || []);
+    const mid = midpointOf(geometry);
     if (mid) {
       const tag = L.marker(ll(mid[0], mid[1]), {
         interactive: !quiet, keyboard: false,
@@ -578,6 +595,11 @@ function renderOverlay() {
   const ids = new Set(shown.map((t) => t.id));
   for (const c of o.conflicts || []) {
     if (!ids.has(c.a.id) || !ids.has(c.b.id)) continue;
+    /* The stretch both want, hatched in red over both bands (#tp-hatch in index.html). */
+    const stretch = sharedLimits(c).flatMap((l) => sliceRoute(state.data.routes, l.track, l.from_mp, l.to_mp));
+    if (stretch.length) {
+      L.polyline(multi(stretch), { pane: INK, color: 'url(#tp-hatch)', weight: w * 1.3, opacity: 1, lineCap: 'butt', lineJoin: 'round', interactive: false, className: 'tawr-clash' }).addTo(layers.tawrs);
+    }
     const spot = conflictSpot(c);
     if (!spot) continue;
     const focus = state.conflict === c;
@@ -591,7 +613,6 @@ function renderOverlay() {
   }
 }
 
-/** Where to draw a conflict: the track the two share, or the room. */
 /** The middle of the longest line in a geometry, along its length: where a request's number goes. */
 function midpointOf(geometry) {
   let best = null; let bestLen = -1;
@@ -613,8 +634,8 @@ function midpointOf(geometry) {
   return best[0];
 }
 
-/** Where two requests in a conflict meet: the stretch of track both want, or the room. */
-function sharedWhere(c) {
+/** The stretches of track two requests in a conflict both want, per track. */
+function sharedLimits(c) {
   const both = [];
   for (const x of c.a.source?.place?.limits || []) {
     for (const y of c.b.source?.place?.limits || []) {
@@ -624,6 +645,12 @@ function sharedWhere(c) {
       if (lo < hi) both.push({ track: x.track, from_mp: lo, to_mp: hi });
     }
   }
+  return both;
+}
+
+/** Where two requests in a conflict meet: the stretch of track both want, or the room. */
+function sharedWhere(c) {
+  const both = sharedLimits(c);
   if (both.length) return limitsText(both, { dash: '–' });
   const names = new Map((c.a.source?.place?.places || []).map((p) => [p.id, p.name]));
   const room = (c.b.source?.place?.places || []).find((p) => names.has(p.id));
@@ -636,6 +663,7 @@ function workOf(t) {
   return `#${t.id} ${acts[0]?.title || t.location_name}${acts.length > 1 ? ` and ${acts.length - 1} more` : ''}`;
 }
 
+/** Where to pin a conflict: the track the two share, or the room. */
 function conflictSpot(c) {
   const ga = c.a.source?.place?.geometry || [];
   const gb = c.b.source?.place?.geometry || [];
@@ -698,9 +726,9 @@ export function showTawr(t) {
 function mapKey() {
   const line = (style) => `<svg width="34" height="12" aria-hidden="true"><line x1="2" y1="6" x2="32" y2="6" style="${style}"/></svg>`;
   const rows = [
-    [line(`stroke:${GLOW};stroke-width:9;stroke-opacity:.5;stroke-linecap:round`) + '', 'The request you picked glows'],
-    [line(`stroke:${CONFLICT};stroke-width:2;stroke-dasharray:4 4`), 'In a conflict; <span class="key-pin">!</span> marks where'],
-    [line(`stroke:${ACTIVITY};stroke-width:3;stroke-dasharray:6 5`), 'An activity linked on the look-ahead'],
+    [line(`stroke:${GLOW};stroke-width:10;stroke-opacity:.5;stroke-linecap:round;filter:url(#tp-glow-key)`), 'The request you picked glows'],
+    [line('stroke:url(#tp-hatch);stroke-width:9'), 'Where two requests conflict; <span class="key-pin">!</span> marks it'],
+    [line(`stroke:${ACTIVITY};stroke-width:7;stroke-opacity:.45;stroke-dasharray:7 6`), 'An activity linked on the look-ahead'],
     ['<span class="req-tag-key">#17</span>', 'A request\'s number; a TCR request is pinned at the room'],
   ];
   return el('details', { class: 'map-key', open: true }, [
@@ -898,7 +926,7 @@ function showTab(name) {
 
 function flash(x, y) {
   layers.hover.clearLayers();
-  L.circleMarker(ll(x, y), { radius: 18, color: HOVER, weight: 3, fill: false, interactive: false }).addTo(layers.hover);
+  L.circleMarker(ll(x, y), { pane: DOTS, radius: 18, color: HOVER, weight: 3, fill: false, interactive: false }).addTo(layers.hover);
 }
 
 function renderStations() {
@@ -990,6 +1018,9 @@ export function initMap(data, tileIndex) {
     crs: L.CRS.Simple, minZoom: -5, maxZoom: 6, zoomSnap: 0.25, zoomDelta: 0.5, wheelPxPerZoomLevel: 100,
     zoomControl: false, attributionControl: false, maxBounds: PAGE_BOUNDS.pad(0.25), maxBoundsViscosity: 0.8,
   });
+  // The overlay's panes: ink above the other vectors, white dots above the ink, markers above both.
+  map.createPane(INK).style.zIndex = 450;
+  map.createPane(DOTS).style.zIndex = 460;
   if (tileIndex) {
     // high-density screens get the next zoom level's tiles at half size
     const R = window.devicePixelRatio >= 1.5 ? 1 : 0;

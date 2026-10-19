@@ -113,7 +113,10 @@ Manager. On a server, only the steps the signed-in account may take are taken.
 
 The *Track plan* view opens fitted to the whole sheet and shows the week's
 TAWRs drawn where they are, coloured by status, with every linked activity.
-Every track request carries its number on its line (a TCR request is pinned at
+They are drawn like highlighter on the printed sheet: the ink is multiplied into
+the paper, so the drawing's lines and lettering stay crisp through it. The
+picked request glows softly while the others step back, and where two requests
+conflict only the stretch both want is hatched red. Every track request carries its number on its line (a TCR request is pinned at
 the room), so each can be found even when the sheet is fitted. Hovering a
 request or an activity shows its party to action, description, limits and days.
 The sidebar's *TAWRs* tab picks the week, filters by status (with the week's

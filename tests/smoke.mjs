@@ -257,6 +257,13 @@ async function flow(page, { mode }) {
   const clash = await page.textContent('#onmap .clash-list li');
   check('in words: who, and where and when they meet', /want the same track at the same time/.test(clash) && /Where W2 MP 16\.800–16\.900/.test(clash), clash);
   check('every track request carries its number on the map', await page.locator('.req-tag').count() === 2 && /^#\d+$/.test(await page.locator('.req-tag span').first().textContent()));
+  const ink = await page.evaluate(() => ({
+    blend: getComputedStyle(document.querySelector('.leaflet-ink-pane')).mixBlendMode,
+    bands: document.querySelectorAll('.leaflet-ink-pane path.tawr-line').length,
+    hatched: document.querySelectorAll('.leaflet-ink-pane path.tawr-clash').length,
+  }));
+  check('requests are ink multiplied into the drawing, one path each', ink.blend === 'multiply' && ink.bands === 2, JSON.stringify(ink));
+  check('only the stretch both want is hatched as the conflict', ink.hatched === 1, JSON.stringify(ink));
   check('the week picker reads as a date', /^Week of \d+ \w{3}/.test(await page.locator('#onmap select option:checked').textContent()));
   check('and drawn where the track is shared', await page.locator('.clash-pin').count() === 1);
   check('a filter chip per status, with the week\'s counts', await page.locator('.status-filter .chip').count() === 4 && /Draft\s*3/.test(await page.textContent('.status-filter [data-status=draft]')));
