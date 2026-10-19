@@ -33,7 +33,7 @@ const PAGE_H = 1440;
 /** TAWR status colours: the same on the map, the list and the cards. */
 export const STATUS_COLOR = {
   draft: '#8a8f98', submitted: '#e08a00', approved: '#1f5fbf', rejected: '#d1242f',
-  superseded: '#b8bcc4', consolidated: '#b8bcc4',
+  denied: '#7f1d1d', cancelled: '#6b7280', superseded: '#b8bcc4', consolidated: '#b8bcc4',
 };
 const HOVER = '#0a8f6a';
 const ROUTE = '#8a2be2';

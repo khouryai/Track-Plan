@@ -280,7 +280,7 @@ export function buildIndex(entries = [], { now = Date.now() } = {}) {
     activityId: String(e.data.activityId || '').trim().toUpperCase(), typed: fold(e.data.typed), link: e.data.link,
   }));
   const rejects = entries.filter((e) => e.kind === 'reject' && e.data?.reason).map((e) => ({
-    id: e.tawr_id, at: e.at, by: e.by, reason: e.data.reason, f: featuresOf(e.data.source, e.data.shift),
+    id: e.tawr_id, at: e.at, by: e.by, reason: e.data.reason, bart: Boolean(e.data.by_bart), f: featuresOf(e.data.source, e.data.shift),
   }));
   const outcomes = entries.filter((e) => e.kind === 'outcome' && e.data);
   // How many requests each word is in, for weighting the rare ones up.
@@ -400,11 +400,11 @@ export function suggestFields(index, row) {
   return out;
 }
 
-/** Rejected requests like this one, closest first: `[{ reason, id, at, by, similarity }]`. */
+/** Requests like this one that were rejected, or denied by BART (`bart`), closest first: `[{ reason, id, at, by, bart, similarity }]`. */
 export function rejectionsLike(index, target, { min = 0.6 } = {}) {
   if (!index?.rejects?.length) return [];
   const f = featuresOf(target, target.shift);
-  return index.rejects.map((r) => ({ reason: r.reason, id: r.id, at: r.at, by: r.by, similarity: Math.round(similarity(f, r.f) * 100) / 100 }))
+  return index.rejects.map((r) => ({ reason: r.reason, id: r.id, at: r.at, by: r.by, bart: r.bart, similarity: Math.round(similarity(f, r.f) * 100) / 100 }))
     .filter((r) => r.similarity >= min)
     .sort((a, b) => b.similarity - a.similarity);
 }
@@ -457,7 +457,7 @@ export function outcomeOf(record) {
   return { kept, changed };
 }
 
-/** The entries a step of the workflow leaves in the memory. */
+/** The entries a step of the workflow leaves in the memory: a denial by BART is remembered as a rejection, marked as BART's. */
 export function entriesFor(record, action, note = null) {
   const base = { tawr_id: record.id };
   const data = { week: record.week_start, shift: record.shift, source: compactSource(record.source) };
@@ -467,7 +467,9 @@ export function entriesFor(record, action, note = null) {
     if (outcome) out.push({ ...base, kind: 'outcome', data: outcome });
     return out;
   }
-  if (action === 'reject' && String(note || '').trim()) return [{ ...base, kind: 'reject', data: { ...data, reason: String(note).trim() } }];
+  if ((action === 'reject' || action === 'deny') && String(note || '').trim()) {
+    return [{ ...base, kind: 'reject', data: { ...data, reason: String(note).trim(), ...(action === 'deny' ? { by_bart: true } : {}) } }];
+  }
   return [];
 }
 

@@ -94,7 +94,17 @@ data extracted automatically from the drawing.
 6. **Submittal**: *Download PDF* fills BART's own fillable form (uploaded once in
    Setup, never committed or published) and signs it with the requester's
    signature; *Download approved* puts the week's forms in one .zip, and the
-   *Submittal register (CSV)* lists them.
+   *Submittal register (CSV)* lists them, with where each stands with BART.
+7. **After approval.** The request's next step follows it to the end:
+   *Sent to BART…* records the day it went and BART's reference; *BART's
+   answer…* records that BART granted it — or denied it, with BART's reason,
+   which ends the request as *Denied by BART* (reopen it to correct and send it
+   again; the learning memory warns drafts like it). Once its days have gone by,
+   *Access used…* records which days the track was actually used, and the hours
+   are counted for the reports. If the work comes off the look-ahead or moves,
+   *Cancel and release the track* ends an approved request with a reason, and
+   asks whether BART has been told the track is free — *BART told…* records it
+   later if not. A cancelled or denied request no longer conflicts with anything.
 
 **Sample data.** *Look-ahead → Sample data…* loads four weeks of W and M line
 work from the coming Monday — cable trough and signal cable on the W line,
@@ -183,6 +193,7 @@ the server keeps it in `memory`, the static site in the browser). From it:
 |---|---|---|---|
 | Edit the look-ahead, link locations, Setup | yes | yes | — |
 | Raise, review and submit drafts; withdraw; reopen a rejected one; revise | yes | yes | — |
+| Record what BART said, cancel and release, record the access used | yes | yes | — |
 | Approve, reject, consolidate, split | — | yes | — |
 | Add and change accounts (server) | — | yes | — |
 | See the learning memory, forget an entry | yes | yes | — |
@@ -344,7 +355,7 @@ is kept at `db/tawr_template.pdf` — outside `web/`, ignored by git.
 | `users`, `sessions` | accounts (requester, manager, viewer) and signed-in sessions |
 | `la_rows`, `la_cells` | the look-ahead: sections, activities (with their track plan `link`) and Resource rows; a colour and text per day |
 | `meta` | the legend (shift colours), the support code register, the look-ahead's version |
-| `tawrs` | the requests: week, place and shift, status, the form's fields as generated and as edited, what they were read from, who did what and when |
+| `tawrs` | the requests: week, place and shift, status, the form's fields as generated and as edited, what they were read from, who did what and when, what happened with BART and the access used (an older database is upgraded on start) |
 | `tawr_merges` | consolidations: which requests the manager made one |
 | `tawr_settings`, `tawr_descriptions` | Setup: contacts, the requester's name, phone and signature, shift hours, lead time, phases, predicting; expanded wording for activities |
 | `memory` | the learning memory: each request's answers as sent, the locations linked, the rejections and why, and which predictions were kept |
@@ -359,6 +370,7 @@ is kept at `db/tawr_template.pdf` — outside `web/`, ignored by git.
 | `GET /api/me`, `POST /api/setup`, `/api/login`, `/api/logout`, `/api/users` | accounts |
 | `GET /api/lookahead`, `POST /api/lookahead/ops`, `/api/lookahead/replace`, `PUT /api/lookahead/legend`, `/codes` | the look-ahead |
 | `GET/POST /api/tawrs`, `PUT /api/tawrs/<id>`, `POST /api/tawrs/<id>/<action>`, `/api/tawrs/consolidate`, `/api/tawrs/<id>/split` | TAWRs and their workflow |
+| `PUT /api/tawrs/<id>/bart`, `PUT /api/tawrs/<id>/access` | after approval: sent to BART, BART's reference and answer, the track released; the access used |
 | `GET/PUT /api/tawr/settings`, `/api/tawr/template`, `/api/tawr/descriptions` | Setup |
 | `GET/POST /api/memory`, `DELETE /api/memory/<id>`, `POST /api/memory/clear` | the learning memory (the requester and the manager; clearing, the manager) |
 | `GET/POST /api/requests`, `PUT/DELETE /api/requests/<id>` | the earlier access requests |

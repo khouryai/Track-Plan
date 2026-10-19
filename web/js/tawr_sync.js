@@ -156,9 +156,10 @@ export async function autoRaise(app) {
 /**
  * The sample's weeks as they would stand by now. A week whose deadline has
  * passed was submitted, and approved once it passed a week ago — all but the
- * requests in a conflict, which wait for the Track Allocation Manager. On the
- * static site every step is taken; on a server, those this account may take.
- * Answers how many steps were taken.
+ * requests in a conflict, which wait for the Track Allocation Manager. An
+ * approved request went to BART on its deadline, and BART granted it three
+ * days later where that day has come. On the static site every step is taken;
+ * on a server, those this account may take. Answers how many steps were taken.
  */
 export async function settleSample(app) {
   const steps = [];
@@ -181,15 +182,23 @@ export async function settleSample(app) {
     const t = app.tawrs.find((r) => r.id === id);
     if (t && !fills[id]) fills[id] = sampleAnswers(t);
   }
+  const bartFor = (id) => {
+    const t = app.tawrs.find((r) => r.id === id);
+    const sent = T.tawrDeadline(t.first_day || t.week_start);
+    const granted = T.addDaysISO(sent, 3);
+    return { sent_on: sent, ref: `BT-${4400 + id}`, ...(granted <= app.today ? { answer: 'granted', answered_on: granted } : {}) };
+  };
   let taken = steps;
-  if (S.store.mode === 'local') S.settleLocalSample(steps, fills);
-  else {
+  if (S.store.mode === 'local') {
+    S.settleLocalSample(steps, fills, Object.fromEntries(steps.filter(([, a]) => a === 'approve').map(([id]) => [id, bartFor(id)])));
+  } else {
     taken = steps.filter(([, action]) => T.may(S.store.workflow, S.role(), action));
     for (const [id, fields] of Object.entries(fills)) {
       const t = app.tawrs.find((r) => r.id === Number(id));
       if (taken.some(([x]) => x === Number(id))) await S.updateTawr(Number(id), { fields: { ...t.fields, ...fields } });
     }
     for (const [id, action] of taken) await S.act(id, action);
+    for (const [id] of taken.filter(([, a]) => a === 'approve')) await S.recordBart(id, bartFor(id));
   }
   if (taken.length) await app.reloadTawrs();
   return taken.length;

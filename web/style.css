@@ -382,6 +382,11 @@ details .row { margin-top: 6px; }
 .modal-body { padding: 8px 16px; overflow-y: auto; }
 .modal-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 10px 16px 14px; border-top: 1px solid var(--line); }
 .form-grid { display: grid; gap: 10px; }
+.form-grid.two { grid-template-columns: 1fr 1fr; }
+.form-grid.two .span2, .form-grid.two .msg { grid-column: 1 / -1; }
+@media (max-width: 640px) { .form-grid.two { grid-template-columns: 1fr; } }
+.access-form { display: grid; gap: 6px; }
+.access-form .access-day { font-variant-numeric: tabular-nums; }
 .la-unknown .row { align-items: center; flex-wrap: nowrap; }
 .la-unknown select { width: 220px; }
 .ctx-menu { position: fixed; z-index: 3500; background: #fff; border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 6px 24px rgba(0,0,0,.18); padding: 4px; min-width: 220px; }

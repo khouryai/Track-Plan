@@ -85,11 +85,41 @@ def init_db(path=None):
     try:
         con.execute("PRAGMA journal_mode = WAL")
         with open(SCHEMA) as f:
-            con.executescript(f.read())
+            schema = f.read()
+        con.executescript(schema)
+        if _upgrade_tawrs(con, schema):
+            con.executescript(schema)  # its indexes went with the old table
         for key, value in (("legend", DEFAULT_LEGEND), ("codes", DEFAULT_CODES), ("la_version", 0)):
             con.execute("INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)", (key, json.dumps(value)))
     finally:
         con.close()
+
+
+def _upgrade_tawrs(con, schema):
+    """
+    A database made before BART's answer was recorded: its requests table
+    allows fewer statuses and has no `bart` or `access`. SQLite cannot change a
+    CHECK constraint, so the table is rebuilt from the schema and every row
+    copied across, ids and all. Answers whether it was.
+    """
+    row = con.execute("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'tawrs'").fetchone()
+    if row is None or "'cancelled'" in row["sql"]:
+        return False
+    create = re.search(r"CREATE TABLE IF NOT EXISTS tawrs \(.*?\n\);", schema, re.S).group(0)
+    old = [r["name"] for r in con.execute("PRAGMA table_info(tawrs)")]
+    cols = ", ".join(old)
+    con.execute("PRAGMA foreign_keys = OFF")
+    try:
+        with Tx(con):
+            con.execute(create.replace("CREATE TABLE IF NOT EXISTS tawrs (", "CREATE TABLE tawrs_new (", 1))
+            con.execute(f"INSERT INTO tawrs_new ({cols}) SELECT {cols} FROM tawrs")
+            con.execute("DROP TABLE tawrs")
+            con.execute("ALTER TABLE tawrs_new RENAME TO tawrs")
+            if con.execute("PRAGMA foreign_key_check(tawrs)").fetchone():
+                raise RuntimeError("the requests table did not survive its upgrade")
+    finally:
+        con.execute("PRAGMA foreign_keys = ON")
+    return True
 
 
 class Tx:
@@ -401,7 +431,7 @@ def set_codes(con, codes, actor, workflow):
 
 # ------------------------------------------------------------ TAWRs
 
-JSON_COLS = ("fields", "generated", "source", "history")
+JSON_COLS = ("fields", "generated", "source", "history", "bart", "access")
 
 
 def tawr_out(r):
@@ -527,8 +557,21 @@ def _blocking(r):
     return [f for f in src.get("flags", []) if f.get("blocking")]
 
 
-def act_on_tawr(con, tid, action, actor, workflow, note=None):
-    """Move a request along the workflow: submit, withdraw, approve, reject, reopen, revise, discard."""
+def _day(v, name):
+    if v is None or v == "":
+        return None
+    if not isinstance(v, str) or not DAY_RE.match(v):
+        raise Refused(f"{name} must be YYYY-MM-DD", 400)
+    return v
+
+
+def act_on_tawr(con, tid, action, actor, workflow, note=None, on=None, released=False):
+    """
+    Move a request along the workflow: submit, withdraw, approve, reject,
+    reopen, revise, discard — and after approval, BART denied it (`note` is
+    BART's reason) or it was cancelled and the track released (`released`:
+    BART has been told). `on` is the day it happened, as the person saw it.
+    """
     if actor is None:
         raise Refused("sign in first", 401)
     rule = workflow["actions"].get(action)
@@ -556,6 +599,14 @@ def act_on_tawr(con, tid, action, actor, workflow, note=None):
             sets.update(submitted_by=actor["id"], submitted_at=stamp, decision_note=None)
         elif action in ("approve", "reject"):
             sets.update(decided_by=actor["id"], decided_at=stamp, decision_note=(note or "").strip() or None)
+        elif action in ("deny", "cancel"):
+            day = _day(on, "on") or stamp[:10]
+            bart = json.loads(r["bart"] or "{}")
+            if action == "deny":
+                bart.update(answer="denied", answered_on=day, note=note.strip()[:1000])
+            elif released:
+                bart["released_on"] = day
+            sets["bart"] = json.dumps({**bart, "by": actor["name"]})
         con.execute(f"UPDATE tawrs SET {', '.join(f'{k} = ?' for k in sets)} WHERE id = ?", list(sets.values()) + [tid])
         if rule.get("creates"):
             # Revise: superseded, and a draft takes its place carrying what it said.
@@ -565,6 +616,90 @@ def act_on_tawr(con, tid, action, actor, workflow, note=None):
                 (r["week_start"], r["group_key"], r["shift"], r["location_name"], r["first_day"], r["fields"],
                  r["generated"], r["source"], tid, actor["id"], _history(None, actor, f"revision of #{tid}")))
             return tawr_out(_get_tawr(con, cur.lastrowid))
+        return tawr_out(_get_tawr(con, tid))
+
+
+def _may_record(r, kind, actor, workflow):
+    if actor is None:
+        raise Refused("sign in first", 401)
+    rule = workflow.get("records", {}).get(kind)
+    if rule is None:
+        raise Refused(f"nothing called {kind!r} is recorded on a request", 400)
+    if actor["role"] not in rule["roles"]:
+        raise Refused(f"a {workflow['roles'][actor['role']].lower()} cannot record that")
+    if r["status"] not in rule["on"]:
+        raise Refused(f"that is recorded on an approved request; this one is {r['status']}", 409)
+
+
+def record_bart(con, tid, body, actor, workflow):
+    """
+    What happened with BART after approval: the day it was sent, BART's
+    reference, that BART granted it (a denial is the `deny` step, which ends the
+    request), and after a cancellation the day BART was told the track is free.
+    Only the keys sent change; null clears one.
+    """
+    if not isinstance(body, dict):
+        raise Refused("body must be an object", 400)
+    with Tx(con):
+        r = _get_tawr(con, tid)
+        _may_record(r, "bart", actor, workflow)
+        bart = json.loads(r["bart"] or "{}")
+        said = []
+        for k in ("sent_on", "answered_on", "released_on"):
+            if k in body:
+                if k == "released_on" and r["status"] != "cancelled":
+                    raise Refused("the track is released once the request is cancelled", 409)
+                bart[k] = _day(body[k], k)
+        if "ref" in body:
+            ref = body["ref"]
+            if ref is not None and (not isinstance(ref, str) or len(ref) > 60):
+                raise Refused("BART's reference is at most 60 characters", 400)
+            bart["ref"] = (ref or "").strip() or None
+        if "answer" in body:
+            if body["answer"] not in (None, "granted"):
+                raise Refused("BART's answer is granted, or nothing yet — a denial is recorded with its reason", 400)
+            if r["status"] != "approved" and body["answer"]:
+                raise Refused("only an approved request is granted", 409)
+            bart["answer"] = body["answer"]
+            if body["answer"] and not bart.get("answered_on"):
+                bart["answered_on"] = now_iso()[:10]
+        if bart.get("sent_on") and "sent_on" in body:
+            said.append(f"sent to BART {bart['sent_on']}")
+        if bart.get("ref") and "ref" in body:
+            said.append(f"BART reference {bart['ref']}")
+        if bart.get("answer") == "granted" and "answer" in body:
+            said.append("BART granted it")
+        if bart.get("released_on") and "released_on" in body:
+            said.append(f"BART told the track is released {bart['released_on']}")
+        bart["by"] = actor["name"]
+        con.execute("UPDATE tawrs SET bart = ?, history = ?, updated_by = ?, updated_at = ? WHERE id = ?",
+                    (json.dumps(bart), _history(r, actor, "; ".join(said) or "BART details changed"), actor["id"], now_iso(), tid))
+        return tawr_out(_get_tawr(con, tid))
+
+
+def record_access(con, tid, body, actor, workflow):
+    """Whether each day's access was used, once it has been: `{days: {date: true|false}, note}`."""
+    if not isinstance(body, dict) or not isinstance(body.get("days"), dict) or not body["days"]:
+        raise Refused("say which days the access was used", 400)
+    with Tx(con):
+        r = _get_tawr(con, tid)
+        _may_record(r, "access", actor, workflow)
+        asked = {d.get("date") for d in json.loads(r["source"] or "{}").get("days", [])}
+        days = {}
+        for day, used in body["days"].items():
+            if day not in asked:
+                raise Refused(f"{day} is not one of the days this request asked for", 400)
+            if not isinstance(used, bool):
+                raise Refused("each day is used (true) or not (false)", 400)
+            days[day] = used
+        note = body.get("note")
+        if note is not None and (not isinstance(note, str) or len(note) > 1000):
+            raise Refused("the note is at most 1,000 characters", 400)
+        access = {"days": days, "note": (note or "").strip() or None, "on": _day(body.get("on"), "on") or now_iso()[:10], "by": actor["name"]}
+        used = sum(days.values())
+        con.execute("UPDATE tawrs SET access = ?, history = ?, updated_by = ?, updated_at = ? WHERE id = ?",
+                    (json.dumps(access), _history(r, actor, f"access recorded: used on {used} of {len(days)} day{'s' if len(days) != 1 else ''}",
+                                                  access["note"]), actor["id"], now_iso(), tid))
         return tawr_out(_get_tawr(con, tid))
 
 

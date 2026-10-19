@@ -27,6 +27,9 @@ TAWRs (signed in; who may do what is web/data/tawr_workflow.json)
   POST   /api/tawrs                          a new draft
   PUT    /api/tawrs/<id>                     {fields} and, on a draft, {generated, source, …}
   POST   /api/tawrs/<id>/<action>            submit | withdraw | approve | reject | reopen | revise | discard
+                                             | deny {note, on} | cancel {note, on, released}
+  PUT    /api/tawrs/<id>/bart                {sent_on, ref, answer, answered_on, released_on}
+  PUT    /api/tawrs/<id>/access              {days: {YYYY-MM-DD: used}, note}
   POST   /api/tawrs/consolidate              {ids, merge, record, note}   (track allocation manager)
   POST   /api/tawrs/<id>/split                                             (track allocation manager)
   GET/PUT /api/tawr/settings, /api/tawr/template (application/pdf; 204 until uploaded)
@@ -280,10 +283,16 @@ class Handler(SimpleHTTPRequestHandler):
                                                   WORKFLOW, b.get("note")), HTTPStatus.CREATED)
         if len(p) == 2 and p[0] == "tawrs" and p[1].isdigit() and method == "PUT":
             return self.send_json(ops.update_tawr(con, int(p[1]), self.body(), need(), WORKFLOW))
+        if len(p) == 3 and p[0] == "tawrs" and p[1].isdigit() and method == "PUT":
+            if p[2] == "bart":
+                return self.send_json(ops.record_bart(con, int(p[1]), self.body(), need(), WORKFLOW))
+            if p[2] == "access":
+                return self.send_json(ops.record_access(con, int(p[1]), self.body(), need(), WORKFLOW))
         if len(p) == 3 and p[0] == "tawrs" and p[1].isdigit() and method == "POST":
             if p[2] == "split":
                 return self.send_json(ops.split(con, int(p[1]), need(), WORKFLOW))
-            return self.send_json(ops.act_on_tawr(con, int(p[1]), p[2], need(), WORKFLOW, (self.body() or {}).get("note")))
+            b = self.body() or {}
+            return self.send_json(ops.act_on_tawr(con, int(p[1]), p[2], need(), WORKFLOW, b.get("note"), b.get("on"), b.get("released") is True))
         if p == ["tawr", "settings"]:
             if method == "GET":
                 return self.send_json(ops.get_settings(con, need(), WORKFLOW))

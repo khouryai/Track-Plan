@@ -311,17 +311,22 @@ export async function updateTawr(id, changes) {
   return http('PUT', `api/tawrs/${id}`, changes);
 }
 
-export async function act(id, action, note = null) {
+/**
+ * One step of the workflow. After approval, `deny` takes BART's reason as the
+ * note and `cancel` the reason it was cancelled; `on` is the day it happened
+ * and `released` that BART has been told the track is free.
+ */
+export async function act(id, action, note = null, { on = null, released = false } = {}) {
   if (local()) {
     if (!store.user) throw new Refused('choose who you are first', 401);
     const s = readLocal();
     const r = localTawr(s, id);
     if (!may(store.workflow, role(), action)) throw new Refused(`a ${store.workflow.roles[role()].toLowerCase()} cannot ${action} a request`);
-    const out = localAct(s, r, action, note);
+    const out = localAct(s, r, action, note, { on, released });
     writeLocal(s);
     return out;
   }
-  const out = await http('POST', `api/tawrs/${id}/${action}`, { note });
+  const out = await http('POST', `api/tawrs/${id}/${action}`, { note, on, released });
   /* What the step leaves in the learning memory. The step stands whether or
      not that is written: the memory is advice, the request is the record. */
   const entries = entriesFor(out, action, note);
@@ -330,7 +335,7 @@ export async function act(id, action, note = null) {
 }
 
 /** One step of the workflow on the browser's copy, once the role may take it. */
-function localAct(s, r, action, note) {
+function localAct(s, r, action, note, { on = null, released = false } = {}) {
   const rule = store.workflow.actions[action];
   if (!rule.from.includes(r.status)) throw new Refused(`a ${r.status} request cannot be ${action}ed`, 409);
   if (rule.unblocked) {
@@ -349,6 +354,13 @@ function localAct(s, r, action, note) {
   r.updated_at = stamp;
   if (action === 'submit') Object.assign(r, { submitted_by: store.user.id, submitted_at: stamp, decision_note: null });
   if (action === 'approve' || action === 'reject') Object.assign(r, { decided_by: store.user.id, decided_at: stamp, decision_note: String(note || '').trim() || null });
+  if (action === 'deny' || action === 'cancel') {
+    const day = dayOf(on, 'on') || localDay();
+    const bart = { ...(r.bart || {}) };
+    if (action === 'deny') Object.assign(bart, { answer: 'denied', answered_on: day, note: String(note).trim().slice(0, 1000) });
+    else if (released) bart.released_on = day;
+    r.bart = { ...bart, by: store.user.name };
+  }
   keepLocalMemory(s, entriesFor(r, action, note));
   let out = r;
   if (rule.creates) {
@@ -362,13 +374,101 @@ function localAct(s, r, action, note) {
   return clone(out);
 }
 
+const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
+function dayOf(v, name) {
+  if (v == null || v === '') return null;
+  if (typeof v !== 'string' || !DAY_RE.test(v)) throw new Refused(`${name} must be YYYY-MM-DD`, 400);
+  return v;
+}
+/** Today in this computer's own time zone, as a person would write it. */
+function localDay() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+function mayRecord(r, kind) {
+  const rule = store.workflow.records?.[kind];
+  if (!rule) throw new Refused(`nothing called ${kind} is recorded on a request`, 400);
+  if (!rule.roles.includes(role())) throw new Refused(`a ${store.workflow.roles[role()].toLowerCase()} cannot record that`);
+  if (!rule.on.includes(r.status)) throw new Refused(`that is recorded on an approved request; this one is ${r.status}`, 409);
+}
+
+/**
+ * What happened with BART after approval — `{ sent_on, ref, answer, answered_on,
+ * released_on }`, only the keys given changing. As operations.record_bart.
+ */
+export async function recordBart(id, body) {
+  if (local()) {
+    if (!store.user) throw new Refused('choose who you are first', 401);
+    const s = readLocal();
+    const r = localTawr(s, id);
+    mayRecord(r, 'bart');
+    const bart = { ...(r.bart || {}) };
+    for (const k of ['sent_on', 'answered_on', 'released_on']) {
+      if (!(k in body)) continue;
+      if (k === 'released_on' && r.status !== 'cancelled') throw new Refused('the track is released once the request is cancelled', 409);
+      bart[k] = dayOf(body[k], k);
+    }
+    if ('ref' in body) {
+      if (body.ref != null && (typeof body.ref !== 'string' || body.ref.length > 60)) throw new Refused('BART\'s reference is at most 60 characters', 400);
+      bart.ref = String(body.ref || '').trim() || null;
+    }
+    if ('answer' in body) {
+      if (![null, 'granted'].includes(body.answer)) throw new Refused('BART\'s answer is granted, or nothing yet — a denial is recorded with its reason', 400);
+      if (r.status !== 'approved' && body.answer) throw new Refused('only an approved request is granted', 409);
+      bart.answer = body.answer;
+      if (body.answer && !bart.answered_on) bart.answered_on = localDay();
+    }
+    const said = [
+      bart.sent_on && 'sent_on' in body ? `sent to BART ${bart.sent_on}` : null,
+      bart.ref && 'ref' in body ? `BART reference ${bart.ref}` : null,
+      bart.answer === 'granted' && 'answer' in body ? 'BART granted it' : null,
+      bart.released_on && 'released_on' in body ? `BART told the track is released ${bart.released_on}` : null,
+    ].filter(Boolean);
+    r.bart = { ...bart, by: store.user.name };
+    r.history = history(r, said.join('; ') || 'BART details changed');
+    r.updated_by = store.user.id;
+    r.updated_at = nowIso();
+    writeLocal(s);
+    return clone(r);
+  }
+  return http('PUT', `api/tawrs/${id}/bart`, body);
+}
+
+/** Whether each day's access was used: `{ days: { date: true|false }, note }`. As operations.record_access. */
+export async function recordAccess(id, body) {
+  if (local()) {
+    if (!store.user) throw new Refused('choose who you are first', 401);
+    const s = readLocal();
+    const r = localTawr(s, id);
+    mayRecord(r, 'access');
+    const asked = new Set((r.source?.days || []).map((d) => d.date));
+    const entries = Object.entries(body?.days || {});
+    if (!entries.length) throw new Refused('say which days the access was used', 400);
+    for (const [day, used] of entries) {
+      if (!asked.has(day)) throw new Refused(`${day} is not one of the days this request asked for`, 400);
+      if (typeof used !== 'boolean') throw new Refused('each day is used (true) or not (false)', 400);
+    }
+    if (body.note != null && (typeof body.note !== 'string' || body.note.length > 1000)) throw new Refused('the note is at most 1,000 characters', 400);
+    const days = Object.fromEntries(entries);
+    r.access = { days, note: String(body.note || '').trim() || null, on: dayOf(body.on, 'on') || localDay(), by: store.user.name };
+    const used = entries.filter(([, u]) => u).length;
+    r.history = history(r, `access recorded: used on ${used} of ${entries.length} day${entries.length === 1 ? '' : 's'}`, r.access.note);
+    r.updated_by = store.user.id;
+    r.updated_at = nowIso();
+    writeLocal(s);
+    return clone(r);
+  }
+  return http('PUT', `api/tawrs/${id}/access`, body);
+}
+
 /**
  * The sample's weeks as they would stand by now, in this browser: each step
  * taken as `act` takes it but in no one's role — the static site's roles are
  * chosen, not checked, and these stand for weeks already dealt with. `steps`
  * is `[[id, action], …]`, all or none.
  */
-export function settleLocalSample(steps, fills = {}) {
+export function settleLocalSample(steps, fills = {}, barts = {}) {
   if (!local()) throw new Refused('only the copy in this browser can be settled like this');
   requireWrite();
   const s = readLocal();
@@ -378,6 +478,12 @@ export function settleLocalSample(steps, fills = {}) {
     r.fields = { ...r.fields, ...clone(fields) };
   }
   for (const [id, action] of steps) localAct(s, localTawr(s, id), action, null);
+  // And what happened with BART once they were approved.
+  for (const [id, bart] of Object.entries(barts)) {
+    const r = localTawr(s, Number(id));
+    r.bart = { ...clone(bart), by: store.user.name };
+    r.history = history(r, [`sent to BART ${bart.sent_on}`, bart.ref && `BART reference ${bart.ref}`, bart.answer === 'granted' && 'BART granted it'].filter(Boolean).join('; '));
+  }
   writeLocal(s);
 }
 

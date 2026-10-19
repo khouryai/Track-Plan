@@ -855,6 +855,55 @@ export function repetitions(records) {
   return out;
 }
 
+/* ── After approval: BART, and the access ─────────────────────────────── */
+
+/** The hours one day asked for: 2230–0430 is 6. Null where the hours are unknown. */
+export function dayHours(day) {
+  const read = parseHours(`${day.start}-${day.end}`);
+  if (!read) return null;
+  const end = read.end <= read.start ? read.end + 1440 : read.end;
+  return (end - read.start) / 60;
+}
+
+/**
+ * Where a request stands once it has been approved — what BART did with it, and
+ * whether its access has been accounted for:
+ *   unsent      approved, not sent to BART yet
+ *   sent        sent, waiting for BART's answer
+ *   granted     BART granted it, nothing more to do yet
+ *   access-due  granted, and a day it asked for has gone by unaccounted for
+ *   recorded    the access used has been recorded
+ *   denied      BART denied it
+ *   unreleased  cancelled, and BART not yet told the track is free
+ *   released    cancelled, and BART told
+ * Null for a request not yet approved.
+ */
+export function afterApproval(record, todayISO) {
+  const bart = record?.bart || {};
+  if (record?.status === 'denied') return 'denied';
+  if (record?.status === 'cancelled') return bart.released_on ? 'released' : 'unreleased';
+  if (record?.status !== 'approved') return null;
+  if (record.access?.days) return 'recorded';
+  if (!bart.sent_on && bart.answer !== 'granted') return 'unsent';
+  if (bart.answer !== 'granted') return 'sent';
+  return (record.source?.days || []).some((d) => d.date < todayISO) ? 'access-due' : 'granted';
+}
+
+/**
+ * The access a request asked for and what was used of it: `{ days, used,
+ * hoursAsked, hoursUsed, recorded }` — `used` and `hoursUsed` null until it is
+ * recorded. A day without hours counts as none.
+ */
+export function accessOf(record) {
+  const days = record?.source?.days || [];
+  const hours = (d) => dayHours(d) ?? 0;
+  const hoursAsked = days.reduce((n, d) => n + hours(d), 0);
+  const said = record?.access?.days;
+  if (!said) return { days: days.length, used: null, hoursAsked, hoursUsed: null, recorded: false };
+  const used = days.filter((d) => said[d.date] === true);
+  return { days: days.length, used: used.length, hoursAsked, hoursUsed: used.reduce((n, d) => n + hours(d), 0), recorded: true };
+}
+
 /* ── Conflicts on the track ─────────────────────────────────────────────── */
 
 const LIVE = ['draft', 'submitted', 'approved', 'rejected'];

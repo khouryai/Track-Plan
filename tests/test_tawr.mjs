@@ -278,6 +278,34 @@ console.log('\nThe workflow');
   check('two approved requests for the same track on the same day are a repetition', reps.length === 1 && reps[0].days.join() === day(0));
 }
 
+console.log('\nAfter approval: BART, and the access');
+{
+  const days = [{ date: day(0), start: '2230', end: '0430' }, { date: day(1), start: '2230', end: '0430' }, { date: day(2), start: '', end: '' }];
+  const rec = (extra = {}) => ({ id: 9, status: 'approved', week_start: MON, source: { days }, ...extra });
+  const before = day(0);
+  const after = day(2);
+  check('a night shift\'s hours run past midnight', T.dayHours(days[0]) === 6 && T.dayHours(days[2]) === null);
+  check('approved and not sent is the requester\'s to send', T.afterApproval(rec(), before) === 'unsent');
+  check('sent, it waits for BART', T.afterApproval(rec({ bart: { sent_on: day(-17) } }), before) === 'sent');
+  check('granted, nothing to do until a day has gone by', T.afterApproval(rec({ bart: { sent_on: day(-17), answer: 'granted' } }), before) === 'granted');
+  check('then the access is due to be recorded', T.afterApproval(rec({ bart: { answer: 'granted' } }), after) === 'access-due');
+  check('and once recorded, it is done', T.afterApproval(rec({ bart: { answer: 'granted' }, access: { days: { [day(0)]: true } } }), after) === 'recorded');
+  check('denied and cancelled say so, and whether BART was told', T.afterApproval(rec({ status: 'denied' }), after) === 'denied'
+    && T.afterApproval(rec({ status: 'cancelled' }), after) === 'unreleased' && T.afterApproval(rec({ status: 'cancelled', bart: { released_on: day(1) } }), after) === 'released'
+    && T.afterApproval(rec({ status: 'submitted' }), after) === null);
+  const a = T.accessOf(rec({ access: { days: { [day(0)]: true, [day(1)]: false, [day(2)]: true } } }));
+  check('the access used is counted in days and hours', a.recorded && a.used === 2 && a.days === 3 && a.hoursAsked === 12 && a.hoursUsed === 6, JSON.stringify(a));
+  check('nothing is counted as used before it is recorded', T.accessOf(rec()).used === null && T.accessOf(rec()).hoursAsked === 12);
+  check('BART denying and cancelling are steps after approval, and either is reopened', T.may(WORKFLOW, 'requester', 'deny', 'approved') && T.may(WORKFLOW, 'manager', 'cancel', 'approved')
+    && !T.may(WORKFLOW, 'requester', 'cancel', 'submitted') && T.may(WORKFLOW, 'requester', 'reopen', 'denied') && T.may(WORKFLOW, 'requester', 'reopen', 'cancelled')
+    && !T.may(WORKFLOW, 'viewer', 'cancel', 'approved'));
+  const live = (status) => T.conflicts([{ id: 1, status, source: { days: [{ date: day(0), start: '0800', end: '1600' }], activities: [{ link: { limits: [M1(1, 2)] } }] } },
+    { id: 2, status: 'approved', source: { days: [{ date: day(0), start: '0800', end: '1600' }], activities: [{ link: { limits: [M1(1, 2)] } }] } }]).length;
+  check('a cancelled or denied request no longer conflicts with anything', live('approved') === 1 && live('cancelled') === 0 && live('denied') === 0);
+  const denied = LEARN.entriesFor({ id: 4, week_start: MON, shift: 'night', source: {} }, 'deny', 'No flagger available');
+  check('BART\'s denial is remembered as a rejection, marked as BART\'s', denied.length === 1 && denied[0].kind === 'reject' && denied[0].data.by_bart === true);
+}
+
 console.log('\nThe sample data');
 {
   const { start, rows, cells } = SAMPLE.sampleLookahead('2026-10-17', MAP);

@@ -10,6 +10,8 @@
     "submitted": "Submitted",
     "approved": "Approved",
     "rejected": "Rejected",
+    "denied": "Denied by BART",
+    "cancelled": "Cancelled",
     "superseded": "Superseded",
     "consolidated": "Consolidated"
   },
@@ -19,11 +21,17 @@
     "withdraw": { "from": ["submitted"], "to": "draft", "roles": ["requester", "manager"], "label": "Withdraw" },
     "approve": { "from": ["submitted"], "to": "approved", "roles": ["manager"], "label": "Approve", "unblocked": true },
     "reject": { "from": ["submitted"], "to": "rejected", "roles": ["manager"], "label": "Reject", "note": true },
-    "reopen": { "from": ["rejected"], "to": "draft", "roles": ["requester", "manager"], "label": "Reopen as draft" },
+    "reopen": { "from": ["rejected", "denied", "cancelled"], "to": "draft", "roles": ["requester", "manager"], "label": "Reopen as draft" },
+    "deny": { "from": ["approved"], "to": "denied", "roles": ["requester", "manager"], "label": "BART denied it", "note": true },
+    "cancel": { "from": ["approved"], "to": "cancelled", "roles": ["requester", "manager"], "label": "Cancel and release the track", "note": true },
     "revise": { "from": ["approved"], "to": "superseded", "roles": ["requester", "manager"], "label": "Revise", "creates": "draft" },
     "discard": { "from": ["draft", "rejected"], "to": null, "roles": ["requester", "manager"], "label": "Discard" },
     "consolidate": { "from": ["draft", "submitted"], "to": "consolidated", "roles": ["manager"], "label": "Consolidate" },
     "split": { "from": ["draft", "submitted", "rejected"], "to": null, "roles": ["manager"], "label": "Split back up" }
+  },
+  "records": {
+    "bart": { "on": ["approved", "cancelled"], "roles": ["requester", "manager"], "label": "Sent to BART, and BART's answer" },
+    "access": { "on": ["approved"], "roles": ["requester", "manager"], "label": "Whether the access was used" }
   },
   "edit": {
     "draft": ["requester", "manager"],

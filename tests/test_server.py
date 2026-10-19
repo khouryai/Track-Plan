@@ -154,6 +154,80 @@ class Workflow(Base):
         old = [t for t in ops.list_tawrs(self.con) if t["id"] == r["id"]][0]
         self.assertEqual(old["status"], "superseded")
 
+    def approved(self, key="loc:tcr:Colma|day", days=("2026-11-02", "2026-11-03")):
+        rec = record(key)
+        rec["source"]["days"] = [{"date": d} for d in days]
+        r = ops.create_tawr(self.con, rec, self.requester, WF)
+        r = ops.act_on_tawr(self.con, r["id"], "submit", self.requester, WF)
+        return ops.act_on_tawr(self.con, r["id"], "approve", self.manager, WF)
+
+    def test_what_bart_said_is_recorded_after_approval(self):
+        draft = self.draft("k|day")
+        self.refused(ops.record_bart, self.con, draft["id"], {"sent_on": "2026-10-14"}, self.requester, WF, status=409)
+        r = self.approved()
+        r = ops.record_bart(self.con, r["id"], {"sent_on": "2026-10-14", "ref": " BT-4471 "}, self.requester, WF)
+        self.assertEqual((r["bart"]["sent_on"], r["bart"]["ref"], r["bart"].get("answer")), ("2026-10-14", "BT-4471", None))
+        r = ops.record_bart(self.con, r["id"], {"answer": "granted", "answered_on": "2026-10-16"}, self.manager, WF)
+        self.assertEqual((r["bart"]["answer"], r["bart"]["sent_on"], r["status"]), ("granted", "2026-10-14", "approved"))
+        self.assertIn("BART granted it", r["history"][-1]["action"])
+        for bad in ({"answer": "denied"}, {"sent_on": "14/10/2026"}, {"ref": "x" * 61}, {"released_on": "2026-10-20"}):
+            self.refused(ops.record_bart, self.con, r["id"], bad, self.requester, WF, status=400 if "released_on" not in bad else 409)
+        self.refused(ops.record_bart, self.con, r["id"], {"ref": "y"}, self.viewer, WF, status=403)
+
+    def test_bart_denying_ends_it_with_the_reason_and_it_can_be_reopened(self):
+        r = self.approved()
+        self.refused(ops.act_on_tawr, self.con, r["id"], "deny", self.requester, WF, status=400)
+        r = ops.act_on_tawr(self.con, r["id"], "deny", self.requester, WF, note="No flagger available", on="2026-10-17")
+        self.assertEqual((r["status"], r["bart"]["answer"], r["bart"]["note"], r["bart"]["answered_on"]), ("denied", "denied", "No flagger available", "2026-10-17"))
+        self.refused(ops.record_access, self.con, r["id"], {"days": {"2026-11-02": True}}, self.requester, WF, status=409)
+        self.assertEqual(ops.act_on_tawr(self.con, r["id"], "reopen", self.requester, WF)["status"], "draft")
+
+    def test_a_cancelled_request_releases_the_track(self):
+        r = self.approved()
+        self.refused(ops.act_on_tawr, self.con, r["id"], "cancel", self.requester, WF, status=400)
+        r = ops.act_on_tawr(self.con, r["id"], "cancel", self.requester, WF, note="Work moved a week", on="2026-10-20")
+        self.assertEqual((r["status"], r["bart"].get("released_on")), ("cancelled", None))
+        r = ops.record_bart(self.con, r["id"], {"released_on": "2026-10-21"}, self.requester, WF)
+        self.assertEqual(r["bart"]["released_on"], "2026-10-21")
+        told = ops.act_on_tawr(self.con, self.approved("k2|day")["id"], "cancel", self.manager, WF, note="Rain", released=True, on="2026-10-20")
+        self.assertEqual(told["bart"]["released_on"], "2026-10-20")
+        # Cancelled is not live: the place and shift can be asked for again once it is reopened.
+        self.assertEqual(ops.act_on_tawr(self.con, told["id"], "reopen", self.requester, WF)["status"], "draft")
+
+    def test_the_access_used_is_recorded_day_by_day(self):
+        r = self.approved()
+        r = ops.record_access(self.con, r["id"], {"days": {"2026-11-02": True, "2026-11-03": False}, "note": "Rained off Tuesday"}, self.requester, WF)
+        self.assertEqual((r["access"]["days"], r["access"]["note"]), ({"2026-11-02": True, "2026-11-03": False}, "Rained off Tuesday"))
+        self.assertIn("used on 1 of 2 days", r["history"][-1]["action"])
+        for bad in ({"days": {}}, {"days": {"2026-11-09": True}}, {"days": {"2026-11-02": "yes"}}, {"days": {"2026-11-02": True}, "note": "n" * 1001}):
+            self.refused(ops.record_access, self.con, r["id"], bad, self.requester, WF, status=400)
+        self.refused(ops.record_access, self.con, r["id"], {"days": {"2026-11-02": True}}, self.viewer, WF, status=403)
+
+    def test_an_older_database_is_upgraded_with_its_requests(self):
+        path = os.path.join(self.dir, "old.db")
+        con = ops.connect(path)
+        with open(ops.SCHEMA) as f:
+            schema = f.read()
+        old = (schema.replace("'denied', 'cancelled',\n                                    ", "")
+               .replace("    bart          TEXT,                     -- {sent_on, ref, answer, answered_on, note, released_on, by}\n", "")
+               .replace("    access        TEXT,                     -- {days: {YYYY-MM-DD: used?}, note, on, by}\n", ""))
+        self.assertNotIn("'cancelled'", old)
+        con.executescript(old)
+        con.execute("INSERT INTO tawrs(id, week_start, group_key, shift, status) VALUES (7, ?, 'k|day', 'day', 'approved')", (MON,))
+        con.execute("INSERT INTO tawrs(id, week_start, group_key, shift, status, supersedes) VALUES (8, ?, 'k2|day', 'day', 'draft', 7)", (MON,))
+        con.close()
+        ops.init_db(path)
+        con = ops.connect(path)
+        try:
+            rows = {t["id"]: t for t in ops.list_tawrs(con)}
+            self.assertEqual((rows[7]["status"], rows[8]["supersedes"], rows[7]["bart"]), ("approved", 7, {}))
+            con.execute("UPDATE tawrs SET status = 'cancelled' WHERE id = 7")
+            self.assertTrue(con.execute("SELECT 1 FROM sqlite_master WHERE name = 'tawrs_current'").fetchone())
+            ops.init_db(path)  # and a second start changes nothing
+            self.assertEqual(ops.list_tawrs(con)[0]["status"], "cancelled")
+        finally:
+            con.close()
+
     def test_submitted_is_the_managers_to_edit(self):
         r = ops.act_on_tawr(self.con, self.draft()["id"], "submit", self.requester, WF)
         self.refused(ops.update_tawr, self.con, r["id"], {"fields": {"a": "b"}}, self.requester, WF, status=403)

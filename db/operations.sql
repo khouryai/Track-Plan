@@ -71,6 +71,10 @@ CREATE INDEX IF NOT EXISTS la_cells_day ON la_cells(day);
 -- form says now, `generated` what the look-ahead said when it was last read;
 -- the difference is what somebody changed by hand. `source` is what it was read
 -- from: activities with their track plan links, days, support, flags.
+-- After approval, `bart` is what happened with BART (sent on, BART's reference,
+-- its answer, the track released after a cancellation) and `access` whether
+-- each day's access was used. An older database is rebuilt to this shape on
+-- start (operations.init_db): SQLite cannot change a CHECK constraint.
 CREATE TABLE IF NOT EXISTS tawrs (
     id            INTEGER PRIMARY KEY,
     week_start    TEXT NOT NULL,
@@ -79,7 +83,8 @@ CREATE TABLE IF NOT EXISTS tawrs (
     location_name TEXT NOT NULL DEFAULT '',
     first_day     TEXT,
     status        TEXT NOT NULL DEFAULT 'draft'
-                  CHECK (status IN ('draft', 'submitted', 'approved', 'rejected', 'superseded', 'consolidated')),
+                  CHECK (status IN ('draft', 'submitted', 'approved', 'rejected', 'denied', 'cancelled',
+                                    'superseded', 'consolidated')),
     status_before TEXT,                     -- what a consolidated request was, so a split puts it back
     fields        TEXT NOT NULL DEFAULT '{}',
     generated     TEXT NOT NULL DEFAULT '{}',
@@ -88,6 +93,8 @@ CREATE TABLE IF NOT EXISTS tawrs (
     merged_into   INTEGER REFERENCES tawrs(id) ON DELETE SET NULL,
     decision_note TEXT,
     history       TEXT NOT NULL DEFAULT '[]', -- [{at, by, action, note}]
+    bart          TEXT,                     -- {sent_on, ref, answer, answered_on, note, released_on, by}
+    access        TEXT,                     -- {days: {YYYY-MM-DD: used?}, note, on, by}
     created_by    INTEGER REFERENCES users(id) ON DELETE SET NULL,
     created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     updated_by    INTEGER REFERENCES users(id) ON DELETE SET NULL,

@@ -155,6 +155,12 @@ async function confirm(page) {
 }
 
 const card = (page, text) => page.locator('.tawr-card', { has: page.locator('h3', { hasText: text }) });
+/** Wait for the request whose heading reads `name` to stand at `status`. */
+const waitStatus = (page, name, status) => page.waitForFunction(([n, st]) => [...document.querySelectorAll('.tawr-card')]
+  .some((c) => c.querySelector('h3')?.textContent.trim() === n && c.dataset.tawrStatus === st), [name, status]);
+/** Wait for the request whose heading reads `name` to say `re` as its next step. */
+const waitNext = (page, name, re) => page.waitForFunction(([n, src]) => [...document.querySelectorAll('.tawr-card')]
+  .some((c) => c.querySelector('h3')?.textContent.trim() === n && new RegExp(src).test(c.querySelector('.next')?.textContent || '')), [name, re.source]);
 
 /* ══════════════════════════════════════════════════════════════════════════ */
 
@@ -663,6 +669,83 @@ async function learning(page, { mode }) {
   await page.click('.week-btn[data-week="2026-11-09"]'); // where the sample left the track plan
 }
 
+/** After approval: BART's answer, a cancellation and the track released, and the access used. */
+async function withBart(page, { mode }) {
+  console.log(`\n${mode}: after approval`);
+  await page.click('nav.views [data-view=tawr]');
+  await page.click('.subtabs [data-section=requests]');
+  await page.click('.week-btn[data-week="2026-10-19"]');
+  await page.waitForSelector('.tawr-card[data-tawr-status=approved]');
+  const approved = page.locator('.tawr-card[data-tawr-status=approved]');
+  check('the sample\'s approved requests went to BART, which granted them', /^Granted by BART · BT-\d+$/.test(await approved.first().locator('.next').textContent()), await approved.first().locator('.next').textContent());
+  const off = (await approved.nth(1).locator('h3').textContent()).trim();
+  await approved.nth(1).locator('.tawr-toggle').click();
+  await card(page, off).locator('[data-action=tawr-cancel]').click();
+  await page.fill('.modal textarea', 'Work moved to the week after');
+  await confirm(page);
+  await waitStatus(page, off, 'cancelled');
+  check('cancelling an approved request ends it, and says BART is to be told', (await card(page, off).locator('.next').textContent()) === 'Cancelled: tell BART the track is released');
+  await card(page, off).locator('[data-action=tawr-released]').click();
+  await confirm(page);
+  await waitNext(page, off, /the track is released$/);
+  check('once BART is told, the track is released', /BART told the track is released/.test(await card(page, off).locator('.bart-facts').textContent()));
+
+  await page.click('.week-btn[data-week="2026-10-26"]');
+  const sent = page.locator('.tawr-card[data-tawr-status=submitted]').first();
+  const name = (await sent.locator('h3').textContent()).trim();
+  await sent.locator('[data-action=tawr-approve]').click();
+  await confirm(page);
+  await waitStatus(page, name, 'approved');
+  check('approved, it is to be sent to BART', /^Approved: send BART's form to BART/.test(await card(page, name).locator('.next').textContent()));
+  await card(page, name).locator('[data-action=tawr-bart]').click();
+  await page.fill('.modal [data-bart=ref]', 'BT-9001');
+  await page.click('.modal [data-action=bart-save]');
+  await waitNext(page, name, /waiting for BART's answer$/);
+  check('sent, it waits for BART', true);
+  await card(page, name).locator('[data-action=tawr-bart]').click();
+  await page.selectOption('.modal [data-bart=answer]', 'denied');
+  await page.click('.modal [data-action=bart-save]');
+  check('a denial says why', /Say BART's reason/.test(await page.textContent('.modal .msg.err')));
+  await page.fill('.modal [data-bart=reason]', 'Single tracking not available that night');
+  await page.click('.modal [data-action=bart-save]');
+  await waitStatus(page, name, 'denied');
+  check('BART denying it ends it, with BART\'s reason', /denied .*Single tracking not available that night/.test(await card(page, name).textContent())
+    && (await card(page, name).locator('.next').textContent()) === 'Denied by BART: reopen, correct and submit again');
+
+  // A week on, the nights the sample's first request asked for have come and gone.
+  await page.clock.setSystemTime(new Date(2026, 9, 23, 9, 0, 0));
+  await page.reload({ waitUntil: 'networkidle' });
+  await page.waitForSelector('#loading', { state: 'detached' });
+  await page.click('nav.views [data-view=tawr]');
+  await page.click('.week-btn[data-week="2026-10-19"]');
+  const due = page.locator('.tawr-card[data-tawr-status=approved]').first();
+  const used = (await due.locator('h3').textContent()).trim();
+  check('once its days have gone by, the access used is due', (await due.locator('.next').textContent()) === 'Granted: say whether the access was used');
+  await due.locator('[data-action=tawr-access]').click();
+  await page.locator('.modal .access-day input').last().uncheck();
+  await page.fill('.modal textarea', 'Rained off on the last night');
+  await page.click('.modal [data-action=access-save]');
+  await waitNext(page, used, /^Access used on 2 of 3 days$/);
+  check('and it is counted, day by day and in hours', /not used Thu 22 Oct — 12 of 18 hours\. Rained off on the last night/.test(await card(page, used).locator('.access-facts').textContent()),
+    await card(page, used).locator('.access-facts').textContent());
+  await shot(page, `${mode}-7-after-approval`);
+}
+
+/** BART's answer, kept by the server. */
+async function serverBart(page) {
+  console.log('\nserver: after approval');
+  await page.click('nav.views [data-view=tawr]');
+  await page.click('.subtabs [data-section=requests]');
+  const name = (await card(page, 'W2 MP 16.600–17.200').locator('h3').textContent()).trim();
+  await card(page, name).locator('[data-action=tawr-bart]').click();
+  await page.fill('.modal [data-bart=ref]', 'BT-1234');
+  await page.selectOption('.modal [data-bart=answer]', 'granted');
+  await page.click('.modal [data-action=bart-save]');
+  await waitNext(page, name, /^Granted by BART · BT-1234$/);
+  const kept = await page.evaluate(async () => (await (await fetch('api/tawrs')).json()).find((t) => t.bart?.ref === 'BT-1234')?.bart);
+  check('the server keeps what BART said, and when', kept?.answer === 'granted' && /^\d{4}-\d{2}-\d{2}$/.test(kept.sent_on), JSON.stringify(kept));
+}
+
 /** The server keeps the memory too, for those who raise and decide. */
 async function serverMemory(page) {
   console.log('\nserver: the learning memory');
@@ -699,6 +782,7 @@ try {
     await sampleData(page, { mode: 'static site' });
     await learning(page, { mode: 'static site' });
     await phases(page, { mode: 'static site' });
+    await withBart(page, { mode: 'static site' });
     check('no console errors (static site)', !errors.length, errors.join(' | '));
     await context.close();
     srv.close();
@@ -751,6 +835,7 @@ try {
       await page.click('.modal [data-action=signin]');
       await page.waitForSelector('#loading', { state: 'detached' });
       await manage(page, { mode: 'server' });
+      await serverBart(page);
       await serverMemory(page);
       check('no console errors (server)', !errors.length, errors.join(' | '));
       await context.close();

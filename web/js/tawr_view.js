@@ -124,7 +124,7 @@ function renderRequests(host) {
   const items = [];
   for (const g of groups) items.push({ group: g, record: records.find((r) => r.group_key === g.key && live(r)) || null });
   for (const r of records.filter(live)) if (!groups.some((g) => g.key === r.group_key)) items.push({ group: null, record: r });
-  const order = { submitted: 0, draft: 1, rejected: 2, none: 3, approved: 4 };
+  const order = { submitted: 0, draft: 1, rejected: 2, denied: 3, none: 4, approved: 5, cancelled: 6 };
   items.sort((a, b) => (order[a.record?.status || 'none'] - order[b.record?.status || 'none'])
     || (a.group?.locationName || a.record?.location_name || '').localeCompare(b.group?.locationName || b.record?.location_name || ''));
 
@@ -262,8 +262,8 @@ function flowStrip() {
 function weekSummary(tawrs, week) {
   const by = {};
   for (const t of tawrs) if (t.week_start === week && live(t)) by[t.status] = (by[t.status] || 0) + 1;
-  const plural = { draft: 'drafts', submitted: 'submitted', approved: 'approved', rejected: 'rejected' };
-  return ['draft', 'submitted', 'approved', 'rejected'].filter((s) => by[s]).map((s) => `${by[s]} ${by[s] === 1 ? statusName(s).toLowerCase() : plural[s]}`).join(' · ');
+  const plural = { draft: 'drafts', submitted: 'submitted', approved: 'approved', rejected: 'rejected', denied: 'denied by BART', cancelled: 'cancelled' };
+  return ['draft', 'submitted', 'approved', 'rejected', 'denied', 'cancelled'].filter((s) => by[s]).map((s) => `${by[s]} ${by[s] === 1 ? statusName(s).toLowerCase() : plural[s]}`).join(' · ');
 }
 
 function notice(tone, title, detail, action = null) {
@@ -298,15 +298,16 @@ function predictedLine(p) {
  */
 function rejectedLike(view, shift, record = null) {
   if (!V.app.learning) return [];
-  return Learn.rejectionsLike(V.app.learning, { ...view, shift }).filter((r) => !(record?.status === 'rejected' && r.id === record.id));
+  return Learn.rejectionsLike(V.app.learning, { ...view, shift }).filter((r) => !(['rejected', 'denied'].includes(record?.status) && r.id === record.id));
 }
 
 /** A rejection remembered, said to the request it is like. */
 function rejectedText(r, record) {
   const when = r.at ? ` on ${stampLabel(r.at)}` : '';
+  const what = r.bart ? 'denied by BART' : 'rejected';
   return record && r.id === record.id
-    ? `When this request was sent before, it was rejected${when}: “${r.reason}”. Check that is put right before it is sent again.`
-    : `A request like this one${r.id ? ` (#${r.id})` : ''} was rejected${when}: “${r.reason}”. Check this one for the same before it is sent.`;
+    ? `When this request was sent before, it was ${what}${when}: “${r.reason}”. Check that is put right before it is sent again.`
+    : `A request like this one${r.id ? ` (#${r.id})` : ''} was ${what}${when}: “${r.reason}”. Check this one for the same before it is sent.`;
 }
 
 /* What a blocking flag comes to, in the few words the row has room for. */
@@ -336,8 +337,20 @@ function nextStep(record, blocking, due, conflicted = false) {
     if (!T.may(wf, role, 'approve', status)) return { tone: 'wait', text: 'Waiting for the Track Allocation Manager' };
     return { tone: 'you', text: conflicted ? 'Your turn: settle the conflict, then approve or reject' : 'Your turn: approve or reject' };
   }
-  if (status === 'approved') return { tone: 'done', text: S.writer() ? 'Approved: download BART\'s form' : 'Approved' };
   if (status === 'rejected') return role === 'requester' ? { tone: 'you', text: 'Rejected: reopen, correct and submit again' } : { tone: 'wait', text: 'Rejected: back with the requester' };
+  const bart = record.bart || {};
+  const writer = S.writer();
+  switch (T.afterApproval(record, V.app.today)) {
+    case 'unsent': return writer ? { tone: 'you', text: 'Approved: send BART\'s form to BART, then record it as sent' } : { tone: 'wait', text: 'Approved: to be sent to BART' };
+    case 'sent': return { tone: 'wait', text: `Sent to BART ${dayLabel(bart.sent_on)}: waiting for BART's answer` };
+    case 'granted': return { tone: 'done', text: `Granted by BART${bart.ref ? ` · ${bart.ref}` : ''}` };
+    case 'access-due': return writer ? { tone: 'you', text: 'Granted: say whether the access was used' } : { tone: 'wait', text: 'Granted: the access used is still to be recorded' };
+    case 'recorded': { const a = T.accessOf(record); return { tone: 'done', text: `Access used on ${a.used} of ${a.days} day${a.days === 1 ? '' : 's'}` }; }
+    case 'denied': return T.may(wf, role, 'reopen', status) ? { tone: 'bad', text: 'Denied by BART: reopen, correct and submit again' } : { tone: 'bad', text: 'Denied by BART' };
+    case 'unreleased': return writer ? { tone: 'you', text: 'Cancelled: tell BART the track is released' } : { tone: 'wait', text: 'Cancelled: BART still to be told' };
+    case 'released': return { tone: 'done', text: 'Cancelled: the track is released' };
+    default: break;
+  }
   return { tone: 'wait', text: statusName(status) };
 }
 
@@ -395,8 +408,7 @@ function card(item, items, clashes = []) {
      once it has been submitted or decided. */
   const frozen = record && record.status !== 'draft';
   const view = frozen ? { ...(record.source || {}) } : group || src;
-  const flags = group ? (frozen ? record.source?.flags || [] : group.flags)
-    : [{ kind: 'gone', blocking: true, message: 'No longer on the look-ahead this week. Discard the draft, or check the sheet.' }, ...(record?.source?.flags || [])];
+  const flags = group ? (frozen ? record.source?.flags || [] : group.flags) : [...goneFlag(record), ...(record?.source?.flags || [])];
   const blocking = flags.filter((f) => f.blocking);
   const changed = frozen && fresh ? T.changedSince(record.generated, fresh) : [];
   const edited = record ? T.editedKeys(record.fields, record.generated) : [];
@@ -404,6 +416,7 @@ function card(item, items, clashes = []) {
   const merged = String(record?.group_key || group?.key || '').startsWith('merge:');
   const mine = clashes.filter((x) => record && (x.a.id === record.id || x.b.id === record.id));
   const next = nextStep(record, blocking, due, mine.length > 0);
+  const after = record ? T.afterApproval(record, app.today) : null;
   const predictions = record ? standing(record) : [];
   const pairs = partners(item, kind, items);
   const key = group?.key || record?.group_key || '';
@@ -430,12 +443,12 @@ function card(item, items, clashes = []) {
   const role = S.role();
   const available = record ? T.actionsFor(wf, role, record.status).filter((a) => !['consolidate', 'split'].includes(a) && !(a === 'discard' && merged)) : [];
   const primary = !record ? (group && S.writer() ? 'raise' : null)
-    : ['submit', 'approve', 'reopen'].find((a) => available.includes(a)) || (record.status === 'approved' && S.writer() ? 'download' : null);
+    : ['submit', 'approve', 'reopen'].find((a) => available.includes(a) && !(a === 'reopen' && record.status === 'cancelled')) || (after === 'unsent' && S.writer() ? 'download' : null);
   const stepButton = (action, text = wf.actions[action].label) => {
     const rule = wf.actions[action];
     const stopped = rule.unblocked && blocking.length;
     return button(text, `tawr-${action}`, () => act(record, action), {
-      primary: ['submit', 'approve'].includes(action), danger: ['reject', 'discard'].includes(action), disabled: stopped,
+      primary: ['submit', 'approve'].includes(action), danger: ['reject', 'discard', 'cancel'].includes(action), disabled: stopped,
       title: stopped ? `Cannot be ${action === 'submit' ? 'submitted' : 'approved'} yet: ${blocking.map((f) => f.message).join(' ')}` : '',
     });
   };
@@ -452,6 +465,13 @@ function card(item, items, clashes = []) {
   } else if (primary === 'download') {
     rowActions.push(button('Download PDF', 'tawr-download', () => downloadOne(record), { primary: true }));
   } else if (primary) rowActions.push(stepButton(primary, { submit: 'Submit', approve: 'Approve', reopen: 'Reopen' }[primary]));
+  /* After approval: the next thing to record about BART, or the access. */
+  if (record && S.writer()) {
+    if (after === 'unsent') rowActions.push(button('Sent to BART…', 'tawr-bart', () => bartDialog(record)));
+    else if (after === 'sent') rowActions.push(button('BART\'s answer…', 'tawr-bart', () => bartDialog(record), { primary: true }));
+    else if (after === 'access-due') rowActions.push(button('Access used…', 'tawr-access', () => accessDialog(record), { primary: true }));
+    else if (after === 'unreleased') rowActions.push(button('BART told…', 'tawr-released', () => releasedDialog(record), { primary: true }));
+  }
   if ((view.place?.geometry?.length || view.place?.places?.length) && record) {
     rowActions.push(button('Map', 'tawr-map', () => app.showTawrOnMap(record), { title: 'Show it on the track plan' }));
   }
@@ -515,10 +535,19 @@ function card(item, items, clashes = []) {
     el('dt', { text: 'BART support' }), el('dd', { text: supportText(support) }),
     sswp.length ? el('dt', { text: 'SSWP #' }) : null,
     sswp.length ? el('dd', { text: sswp.join(', ') }) : null,
+    after ? el('dt', { text: 'With BART' }) : null,
+    after ? el('dd', { class: 'bart-facts', text: bartLine(record) }) : null,
+    record?.access?.days ? el('dt', { text: 'Access' }) : null,
+    record?.access?.days ? el('dd', { class: 'access-facts', text: accessLine(record) }) : null,
   ]);
 
   const needs = el('ul', { class: 'flags attention' });
-  for (const f of blocking) needs.append(el('li', { class: 'block', text: f.message }));
+  for (const f of blocking) {
+    needs.append(el('li', { class: 'block' }, [
+      f.message,
+      f.kind === 'gone' && T.may(wf, role, 'cancel', record?.status) ? el('button', { type: 'button', class: 'mini danger', dataset: { action: 'tawr-cancel-gone' }, text: 'Cancel and release the track', onClick: () => act(record, 'cancel') }) : null,
+    ]));
+  }
   for (const c of mine) {
     const other = c.a.id === record.id ? c.b : c.a;
     needs.append(el('li', { class: 'block clash' }, [
@@ -526,7 +555,7 @@ function card(item, items, clashes = []) {
       el('button', { type: 'button', class: 'mini secondary', text: 'See it on the track plan', onClick: () => app.showTawrOnMap(record) }),
     ]));
   }
-  if (changed.length) needs.append(el('li', { class: 'block', text: `The look-ahead has changed since this was ${status} (${changed.map(label).join(', ')}). ${status === 'approved' ? 'Revise it if the request should follow.' : status === 'submitted' ? 'Withdraw it to bring it up to date.' : 'Reopen it to bring it up to date.'}` }));
+  if (changed.length) needs.append(el('li', { class: 'block', text: `The look-ahead has changed since this was ${status} (${changed.map(label).join(', ')}). ${status === 'approved' ? 'Revise it if the request should follow, or cancel it and release the track if the work is off.' : status === 'submitted' ? 'Withdraw it to bring it up to date.' : 'Reopen it to bring it up to date.'}` }));
   if (record?.decision_note && record.status === 'rejected') needs.append(el('li', { class: 'block', text: `Rejected: ${record.decision_note}` }));
   for (const o of overlaps) {
     const other = o.item.record;
@@ -538,7 +567,7 @@ function card(item, items, clashes = []) {
     ]));
   }
 
-  if (['none', 'draft', 'rejected'].includes(status)) {
+  if (['none', 'draft', 'rejected', 'denied'].includes(status)) {
     for (const r of rejectedLike(view, shift, record).slice(0, 2)) needs.append(el('li', { class: 'warn learned', text: rejectedText(r, record) }));
   }
 
@@ -549,14 +578,20 @@ function card(item, items, clashes = []) {
   if (record) {
     meta.push(`Raised ${stampLabel(record.created_at)}`);
     if (record.submitted_at && record.status !== 'draft') meta.push(`submitted ${stampLabel(record.submitted_at)}`);
-    if (record.decided_at && ['approved', 'rejected'].includes(record.status)) meta.push(`${record.status} ${stampLabel(record.decided_at)}`);
+    if (record.decided_at && ['approved', 'rejected', 'denied', 'cancelled'].includes(record.status)) meta.push(`${record.status === 'rejected' ? 'rejected' : 'approved'} ${stampLabel(record.decided_at)}`);
     if (edited.length) meta.push(`${edited.length} field${edited.length === 1 ? '' : 's'} changed by hand`);
   } else meta.push('Not raised yet.');
 
   const more = el('div', { class: 'card-actions' });
-  for (const action of available) if (action !== primary) more.append(stepButton(action));
+  // A denial is BART's answer, recorded with it; a request whose access is accounted for is not cancelled.
+  for (const action of available) if (action !== primary && action !== 'deny' && !(action === 'cancel' && after === 'recorded')) more.append(stepButton(action));
   if (record && merged && T.may(wf, role, 'split', record.status)) more.append(button('Split back up', 'tawr-split', () => splitUp(record)));
-  if (record && S.writer() && record.status !== 'approved') more.append(button('Preview PDF', 'tawr-preview', () => downloadOne(record, { draft: true })));
+  if (record && S.writer()) {
+    if (['approved', 'cancelled'].includes(record.status) && primary !== 'download') more.append(button('Download PDF', 'tawr-download', () => downloadOne(record)));
+    if (['granted', 'recorded'].includes(after)) more.append(button(after === 'recorded' ? 'Change the access used…' : 'Access used…', 'tawr-access', () => accessDialog(record)));
+    if (['granted', 'recorded', 'access-due'].includes(after)) more.append(button('BART…', 'tawr-bart', () => bartDialog(record)));
+    if (!after) more.append(button('Preview PDF', 'tawr-preview', () => downloadOne(record, { draft: true })));
+  }
 
   const detail = el('tr', { class: 'tawr-detail', hidden: !open || null }, [el('td', { colSpan: 7 }, [
     facts,
@@ -600,15 +635,24 @@ const CONFIRM = {
 };
 
 async function act(record, action, { quiet = false, note = null } = {}) {
-  if (action === 'reject' && note == null) {
-    note = await promptDialog({ title: `Reject the ${record.location_name} request?`, label: 'Why — the requester sees this', required: true, multiline: true, confirmLabel: 'Reject' });
+  let extra = {};
+  if (action === 'cancel' && note == null) {
+    const got = await cancelDialog(record);
+    if (!got) return false;
+    ({ note } = got);
+    extra = { on: got.on, released: got.released };
+  } else if ((action === 'reject' || action === 'deny') && note == null) {
+    note = await promptDialog(action === 'reject'
+      ? { title: `Reject the ${record.location_name} request?`, label: 'Why — the requester sees this', required: true, multiline: true, confirmLabel: 'Reject' }
+      : { title: `BART denied the ${record.location_name} request?`, label: 'BART\'s reason', required: true, multiline: true, confirmLabel: 'Record the denial' });
     if (note == null) return false;
+    if (action === 'deny') extra = { on: V.app.today };
   } else if (!quiet && CONFIRM[action]) {
     const [title, message] = CONFIRM[action](record);
     if (!(await confirmDialog({ title, message, confirmLabel: S.store.workflow.actions[action].label, danger: action === 'discard' }))) return false;
   }
   try {
-    await S.act(record.id, action, note);
+    await S.act(record.id, action, note, extra);
     if (!quiet) toast(`#${record.id} ${record.location_name}: ${S.store.workflow.actions[action].label.toLowerCase()} — done.`, 'good');
     V.picked.delete(record.id);
   } catch (err) {
@@ -655,6 +699,182 @@ async function consolidate(records) {
     V.focus = t.id;
   } catch (err) { toast(err.message, 'bad'); }
   refresh();
+}
+
+/* ── After approval: BART, and the access ─────────────────────────────── */
+
+/** "No longer on the look-ahead": what to do about it depends on where the request stands. */
+function goneFlag(record) {
+  const say = {
+    draft: 'Discard the draft, or check the sheet.',
+    submitted: 'Withdraw and discard it, or check the sheet.',
+    rejected: 'Discard it, or check the sheet.',
+    approved: 'Cancel it and release the track, or check the sheet.',
+  }[record?.status];
+  return say ? [{ kind: 'gone', blocking: true, message: `No longer on the look-ahead this week. ${say}` }] : [];
+}
+
+/** "Sent Wed 14 Oct · BT-4471 · granted Fri 16 Oct", in a sentence. */
+function bartLine(record) {
+  const b = record.bart || {};
+  const parts = [
+    b.sent_on ? `Sent ${dayLabel(b.sent_on)}` : record.status === 'approved' ? 'Not sent yet' : null,
+    b.ref ? `BART reference ${b.ref}` : null,
+    b.answer === 'granted' ? `granted${b.answered_on ? ` ${dayLabel(b.answered_on)}` : ''}` : null,
+    b.answer === 'denied' ? `denied${b.answered_on ? ` ${dayLabel(b.answered_on)}` : ''}: “${b.note}”` : null,
+    record.status === 'approved' && b.sent_on && !b.answer ? 'waiting for BART\'s answer' : null,
+    record.status === 'cancelled' ? (b.released_on ? `cancelled; BART told the track is released ${dayLabel(b.released_on)}` : 'cancelled; BART not told yet') : null,
+  ].filter(Boolean);
+  return parts.join(' · ');
+}
+
+/** "Used Mon 2, Tue 3 Nov; not used Wed 4 Nov — 12 of 18 hours. Rained off." */
+function accessLine(record) {
+  const said = record.access?.days || {};
+  const days = record.source?.days || [];
+  const used = days.filter((d) => said[d.date] === true);
+  const unused = days.filter((d) => said[d.date] === false);
+  const a = T.accessOf(record);
+  const hours = (n) => `${Math.round(n * 10) / 10}`;
+  return [
+    used.length ? `Used ${daysShort(used)}` : 'Not used',
+    unused.length && used.length ? `; not used ${daysShort(unused)}` : '',
+    a.hoursAsked ? ` — ${hours(a.hoursUsed)} of ${hours(a.hoursAsked)} hours` : '',
+    record.access?.note ? `. ${record.access.note}` : '',
+  ].join('');
+}
+
+/** When it went to BART, BART's reference, and BART's answer. A denial ends the request. */
+function bartDialog(record) {
+  const b = record.bart || {};
+  const today = V.app.today;
+  const sent = el('input', { type: 'date', value: b.sent_on || today, 'aria-label': 'Sent to BART on', dataset: { bart: 'sent_on' } });
+  const ref = el('input', { type: 'text', value: b.ref || '', maxlength: '60', placeholder: 'Reference or permit number', 'aria-label': 'BART\'s reference', dataset: { bart: 'ref' } });
+  const answer = el('select', { 'aria-label': 'BART\'s answer', dataset: { bart: 'answer' } },
+    [['', 'Waiting for BART'], ['granted', 'Granted'], ['denied', 'Denied']].map(([value, text]) => el('option', { value, text })));
+  answer.value = b.answer === 'granted' ? 'granted' : '';
+  const on = el('input', { type: 'date', value: b.answered_on || today, 'aria-label': 'Answered on', dataset: { bart: 'answered_on' } });
+  const reason = el('textarea', { rows: '2', 'aria-label': 'BART\'s reason', dataset: { bart: 'reason' } });
+  const why = el('label', { class: 'span2' }, ['BART\'s reason — the request ends as denied, and can be reopened to correct and send again', reason]);
+  const sync = () => { why.hidden = answer.value !== 'denied'; on.disabled = !answer.value; };
+  answer.addEventListener('change', sync);
+  sync();
+  const err = el('p', { class: 'msg err' });
+  openModal({
+    title: `#${record.id} ${record.location_name} — with BART`,
+    subtitle: 'What happened once it was approved. BART\'s answer comes back by email or phone; record it here so everybody sees it.',
+    body: el('div', { class: 'form-grid two bart-form' }, [
+      el('label', {}, ['Sent to BART on', sent]),
+      el('label', {}, ['BART\'s reference', ref]),
+      el('label', {}, ['BART\'s answer', answer]),
+      el('label', {}, ['Answered on', on]),
+      why, err,
+    ]),
+    actions: [
+      { label: 'Cancel' },
+      {
+        label: 'Save', kind: 'primary', id: 'bart-save', keepOpen: true,
+        onClick: async (h) => {
+          if (answer.value === 'denied' && !reason.value.trim()) { err.textContent = 'Say BART\'s reason.'; return; }
+          try {
+            await S.recordBart(record.id, {
+              sent_on: sent.value || null, ref: ref.value.trim() || null,
+              ...(answer.value === 'granted' ? { answer: 'granted', answered_on: on.value || null } : answer.value === '' ? { answer: null, answered_on: null } : {}),
+            });
+            if (answer.value === 'denied') await S.act(record.id, 'deny', reason.value.trim(), { on: on.value || today });
+          } catch (e) { err.textContent = e.message; return; }
+          toast(`#${record.id}: ${answer.value === 'denied' ? 'denied by BART — reopen it to correct and send it again' : answer.value === 'granted' ? 'granted by BART' : 'sent to BART'}.`, answer.value === 'denied' ? 'warn' : 'good');
+          h.close();
+          refresh();
+        },
+      },
+    ],
+  });
+}
+
+/** Whether each day's access was used, once the days have come. */
+function accessDialog(record) {
+  const said = record.access?.days || {};
+  const days = (record.source?.days || []).map((d) => {
+    const box = el('input', { type: 'checkbox', 'aria-label': `Used on ${dayLabel(d.date)}`, dataset: { day: d.date } });
+    box.checked = said[d.date] ?? d.date < V.app.today;
+    const h = T.dayHours(d);
+    return { d, box, row: el('label', { class: 'check access-day' }, [box, ` ${dayLabel(d.date)} · ${d.start || '?'}–${d.end || '?'}${h != null ? ` · ${Math.round(h * 10) / 10} h` : ''}`]) };
+  });
+  const note = el('textarea', { rows: '2', placeholder: 'Rained off, BART took the night back, finished early…', 'aria-label': 'What happened' });
+  note.value = record.access?.note || '';
+  const err = el('p', { class: 'msg err' });
+  openModal({
+    title: `#${record.id} ${record.location_name} — the access used`,
+    subtitle: 'Tick the days the track was actually used. The reports count the hours.',
+    body: el('div', { class: 'access-form' }, [...days.map((x) => x.row), el('label', {}, ['What happened (optional)', note]), err]),
+    actions: [
+      { label: 'Cancel' },
+      {
+        label: 'Save', kind: 'primary', id: 'access-save', keepOpen: true,
+        onClick: async (h) => {
+          try {
+            await S.recordAccess(record.id, { days: Object.fromEntries(days.map(({ d, box }) => [d.date, box.checked])), note: note.value.trim() || null, on: V.app.today });
+          } catch (e) { err.textContent = e.message; return; }
+          const used = days.filter((x) => x.box.checked).length;
+          toast(`#${record.id}: access used on ${used} of ${days.length} day${days.length === 1 ? '' : 's'}.`, 'good');
+          h.close();
+          refresh();
+        },
+      },
+    ],
+  });
+}
+
+/** Cancelling an approved request: why, and whether BART has been told. `{ note, released, on }`, or null. */
+function cancelDialog(record) {
+  return new Promise((resolve) => {
+    let answered = false;
+    const reason = el('textarea', { rows: '3', 'aria-label': 'Why it is cancelled' });
+    const told = el('input', { type: 'checkbox', 'aria-label': 'BART has been told the track is released' });
+    const err = el('p', { class: 'msg err' });
+    openModal({
+      title: `Cancel #${record.id} ${record.location_name} and release the track?`,
+      body: el('div', {}, [
+        el('p', { text: 'It is kept on record as cancelled, and stops counting against anybody else\'s work. BART should be told the track is free.' }),
+        el('label', {}, ['Why — the work moved, finished early, was called off…', reason]),
+        el('label', { class: 'check' }, [told, ' BART has been told the track is released']),
+        err,
+      ]),
+      onClose: () => { if (!answered) resolve(null); },
+      actions: [
+        { label: 'Keep it' },
+        {
+          label: 'Cancel and release', kind: 'danger', id: 'confirm', keepOpen: true,
+          onClick: (h) => {
+            if (!reason.value.trim()) { err.textContent = 'Say why.'; return; }
+            answered = true;
+            resolve({ note: reason.value.trim(), released: told.checked, on: V.app.today });
+            h.close();
+          },
+        },
+      ],
+    });
+  });
+}
+
+/** After a cancellation: the day BART was told the track is free. */
+function releasedDialog(record) {
+  const on = el('input', { type: 'date', value: V.app.today, 'aria-label': 'Told on' });
+  openModal({
+    title: `#${record.id} ${record.location_name}: BART told the track is released?`,
+    body: el('div', {}, [el('label', {}, ['Told on', on])]),
+    actions: [
+      { label: 'Cancel' },
+      {
+        label: 'Record it', kind: 'primary', id: 'confirm',
+        onClick: async () => {
+          try { await S.recordBart(record.id, { released_on: on.value || V.app.today }); toast(`#${record.id}: BART told the track is released.`, 'good'); } catch (e) { toast(e.message, 'bad'); }
+          refresh();
+        },
+      },
+    ],
+  });
 }
 
 async function splitUp(record) {
@@ -712,7 +932,7 @@ async function downloadAll(week, records) {
 
 /** One line per approved request: what goes to BART, for the submittal email. */
 function register(week, records) {
-  const head = ['TAWR', 'Week', 'Shift', 'Location', 'Area', 'Dates', 'Hours', 'Work', 'BART support', 'SSWP', 'Approved', 'Requester'];
+  const head = ['TAWR', 'Week', 'Shift', 'Location', 'Area', 'Dates', 'Hours', 'Work', 'BART support', 'SSWP', 'Approved', 'Requester', 'Sent to BART', 'BART reference', 'BART answer'];
   const lines = [head.map(csvField).join(',')];
   for (const r of records) {
     const days = r.source?.days || [];
@@ -722,6 +942,7 @@ function register(week, records) {
       days.map((d) => d.date).join(' '), days.map((d) => `${d.start}-${d.end}`).join(' '),
       (r.source?.activities || []).map((a) => [a.activityId, a.title].filter(Boolean).join(' ')).join('; '),
       support, (r.source?.sswp || []).join(' '), stampLabel(r.decided_at), r.fields?.requestor_name || '',
+      r.bart?.sent_on || '', r.bart?.ref || '', r.bart?.answer || '',
     ].map(csvField).join(','));
   }
   saveFile(`TAWR submittal register ${week}.csv`, `${lines.join('\r\n')}\r\n`, 'text/csv');
