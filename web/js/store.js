@@ -17,6 +17,7 @@
 
 import { DEFAULT_LEGEND, DEFAULT_CODES } from './lookahead.js';
 import { may, canEdit, canWrite } from './tawr.js';
+import { entriesFor } from './learn.js';
 
 const LOCAL_KEY = 'trackplan.ops.v1';
 const ACTING_KEY = 'trackplan.acting.v1';
@@ -94,6 +95,7 @@ function blankLocal() {
   return {
     rows: [], cells: [], legend: DEFAULT_LEGEND, codes: DEFAULT_CODES, version: 0,
     tawrs: [], merges: [], nextTawr: 1, settings: {}, descriptions: [], nextDescription: 1,
+    memory: [], nextMemory: 1,
   };
 }
 
@@ -319,7 +321,12 @@ export async function act(id, action, note = null) {
     writeLocal(s);
     return out;
   }
-  return http('POST', `api/tawrs/${id}/${action}`, { note });
+  const out = await http('POST', `api/tawrs/${id}/${action}`, { note });
+  /* What the step leaves in the learning memory. The step stands whether or
+     not that is written: the memory is advice, the request is the record. */
+  const entries = entriesFor(out, action, note);
+  if (entries.length) await remember(entries).catch(() => null);
+  return out;
 }
 
 /** One step of the workflow on the browser's copy, once the role may take it. */
@@ -342,6 +349,7 @@ function localAct(s, r, action, note) {
   r.updated_at = stamp;
   if (action === 'submit') Object.assign(r, { submitted_by: store.user.id, submitted_at: stamp, decision_note: null });
   if (action === 'approve' || action === 'reject') Object.assign(r, { decided_by: store.user.id, decided_at: stamp, decision_note: String(note || '').trim() || null });
+  keepLocalMemory(s, entriesFor(r, action, note));
   let out = r;
   if (rule.creates) {
     out = {
@@ -360,10 +368,15 @@ function localAct(s, r, action, note) {
  * chosen, not checked, and these stand for weeks already dealt with. `steps`
  * is `[[id, action], …]`, all or none.
  */
-export function settleLocalSample(steps) {
+export function settleLocalSample(steps, fills = {}) {
   if (!local()) throw new Refused('only the copy in this browser can be settled like this');
   requireWrite();
   const s = readLocal();
+  // What the requester typed into them before they were sent: hand edits, over what was generated.
+  for (const [id, fields] of Object.entries(fills)) {
+    const r = localTawr(s, Number(id));
+    r.fields = { ...r.fields, ...clone(fields) };
+  }
   for (const [id, action] of steps) localAct(s, localTawr(s, id), action, null);
   writeLocal(s);
 }
@@ -423,8 +436,69 @@ export async function split(id) {
 
 // ── setup
 export async function getSettings() {
-  if (local()) { requireWrite(); return clone(readLocal().settings); }
+  if (local()) {
+    if (!store.user) throw new Refused('choose who you are first', 401);
+    const all = clone(readLocal().settings);
+    return writer() ? all : Object.fromEntries(Object.entries(all).filter(([k]) => PUBLIC_SETTINGS.includes(k)));
+  }
   return http('GET', 'api/tawr/settings');
+}
+/** What a viewer may read of the setup, as on the server (operations.PUBLIC_SETTING_KEYS). */
+const PUBLIC_SETTINGS = ['phases'];
+
+// ── the learning memory (learn.js reads it; operations.py keeps it on a server)
+const LOCAL_MEMORY_MAX = 3000;
+
+function keepLocalMemory(s, entries) {
+  if (!entries.length) return [];
+  const at = nowIso();
+  s.memory = s.memory || [];
+  s.nextMemory = s.nextMemory || s.memory.reduce((m, e) => Math.max(m, e.id + 1), 1);
+  const kept = entries.map((e) => ({ id: s.nextMemory++, kind: e.kind, tawr_id: e.tawr_id ?? null, data: clone(e.data), at, by: store.user?.name || '', by_id: store.user?.id || null }));
+  s.memory = [...s.memory, ...kept].slice(-LOCAL_MEMORY_MAX);
+  return kept;
+}
+
+export async function listMemory() {
+  if (local()) { requireWrite(); return clone(readLocal().memory || []); }
+  return http('GET', 'api/memory');
+}
+
+/** Write entries into the memory: what learn.js made of a step, or a link. */
+export async function remember(entries) {
+  if (local()) {
+    requireWrite();
+    const s = readLocal();
+    const kept = keepLocalMemory(s, entries);
+    writeLocal(s);
+    return clone(kept);
+  }
+  return http('POST', 'api/memory', { entries });
+}
+
+export async function forgetMemory(id) {
+  if (local()) {
+    requireWrite();
+    const s = readLocal();
+    const before = (s.memory || []).length;
+    s.memory = (s.memory || []).filter((e) => e.id !== id);
+    if (s.memory.length === before) throw new Refused('no such memory', 404);
+    writeLocal(s);
+    return { forgotten: id };
+  }
+  return http('DELETE', `api/memory/${id}`);
+}
+
+export async function clearMemory() {
+  if (local()) {
+    requireWrite();
+    const s = readLocal();
+    const n = (s.memory || []).length;
+    s.memory = [];
+    writeLocal(s);
+    return { forgotten: n };
+  }
+  return http('POST', 'api/memory/clear', {});
 }
 
 export async function setSettings(values) {
@@ -525,6 +599,7 @@ export function clearLocalTawrs() {
   s.tawrs = [];
   s.merges = [];
   s.nextTawr = 1;
+  s.memory = []; // what was learned from them goes with them: request numbers start again
   writeLocal(s);
 }
 

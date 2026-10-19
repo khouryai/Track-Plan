@@ -30,10 +30,11 @@ import * as LA from './lookahead.js';
 import { linkLabel, linkArea, hasLink, resolveLocationText } from './links.js';
 import * as T from './tawr.js';
 import * as S from './store.js';
-import { el, esc, clear, toast, contextMenu, openModal, confirmDialog, dayLabel, saveFile, csvField } from './ui.js';
+import { el, esc, clear, toast, contextMenu, openModal, confirmDialog, dayLabel, stampLabel, saveFile, csvField } from './ui.js';
 import { STATUS_COLOR } from './map.js';
 import { sampleLookahead, sampleStart } from './sample.js';
 import { settleSample } from './tawr_sync.js';
+import { suggestLink, suggestFields, linkEntry, restoreLink } from './learn.js';
 
 const META = LA.FIELDS.length;
 const LOC = LA.FIELDS.findIndex((f) => f.key === 'location');
@@ -223,6 +224,10 @@ function toolbar() {
   quiet.checked = V.hideQuiet;
   bar.append(el('div', { class: 'la-group la-right' }, [
     el('label', { class: 'check' }, [quiet, ' Only rows with work these weeks']),
+    writer() ? el('button', {
+      type: 'button', class: 'mini la-suggest', dataset: { action: 'suggestions' }, hidden: true, onClick: openSuggestions,
+      title: 'What the learning memory remembers of the activities on screen: where each was linked before, and its party, work hours and SSWP',
+    }) : null,
     writer() ? el('button', { type: 'button', class: 'secondary mini', dataset: { action: 'import' }, text: 'Import 4WLA (.xlsx)…', onClick: importWorkbook }) : null,
     writer() ? el('button', { type: 'button', class: 'secondary mini', dataset: { action: 'sample' }, text: 'Sample data…', title: 'Four weeks of W and M line work, with conflicts, from the coming Monday', onClick: loadSample }) : null,
     el('button', { type: 'button', class: 'secondary mini', text: 'CSV', title: 'The weeks on screen as a CSV', onClick: exportCsv }),
@@ -280,6 +285,7 @@ function draw() {
   const hadFocus = V.scroll && V.scroll.contains(document.activeElement);
   V.days = windowDays();
   V.rows = visibleRows();
+  V.suggest = suggestions();
   const from = V.root.querySelector('input[type=date]');
   if (from) from.value = V.from;
   const m = model();
@@ -395,6 +401,11 @@ function draw() {
   paintSelection();
   if (hadFocus && !document.querySelector('.modal-back')) scroll.focus({ preventScroll: true });
   setStatus(V.pending ? 'saving' : V.status === 'error' ? 'error' : 'saved');
+  const hints = V.root.querySelector('[data-action=suggestions]');
+  if (hints) {
+    hints.hidden = !V.suggest.size;
+    hints.textContent = `✦ ${V.suggest.size} suggestion${V.suggest.size === 1 ? '' : 's'}`;
+  }
 }
 
 /** Codes as written, a struck-out one drawn struck through. */
@@ -417,6 +428,8 @@ function locationCell(td, row, tawr) {
   const state = linked ? 'linked' : resolved ? 'typed' : typed ? 'unlinked' : 'empty';
   td.classList.add(`loc-${state}`);
   if (tawr) td.classList.add('has-tawr');
+  const hint = !linked && writer() ? V.suggest?.get(row.id)?.link : null;
+  if (hint) td.classList.add('has-suggest');
   const text = typed || (linked ? linkLabel(row.link) : '');
   td.append(...[
     el('button', {
@@ -432,6 +445,15 @@ function locationCell(td, row, tawr) {
     }) : writer() ? el('button', {
       type: 'button', class: 'loc-go', tabindex: '-1', text: 'Link', title: 'Pick its TCR or block of track on the track plan', dataset: { action: 'loc-link' },
       onClick: (e) => { e.stopPropagation(); selectOnTrackPlan(row); },
+    }) : null,
+    hint ? el('button', {
+      type: 'button', class: 'loc-suggest', tabindex: '-1', text: '✦', dataset: { action: 'loc-suggest' },
+      title: `Linked before: ${linkLabel(hint.link)}. ${because(hint)}. Click to link it the same way.`,
+      'aria-label': `Link ${LA.rowTitle(row)} as before: ${linkLabel(hint.link)}`,
+      onClick: (e) => {
+        e.stopPropagation();
+        if (applySuggestions([row.id], { fields: false })) toast(`${LA.rowTitle(row)}: linked as before — ${linkArea(hint.link)}. Undo (Ctrl+Z) takes it back.`, 'good');
+      },
     }) : null,
     tawr ? el('button', {
       type: 'button', class: 'loc-tawr', tabindex: '-1', style: `--c:${STATUS_COLOR[tawr.status]}`, dataset: { action: 'loc-tawr' },
@@ -703,8 +725,111 @@ async function selectOnTrackPlan(row) {
   const picked = await V.app.pickLocation({ title: LA.rowTitle(row), link: row.link });
   if (!picked) return;
   const label = linkLabel(picked);
+  const typed = hasLink(row.link) ? '' : row.location; // what was typed, not an older link's label
   commit([{ op: 'row', id: row.id, set: { link: picked, location: label } }]);
   toast(`${LA.rowTitle(row)}: ${linkArea(picked)}`, 'good');
+  remember(linkEntry({ ...row, location: typed }, picked));
+}
+
+/* ── What the learning memory remembers (learn.js) ────────────────────── */
+
+/** A location linked by hand is remembered, for the next time the activity comes round. */
+async function remember(entry) {
+  try {
+    const kept = await S.remember([entry]);
+    V.app.relearn([...(V.app.memory || []), ...kept]);
+    if (!V.editing && V.app.view === 'lookahead') draw();
+  } catch { /* the memory is advice: the link stands without it */ }
+}
+
+/**
+ * What the memory suggests for the activities on screen: where each was linked
+ * before, if it is not linked now, and the party, work hours and SSWP it had
+ * where they are blank. `Map(row id → { link, fields })`.
+ */
+function suggestions() {
+  const out = new Map();
+  const index = V.app.learning;
+  if (!writer() || !index) return out;
+  for (const row of V.rows) {
+    if (row.kind !== 'activity') continue;
+    let link = hasLink(row.link) ? null : suggestLink(index, row);
+    const named = link && row.location ? resolveLocationText(row.location, V.app.locations) : null;
+    if (named && link.link.location_id !== named.id) link = null; // the sheet names somewhere else
+    const fields = suggestFields(index, row);
+    if (link || Object.keys(fields).length) out.set(row.id, { link, fields });
+  }
+  return out;
+}
+
+const FIELD_HEADING = Object.fromEntries(LA.FIELDS.map((f) => [f.key, f.heading]));
+
+/** Why a link is suggested, in a sentence. */
+function because(hint) {
+  const how = hint.how === 'id' ? 'The same activity ID' : hint.how === 'typed' ? 'The same location, as typed,' : `“${hint.title}”, named the same way,`;
+  return `${how} was linked so${hint.at ? ` on ${stampLabel(hint.at)}` : ''}${hint.by ? ` by ${hint.by}` : ''}`;
+}
+
+/** Use what the memory suggests for these rows, as one step that Undo takes back. Answers how many rows changed. */
+function applySuggestions(ids, { fields = true } = {}) {
+  const ops = [];
+  for (const id of ids) {
+    const s = V.suggest.get(id);
+    if (!s) continue;
+    const set = {};
+    if (s.link) {
+      const link = restoreLink(s.link.link, V.app.data.routes);
+      set.link = link;
+      set.location = linkLabel(link);
+    }
+    if (fields) for (const [k, v] of Object.entries(s.fields)) set[k] = v.value;
+    if (Object.keys(set).length) ops.push({ op: 'row', id, set });
+  }
+  commit(ops);
+  return ops.length;
+}
+
+function openSuggestions() {
+  const items = [...V.suggest].map(([id, s]) => ({ id, s, row: V.rows.find((r) => r.id === id) })).filter((x) => x.row);
+  if (!items.length) { toast('Nothing to suggest for the activities on screen.'); return; }
+  const picks = new Map();
+  const body = el('div', { class: 'suggest-list' }, [
+    el('p', { class: 'small', text: 'What the learning memory remembers of the activities on screen: where each was linked before, and what it had in the requests it was in. Tick what to use — it is one step, and Undo (Ctrl+Z) takes it back.' }),
+    el('table', { class: 'grid-table' }, [
+      el('thead', {}, [el('tr', {}, ['', 'Activity', 'Suggested', 'Because'].map((h) => el('th', { text: h })))]),
+      el('tbody', {}, items.map(({ id, s, row }) => {
+        const box = el('input', { type: 'checkbox', 'aria-label': `Use the suggestion for ${LA.rowTitle(row)}` });
+        box.checked = true;
+        picks.set(id, box);
+        const fieldWords = Object.entries(s.fields).map(([k, v]) => `${FIELD_HEADING[k] || k}: ${v.value}`);
+        const n = Math.max(0, ...Object.values(s.fields).map((v) => v.support));
+        return el('tr', { dataset: { row: id } }, [
+          el('td', {}, [box]),
+          el('td', { text: LA.rowTitle(row) }),
+          el('td', {}, [s.link ? el('div', { text: `Location: ${linkLabel(s.link.link)}` }) : null, ...fieldWords.map((w) => el('div', { text: w }))]),
+          el('td', { class: 'small' }, [
+            s.link ? el('div', { text: `${because(s.link)}.` }) : null,
+            fieldWords.length ? el('div', { text: `${fieldWords.length === 1 ? 'It was' : 'They were'} so in ${n} request${n === 1 ? '' : 's'} sent before.` }) : null,
+          ]),
+        ]);
+      })),
+    ]),
+  ]);
+  openModal({
+    title: `✦ ${items.length} suggestion${items.length === 1 ? '' : 's'} from the learning memory`,
+    body,
+    size: 'lg',
+    actions: [
+      { label: 'Cancel' },
+      {
+        label: 'Use the ticked ones', kind: 'primary', id: 'suggest-apply',
+        onClick: () => {
+          const n = applySuggestions([...picks].filter(([, b]) => b.checked).map(([id]) => id));
+          if (n) toast(`${n} activit${n === 1 ? 'y' : 'ies'} filled in from the memory. Undo (Ctrl+Z) takes it back.`, 'good');
+        },
+      },
+    ],
+  });
 }
 
 function locationMenu(row, x, y) {
@@ -1037,7 +1162,7 @@ function importDialog(name, read) {
     read.unknown.length ? el('p', { text: 'Colours neither the legend nor the workbook\'s key names — say what each one is, or leave it behind:' }) : null,
     unknown,
     el('label', {}, ['Bring in what is planned from', fromInput]),
-    existing ? el('p', { class: 'msg err', text: `This replaces the ${existing} rows on the look-ahead now, and their track plan links. Locations typed in the workbook that match a station or TCR exactly are recognised; the rest need linking on the track plan.` }) : null,
+    existing ? el('p', { class: 'msg err', text: `This replaces the ${existing} rows on the look-ahead now, and their track plan links. Locations typed in the workbook that match a station or TCR exactly are recognised, and those linked before are remembered (✦ Suggestions); the rest need linking on the track plan.` }) : null,
   ]);
   openModal({
     title: 'Import the 4WLA workbook',
@@ -1063,7 +1188,8 @@ function importDialog(name, read) {
           render(V.root, V.app);
           V.app.lookaheadChanged();
           const linked = m.rows.filter((r) => r.kind === 'activity' && resolveLocationText(r.location, V.app.locations)).length;
-          toast(`Imported ${report.activities} activities, ${report.sections} sections, ${report.resources} Resource rows and ${report.cells} days. ${linked} location${linked === 1 ? '' : 's'} recognised; link the rest on the track plan.`, 'good', 9000);
+          const again = [...V.suggest.values()].filter((x) => x.link).length;
+          toast(`Imported ${report.activities} activities, ${report.sections} sections, ${report.resources} Resource rows and ${report.cells} days. ${linked} location${linked === 1 ? '' : 's'} recognised; ${again ? `${again} more were linked before — ✦ Suggestions links them again, and ` : ''}link the rest on the track plan.`, 'good', 9000);
         },
       },
     ],
@@ -1091,7 +1217,7 @@ function loadSample() {
     body: el('div', { class: 'form-grid' }, [
       el('p', { text: `Four weeks from ${dayLabel(start)}: construction and testing and commissioning on the W line and the M line, each location linked to the track plan, with a few conflicts for the track allocation manager to sort out. TAWRs are raised from it by themselves, and the weeks whose deadline has already passed come as they would be by now: submitted, and approved where nothing conflicts.` }),
       existing ? el('p', { class: 'msg err', text: `This replaces the ${existing} rows on the look-ahead now.` }) : null,
-      local ? el('label', { class: 'check' }, [fresh, ' Clear the TAWRs in this browser too, for a clean start'])
+      local ? el('label', { class: 'check' }, [fresh, ' Clear the TAWRs and the learning memory in this browser too, for a clean start'])
         : el('p', { class: 'small', text: 'TAWRs already raised stay; drafts no longer on the look-ahead can be discarded.' }),
     ]),
     actions: [
@@ -1118,7 +1244,10 @@ function loadSample() {
           toast(`Sample loaded: ${sample.rows.filter((r) => r.kind === 'activity').length} activities over four weeks from ${dayLabel(sample.start)}. Raising the TAWRs…`, 'good', 6000);
           await V.app.raise({ say: true });
           try {
-            if (await settleSample(V.app)) toast('The weeks already past their deadline are submitted, and approved where nothing conflicts — as they would be by now.', 'good', 6000);
+            if (await settleSample(V.app)) {
+              await V.app.raise(); // the drafts still to come, with what the memory learned from the earlier ones
+              toast('The weeks already past their deadline were filled in and submitted, and approved where nothing conflicts — and the drafts still to come are predicted from them.', 'good', 7000);
+            }
           } catch (err) { toast(`Could not move the earlier weeks on: ${err.message}`, 'bad'); }
           if (V.app.view === 'lookahead') draw();
         },

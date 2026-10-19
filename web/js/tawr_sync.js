@@ -10,12 +10,18 @@
  * requester finds them ready, with the Area already written from the track
  * plan.
  *
- * Imports: tawr, store, lookahead.
+ * A fresh reading carries the learning memory's predictions (learn.js) for the
+ * answers the look-ahead cannot give, written in as generated values, so a
+ * draft follows them as the memory grows and typing over one is a hand edit.
+ *
+ * Imports: tawr, store, learn, sample.
  */
 
 import * as T from './tawr.js';
 import * as S from './store.js';
 import { weeksWithWork } from './tawr.js';
+import { predict, applyPredictions, DEFAULT_THRESHOLD } from './learn.js';
+import { sampleAnswers } from './sample.js';
 
 /** Everything a week is read with, from what the application has loaded. */
 export function readingOptions(app) {
@@ -42,12 +48,26 @@ export function requesterProfile(app) {
   return { requestor_name: s.requestor_name || '', cell_phone: s.requestor_cell_phone || '' };
 }
 
+/** What the look-ahead and the setup give a request: what "changed since" compares. */
 export function freshValues(app, group) {
   return T.formValues(group, { settings: app.settings || {}, profile: requesterProfile(app) });
 }
 
+/**
+ * A request as a draft would be raised now: the look-ahead and the setup's
+ * values, with the memory's predictions written in — `{ values, predicted }`.
+ */
+export function freshReading(app, group) {
+  const values = freshValues(app, group);
+  const s = app.settings || {};
+  if (!app.learning || s.learn_predict === 'off') return { values, predicted: {} };
+  const threshold = Number.parseFloat(s.learn_threshold) || DEFAULT_THRESHOLD;
+  const predicted = predict(app.learning, group, { threshold, generated: values });
+  return { values: applyPredictions(values, predicted), predicted };
+}
+
 /** What a record keeps of the group it was read from, for the cards, the review and the map. */
-export function sourceOf(group, conflicts = []) {
+export function sourceOf(group, conflicts = [], predicted = {}) {
   return {
     kind: group.kind,
     activities: group.activities,
@@ -61,19 +81,20 @@ export function sourceOf(group, conflicts = []) {
     members: group.members,
     overlaps: group.overlaps,
     conflicts,
+    predicted,
   };
 }
 
-export function recordOf(app, group, values = freshValues(app, group)) {
+export function recordOf(app, group, reading = freshReading(app, group)) {
   return {
     week_start: group.weekStart,
     group_key: group.key,
     shift: group.shift,
     location_name: group.locationName,
     first_day: group.firstDay,
-    fields: values,
-    generated: values,
-    source: sourceOf(group),
+    fields: reading.values,
+    generated: reading.values,
+    source: sourceOf(group, [], reading.predicted),
   };
 }
 
@@ -97,9 +118,9 @@ export async function syncWeek(app, week) {
         if (err.status !== 409) throw err; // somebody else raised it a moment ago
       }
     } else if (record.status === 'draft') {
-      const fresh = freshValues(app, group);
+      const { values: fresh, predicted } = freshReading(app, group);
       const merged = T.mergeRegenerated(record, fresh);
-      const source = sourceOf(group, merged.conflicts);
+      const source = sourceOf(group, merged.conflicts, predicted);
       const changed = JSON.stringify(merged.fields) !== JSON.stringify(record.fields)
         || JSON.stringify(merged.generated) !== JSON.stringify(record.generated)
         || JSON.stringify(source) !== JSON.stringify(record.source)
@@ -153,10 +174,21 @@ export async function settleSample(app) {
       if (approve && !clashing.has(t.id)) steps.push([t.id, 'approve']);
     }
   }
+  /* As a requester would have filled them in before sending them — which is
+     what the learning memory learns from. */
+  const fills = {};
+  for (const [id] of steps) {
+    const t = app.tawrs.find((r) => r.id === id);
+    if (t && !fills[id]) fills[id] = sampleAnswers(t);
+  }
   let taken = steps;
-  if (S.store.mode === 'local') S.settleLocalSample(steps);
+  if (S.store.mode === 'local') S.settleLocalSample(steps, fills);
   else {
     taken = steps.filter(([, action]) => T.may(S.store.workflow, S.role(), action));
+    for (const [id, fields] of Object.entries(fills)) {
+      const t = app.tawrs.find((r) => r.id === Number(id));
+      if (taken.some(([x]) => x === Number(id))) await S.updateTawr(Number(id), { fields: { ...t.fields, ...fields } });
+    }
     for (const [id, action] of taken) await S.act(id, action);
   }
   if (taken.length) await app.reloadTawrs();
@@ -179,7 +211,8 @@ export function consolidation(app, records) {
      number, a clearance answer — unless two members say different things, when
      the look-ahead's value stands and the review names the field. What the
      look-ahead decides (dates, hours, area, support) is read afresh. */
-  const fresh = freshValues(app, group);
+  const reading = freshReading(app, group);
+  const fresh = reading.values;
   const fields = { ...fresh };
   const conflicts = [];
   for (const k of new Set(records.flatMap((r) => T.editedKeys(r.fields, r.generated)))) {
@@ -190,6 +223,6 @@ export function consolidation(app, records) {
       if (v == null) delete fields[k]; else fields[k] = v;
     } else conflicts.push(k);
   }
-  const record = recordOf(app, group, fresh);
+  const record = recordOf(app, group, reading);
   return { merge, record: { ...record, fields, source: { ...record.source, conflicts } } };
 }

@@ -28,12 +28,13 @@ import { readForm, missingFields, fillForm, FILLER_VERSION } from './tawr_pdf.js
 import { zipStore } from './zip.js';
 import * as S from './store.js';
 import * as LA from './lookahead.js';
-import { linkArea } from './links.js';
+import { linkArea, linkLabel } from './links.js';
 import {
   el, clear, toast, openModal, confirmDialog, promptDialog, dayLabel, stampLabel, saveFile, csvField,
 } from './ui.js';
 import { STATUS_COLOR } from './map.js';
 import { parsePhases, phasesText, newPhaseId, coversText } from './phases.js';
+import * as Learn from './learn.js';
 
 const V = { app: null, root: null, section: 'requests', picked: new Set(), open: new Set(), history: false, focus: null, setupAt: null };
 
@@ -276,6 +277,38 @@ function notice(tone, title, detail, action = null) {
 
 const KIND_WORD = { tcr: 'TCR', track: 'track', place: 'station or yard' };
 
+/** The predictions still standing on a record: those nobody has typed over. */
+function standing(record) {
+  const predicted = record?.source?.predicted || {};
+  const edited = new Set(T.editedKeys(record?.fields, record?.generated));
+  return Object.entries(predicted)
+    .filter(([key]) => !Learn.fieldsOf(key, record.fields).some((f) => edited.has(f)))
+    .map(([key, p]) => ({ key, ...p }));
+}
+
+/** "Power status: OFF — 6 of 8 similar requests (#3, #7, #12)". */
+function predictedLine(p) {
+  return `${Learn.unitLabel(p.key)}: ${Learn.answerText(p.key, p.value)} — ${p.support} of ${p.of} similar request${p.of === 1 ? '' : 's'}${p.from?.length ? ` (${p.from.map((x) => `#${x}`).join(', ')})` : ''}`;
+}
+
+/**
+ * Rejected requests that looked like this one — or were this one, sent before
+ * and reopened — for a request still to be sent. A rejected request is not
+ * warned of its own rejection: it says that already.
+ */
+function rejectedLike(view, shift, record = null) {
+  if (!V.app.learning) return [];
+  return Learn.rejectionsLike(V.app.learning, { ...view, shift }).filter((r) => !(record?.status === 'rejected' && r.id === record.id));
+}
+
+/** A rejection remembered, said to the request it is like. */
+function rejectedText(r, record) {
+  const when = r.at ? ` on ${stampLabel(r.at)}` : '';
+  return record && r.id === record.id
+    ? `When this request was sent before, it was rejected${when}: “${r.reason}”. Check that is put right before it is sent again.`
+    : `A request like this one${r.id ? ` (#${r.id})` : ''} was rejected${when}: “${r.reason}”. Check this one for the same before it is sent.`;
+}
+
 /* What a blocking flag comes to, in the few words the row has room for. */
 const BLOCKER = {
   no_location: 'an activity has no location',
@@ -371,6 +404,7 @@ function card(item, items, clashes = []) {
   const merged = String(record?.group_key || group?.key || '').startsWith('merge:');
   const mine = clashes.filter((x) => record && (x.a.id === record.id || x.b.id === record.id));
   const next = nextStep(record, blocking, due, mine.length > 0);
+  const predictions = record ? standing(record) : [];
   const pairs = partners(item, kind, items);
   const key = group?.key || record?.group_key || '';
   const open = V.open.has(key || String(record?.id || ''));
@@ -457,6 +491,9 @@ function card(item, items, clashes = []) {
       el('span', { class: 'pill', style: `--c:${STATUS_COLOR[status] || '#9ca3af'}`, text: statusName(status) }),
       el('div', { class: `next tone-${next.tone}`, text: next.text }),
       attention.length ? el('div', {}, attention) : null,
+      predictions.length && ['draft', 'submitted'].includes(status)
+        ? el('div', {}, [el('span', { class: 'chip-learn', title: `Predicted from similar requests sent before:\n${predictions.map(predictedLine).join('\n')}`, text: `✦ ${predictions.length} predicted` })])
+        : null,
     ]),
     el('td', { class: 'c-act' }, rowActions),
   ]);
@@ -501,6 +538,10 @@ function card(item, items, clashes = []) {
     ]));
   }
 
+  if (['none', 'draft', 'rejected'].includes(status)) {
+    for (const r of rejectedLike(view, shift, record).slice(0, 2)) needs.append(el('li', { class: 'warn learned', text: rejectedText(r, record) }));
+  }
+
   const notes = flags.filter((f) => !f.blocking).map((f) => f.message);
   if (record?.status === 'draft' && record.source?.conflicts?.length) notes.push(`Kept your change where the look-ahead now says something else: ${record.source.conflicts.map(label).join(', ')}.`);
 
@@ -519,6 +560,10 @@ function card(item, items, clashes = []) {
 
   const detail = el('tr', { class: 'tawr-detail', hidden: !open || null }, [el('td', { colSpan: 7 }, [
     facts,
+    predictions.length ? el('div', { class: 'learned-list' }, [
+      el('div', { class: 'learned-head', text: `✦ Predicted from similar requests sent before${record?.status === 'draft' ? ' — change any in Review; what is sent is learned from' : ''}` }),
+      el('ul', {}, predictions.map((p) => el('li', { text: predictedLine(p) }))),
+    ]) : null,
     needs.childNodes.length ? needs : null,
     notes.length ? el('details', { class: 'notes' }, [
       el('summary', { text: `${notes.length} note${notes.length === 1 ? '' : 's'}` }),
@@ -714,7 +759,9 @@ const NEEDED = [
 ];
 
 function openReview(record, group, { readOnly = false, blocking = [] } = {}) {
-  const editor = formEditor(record, { readOnly });
+  const predictions = readOnly ? [] : standing(record);
+  const editor = formEditor(record, { readOnly, predictions });
+  const rejected = readOnly ? [] : rejectedLike(group || record.source || {}, record.shift, record);
   const fitBox = el('div', { class: 'small fit', 'aria-live': 'polite' });
   const needBox = el('div', { class: 'need', 'aria-live': 'polite' });
   const checkNeeded = () => {
@@ -725,6 +772,11 @@ function openReview(record, group, { readOnly = false, blocking = [] } = {}) {
   };
   const body = el('div', { class: 'review' }, [
     blocking.length ? el('div', { class: 'notice notice-bad' }, blocking.map((f) => el('div', { text: f.message }))) : null,
+    rejected.length ? el('div', { class: 'notice notice-warn', dataset: { learned: 'rejected' } }, rejected.slice(0, 2).map((r) => el('div', { text: rejectedText(r, record) }))) : null,
+    predictions.length ? el('div', { class: 'learned-note' }, [
+      el('strong', { text: `✦ ${predictions.length} answer${predictions.length === 1 ? '' : 's'} predicted` }),
+      ' from similar requests sent before, marked in purple. Hover one to see why; change any that are wrong — what is sent is learned from.',
+    ]) : null,
     readOnly ? null : needBox,
     fitBox,
     editor.node,
@@ -781,16 +833,22 @@ function openReview(record, group, { readOnly = false, blocking = [] } = {}) {
   });
 }
 
-function formEditor(record, { readOnly = false } = {}) {
+function formEditor(record, { readOnly = false, predictions = [] } = {}) {
   const fields = record.fields || {};
   const generated = record.generated || {};
+  const predictedBy = new Map();
+  for (const p of predictions) for (const f of Learn.fieldsOf(p.key, fields)) predictedBy.set(f, p);
   const getters = new Map();
   const sameValue = (a, b) => { const blank = (v) => v == null || v === '' || v === false; return (blank(a) && blank(b)) || a === b; };
   const display = (v) => (v === true ? 'ticked' : v == null || v === '' || v === false ? 'blank' : String(v));
   const mark = (wrap, names) => {
+    const p = names.map((n) => predictedBy.get(n)).find(Boolean);
     if (names.some((n) => !sameValue(fields[n], generated[n]))) {
       wrap.classList.add('edited');
       wrap.title = `Changed by hand. The look-ahead says: ${names.map((n) => display(generated[n])).join(' / ')}`;
+    } else if (p) {
+      wrap.classList.add('predicted');
+      wrap.title = `Predicted: ${predictedLine(p)}, ${Math.round(p.confidence * 100)}% of their weight agreeing. Change it if it is wrong.`;
     }
     return wrap;
   };
@@ -993,7 +1051,7 @@ function renderSetup(host) {
   }
   row('Form filler', 'The version of the code that fills the form, stamped inside every PDF it writes.', el('code', { text: `TAWR filler ${FILLER_VERSION}` }));
 
-  host.append(phasesSection(), codesSection(), legendSection(), descriptionsSection());
+  host.append(phasesSection(), learningSection(), codesSection(), legendSection(), descriptionsSection());
   if (S.store.mode === 'local') host.append(backupSection());
   if (V.setupAt) {
     const at = host.querySelector(`#setup-${V.setupAt}`);
@@ -1079,6 +1137,145 @@ function phasesSection() {
         const n = name.value.trim() || name.placeholder;
         if (current().some((p) => p.name.toLowerCase() === n.toLowerCase())) { toast(`There is a phase called ${n} already.`, 'warn'); return; }
         draw(null, { name: n, note: note.value.trim() });
+      },
+    }),
+  ]));
+  return wrap;
+}
+
+/* ── The learning memory ──────────────────────────────────────────────── */
+
+/** How sure the votes must be before an answer is predicted (learn_threshold). */
+const THRESHOLDS = [
+  ['0.75', 'Cautious — nearly every similar request agrees'],
+  ['0.6', 'Balanced — most of them, by a clear margin'],
+  ['0.5', 'Eager — more of them than not'],
+];
+const MEMORY_KIND = { form: 'Request', outcome: 'Predictions', reject: 'Rejection', link: 'Location' };
+
+/** One entry of the memory, said in a sentence. */
+function memoryLine(e) {
+  const t = V.app.tawrs.find((r) => r.id === e.tawr_id);
+  const acts = e.data?.source?.activities || [];
+  const what = t?.location_name || acts[0]?.title || 'a request';
+  const shift = e.data?.shift || t?.shift;
+  const req = `${e.tawr_id != null ? `#${e.tawr_id} ` : ''}${what}${shift ? ` (${T.tawrShiftLabel(shift)})` : ''}`;
+  const said = (key, v) => (v == null ? 'blank' : Learn.answerText(key, v));
+  if (e.kind === 'form') {
+    const n = Object.values(e.data.answers || {}).filter((v) => v !== false).length;
+    return `${req} ${e.data.action === 'approve' ? 'approved' : 'submitted'} — ${n} answer${n === 1 ? '' : 's'} learned from it`;
+  }
+  if (e.kind === 'outcome') {
+    const kept = e.data.kept?.length || 0;
+    const changed = (e.data.changed || []).map((c) => `${Learn.unitLabel(c.unit)}: ${said(c.unit, c.predicted)} → ${said(c.unit, c.final)}`);
+    return `${req}: ${kept} prediction${kept === 1 ? '' : 's'} kept${changed.length ? `, ${changed.length} changed before it was sent (${changed.join('; ')})` : ''}`;
+  }
+  if (e.kind === 'reject') return `${req} rejected: “${e.data.reason}”`;
+  if (e.kind === 'link') return `“${e.data.title || e.data.activityId || 'An activity'}”${e.data.activityId && e.data.title ? ` (${e.data.activityId})` : ''} linked to ${linkLabel(e.data.link) || 'a location'}`;
+  return e.kind;
+}
+
+function learningSection() {
+  const app = V.app;
+  const s = app.settings || {};
+  const memory = app.memory || [];
+  const index = app.learning || Learn.buildIndex([]);
+  const acc = Learn.accuracy(index);
+  const on = s.learn_predict !== 'off';
+  const wrap = el('section', { class: 'settings-block', id: 'setup-learning' }, [
+    el('h3', { class: 'settings-group', text: 'Learning memory' }),
+    el('p', { class: 'small', text: 'Every request submitted, approved or rejected is remembered, and every location linked on the look-ahead. A new draft is filled in from the most similar requests sent before — only where they agree — and each answer it predicts is marked, with the requests it came from. What is changed before a request is sent is learned from too, and counted below.' }),
+  ]);
+
+  const stat = (value, caption, sub) => el('div', { class: 'learn-stat' }, [
+    el('div', { class: 'learn-num', text: String(value) }),
+    el('div', { class: 'learn-cap', text: caption }),
+    sub ? el('div', { class: 'small', text: sub }) : null,
+  ]);
+  const approved = index.examples.filter((x) => x.approved).length;
+  wrap.append(el('div', { class: 'learn-stats', dataset: { learn: 'stats' } }, [
+    stat(index.examples.length, `request${index.examples.length === 1 ? '' : 's'} learned from`, `${approved} approved`),
+    stat(index.links.length, `location${index.links.length === 1 ? '' : 's'} remembered`, 'from the look-ahead'),
+    stat(index.rejects.length, `rejection${index.rejects.length === 1 ? '' : 's'} remembered`, 'warned of on drafts like them'),
+    stat(acc.rate == null ? '—' : `${Math.round(acc.rate * 100)}%`, 'of predictions kept', acc.total ? `${acc.kept} of ${acc.total}, as sent` : 'none sent yet'),
+  ]));
+
+  const choose = (caption, key, options, fallback, hint) => {
+    const sel = el('select', { 'aria-label': caption, dataset: { setting: key } }, options.map(([value, text]) => el('option', { value, text })));
+    sel.value = s[key] ?? fallback;
+    sel.addEventListener('change', async () => {
+      try {
+        app.settings = await S.setSettings({ [key]: sel.value });
+        await app.raise(); // the drafts follow at once
+        toast(`${caption}: ${sel.selectedOptions[0].text.split(' — ')[0]}.`, 'good');
+      } catch (err) { toast(err.message, 'bad'); sel.value = s[key] ?? fallback; }
+      rerender();
+    });
+    return el('div', { class: 'settings-row' }, [
+      el('div', {}, [el('div', { class: 'settings-name', text: caption }), el('div', { class: 'small', text: hint })]),
+      el('div', { class: 'settings-control' }, [sel]),
+    ]);
+  };
+  wrap.append(el('div', { class: 'settings' }, [
+    choose('Predict answers on new drafts', 'learn_predict', [['on', 'On'], ['off', 'Off']], 'on',
+      'Off, a draft carries only the look-ahead and this setup; the memory still learns from what is sent.'),
+    on ? choose('How sure before predicting', 'learn_threshold', THRESHOLDS, String(Learn.DEFAULT_THRESHOLD),
+      'How strongly the similar requests must agree. A box is never unticked by a prediction, and nothing the look-ahead decides is touched.') : null,
+  ]));
+
+  if (acc.units.length) {
+    wrap.append(el('h4', { class: 'learn-head', text: 'How each prediction has done' }), el('table', { class: 'grid-table learn-table', dataset: { learn: 'accuracy' } }, [
+      el('thead', {}, [el('tr', {}, ['Answer', 'Kept', 'Changed', 'Last changed to'].map((h) => el('th', { text: h })))]),
+      el('tbody', {}, acc.units.map((u) => el('tr', {}, [
+        el('td', { text: Learn.unitLabel(u.key) }),
+        el('td', { text: String(u.kept) }),
+        el('td', { class: u.changed ? 'warn' : '', text: String(u.changed) }),
+        el('td', { class: 'small', text: u.changed ? (u.last == null ? 'blank' : Learn.answerText(u.key, u.last)) : '—' }),
+      ]))),
+    ]));
+  }
+
+  const forget = async (e) => {
+    try {
+      await S.forgetMemory(e.id);
+      app.relearn(memory.filter((m) => m.id !== e.id));
+      toast('Forgotten: nothing is predicted or suggested from it again.', 'good');
+      app.raise();
+    } catch (err) { toast(err.message, 'bad'); }
+    rerender();
+  };
+  const latest = [...memory].reverse().slice(0, 40);
+  wrap.append(el('h4', { class: 'learn-head', text: `What it remembers — ${memory.length} entr${memory.length === 1 ? 'y' : 'ies'}${memory.length > latest.length ? `, the latest ${latest.length} here` : ''}` }));
+  wrap.append(latest.length
+    ? el('ul', { class: 'memory-log' }, latest.map((e) => el('li', { dataset: { memory: String(e.id), kind: e.kind } }, [
+      el('span', { class: `mem-kind mem-${e.kind}`, text: MEMORY_KIND[e.kind] || e.kind }),
+      el('span', { class: 'mem-text', text: memoryLine(e) }),
+      el('span', { class: 'small mem-when', text: `${stampLabel(e.at)}${e.by ? ` · ${e.by}` : ''}` }),
+      el('button', { type: 'button', class: 'secondary mini', dataset: { action: 'memory-forget' }, title: 'Forget this entry: nothing is predicted or suggested from it again', text: 'Forget', onClick: () => forget(e) }),
+    ])))
+    : el('p', { class: 'empty', text: 'Nothing remembered yet. Submit a request, or link a location on the look-ahead, and it is remembered here.' }));
+
+  const mayClear = S.store.mode === 'local' || S.role() === 'manager';
+  wrap.append(el('div', { class: 'inline learn-actions' }, [
+    el('button', {
+      type: 'button', class: 'secondary mini', dataset: { action: 'memory-export' }, text: 'Export the memory (JSON)', disabled: !memory.length,
+      onClick: () => saveFile(`tawr-memory-${app.today}.json`, JSON.stringify({ exported_at: new Date().toISOString(), entries: memory }, null, 1), 'application/json'),
+    }),
+    el('button', {
+      type: 'button', class: 'secondary mini danger', dataset: { action: 'memory-clear' }, text: 'Clear the memory…', disabled: !memory.length || !mayClear,
+      title: mayClear ? null : 'Only the Track Allocation Manager clears the memory.',
+      onClick: async () => {
+        if (!(await confirmDialog({
+          title: 'Clear the learning memory?', confirmLabel: 'Clear', danger: true,
+          message: `All ${memory.length} entries are forgotten: nothing is predicted or suggested until requests are sent again. The requests themselves do not change.`,
+        }))) return;
+        try {
+          const r = await S.clearMemory();
+          app.relearn([]);
+          toast(`${r.forgotten} entr${r.forgotten === 1 ? 'y' : 'ies'} forgotten.`, 'good');
+          app.raise();
+        } catch (err) { toast(err.message, 'bad'); }
+        rerender();
       },
     }),
   ]));
@@ -1293,7 +1490,7 @@ function backupSection() {
   });
   return el('section', { class: 'settings-block' }, [
     el('h3', { class: 'settings-group', text: 'This browser\'s copy' }),
-    el('p', { class: 'small', text: 'On the static site the look-ahead and the TAWRs are kept in this browser only. Back them up, or move them to another browser. BART\'s form is not in the backup.' }),
+    el('p', { class: 'small', text: 'On the static site the look-ahead, the TAWRs and the learning memory are kept in this browser only. Back them up, or move them to another browser. BART\'s form is not in the backup.' }),
     el('div', { class: 'inline' }, [
       el('button', { type: 'button', class: 'secondary mini', text: 'Back up (JSON)', onClick: () => saveFile(`track-plan-backup-${V.app.today}.json`, S.exportLocal(), 'application/json') }),
       el('button', { type: 'button', class: 'secondary mini', text: 'Restore…', onClick: () => input.click() }),

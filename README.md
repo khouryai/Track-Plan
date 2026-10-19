@@ -138,6 +138,45 @@ phase, and clicking a phase's name looks at it. The phases are one setting
 too, who is given them and nothing else of the setup; the phase being looked at
 is remembered in this browser.
 
+**Learning memory.** Every request submitted, approved or rejected is
+remembered, and every location linked on the look-ahead (`web/js/learn.js`;
+the server keeps it in `memory`, the static site in the browser). From it:
+
+- *A new draft's answers are predicted.* The questions BART's form asks that the
+  look-ahead cannot answer — Clearance Verification, Track Inspection, the
+  advisories and the ticks for support with their details, the person in charge
+  and the project representative, the power status, the safe-clear sections —
+  are voted on by the most similar requests sent before, the closest, the
+  approved and the recent counting for more. Similar depends on the answer: a
+  support line or an advisory follows the work itself (its words, the rare ones
+  counting for more, and its activity ids), the person in charge follows the
+  party, the power and clearances follow the kind of work and the shift, the
+  safe-clear sections the very tracks. An answer is predicted only where they
+  agree strongly enough and at least two requests say it (one, if it is nearly
+  the same request), never unticks a box, and never touches what the look-ahead
+  decides. A predicted answer is marked: *✦ 4 predicted* on the row, each one
+  in the details with how many similar requests agree and their numbers, and in
+  purple in Review, with why on hovering. Typing over one is a hand edit like
+  any other.
+- *A location is remembered.* An activity linked before — the same activity ID,
+  the same location typed, or one named the same way, unless the sheet now names
+  somewhere else — is marked ✦ in its Location cell; click it to link it the
+  same way, or use *✦ Suggestions* on the toolbar to link every one at once,
+  with the party, work hours and SSWP it had where they are blank. One step;
+  Undo takes it back. This is what brings the links back after a new workbook
+  is imported.
+- *A rejection is remembered.* A draft like a request rejected before — or the
+  rejected request itself, reopened — says why that one was rejected, on its row
+  and in Review.
+- *What was predicted is checked against what was sent.* *TAWRs → Setup →
+  Learning memory* counts the requests learned from, the locations and the
+  rejections remembered, and how often predictions were kept, answer by answer
+  with what each was last changed to; logs every entry in words, each with
+  *Forget*; exports it as JSON; switches predicting off, or makes it more or less
+  cautious (`learn_predict`, `learn_threshold`). Clearing it is the Track
+  Allocation Manager's on a server. The sample's past weeks come filled in as a
+  requester would have sent them, so its drafts arrive predicted.
+
 ### Roles
 
 | | Requester | Track Allocation Manager | Viewer |
@@ -146,6 +185,8 @@ is remembered in this browser.
 | Raise, review and submit drafts; withdraw; reopen a rejected one; revise | yes | yes | — |
 | Approve, reject, consolidate, split | — | yes | — |
 | Add and change accounts (server) | — | yes | — |
+| See the learning memory, forget an entry | yes | yes | — |
+| Clear the learning memory (server) | — | yes | — |
 | Read everything | yes | yes | yes |
 
 Who may do what is one table, `web/data/tawr_workflow.json`. The page only offers
@@ -305,7 +346,8 @@ is kept at `db/tawr_template.pdf` — outside `web/`, ignored by git.
 | `meta` | the legend (shift colours), the support code register, the look-ahead's version |
 | `tawrs` | the requests: week, place and shift, status, the form's fields as generated and as edited, what they were read from, who did what and when |
 | `tawr_merges` | consolidations: which requests the manager made one |
-| `tawr_settings`, `tawr_descriptions` | Setup: contacts, the requester's name, phone and signature, shift hours, lead time; expanded wording for activities |
+| `tawr_settings`, `tawr_descriptions` | Setup: contacts, the requester's name, phone and signature, shift hours, lead time, phases, predicting; expanded wording for activities |
+| `memory` | the learning memory: each request's answers as sent, the locations linked, the rejections and why, and which predictions were kept |
 
 ### API
 
@@ -318,6 +360,7 @@ is kept at `db/tawr_template.pdf` — outside `web/`, ignored by git.
 | `GET /api/lookahead`, `POST /api/lookahead/ops`, `/api/lookahead/replace`, `PUT /api/lookahead/legend`, `/codes` | the look-ahead |
 | `GET/POST /api/tawrs`, `PUT /api/tawrs/<id>`, `POST /api/tawrs/<id>/<action>`, `/api/tawrs/consolidate`, `/api/tawrs/<id>/split` | TAWRs and their workflow |
 | `GET/PUT /api/tawr/settings`, `/api/tawr/template`, `/api/tawr/descriptions` | Setup |
+| `GET/POST /api/memory`, `DELETE /api/memory/<id>`, `POST /api/memory/clear` | the learning memory (the requester and the manager; clearing, the manager) |
 | `GET/POST /api/requests`, `PUT/DELETE /api/requests/<id>` | the earlier access requests |
 
 `server.py`'s docstring lists every route and who may call it.
@@ -344,7 +387,9 @@ server.py, operations.py
 | `links.js` | a track plan link: its label, Area, key, and whether two overlap |
 | `tawr.js` | a week of the look-ahead read into TAWRs; conflicts; the form's values; the workflow table's rules |
 | `sample.js` | four weeks of sample W and M line work, conflicts included |
-| `tawr_sync.js` | drafts raised and kept in step with the look-ahead; consolidations |
+| `tawr_sync.js` | drafts raised and kept in step with the look-ahead, with the memory's predictions; consolidations |
+| `learn.js` | the learning memory read: answers predicted, locations and fields suggested, rejections recalled, accuracy |
+| `phases.js` | phases: named boxes on the drawing |
 | `store.js` | the server's API, or this browser's storage, behind one interface |
 | `map.js` | the map, Select on track plan, TAWRs drawn on it |
 | `lookahead_view.js`, `tawr_view.js` | the two planning views |
@@ -361,7 +406,7 @@ came from.
 ```bash
 npm install                 # once: Playwright, for the browser test
 npm test                    # all three suites
-node tests/test_tawr.mjs    # look-ahead, links, TAWR reading, consolidation, workflow table, workbook import, the form filled (Node)
+node tests/test_tawr.mjs    # look-ahead, links, TAWR reading, consolidation, workflow table, workbook import, the form filled, phases, the learning memory (Node)
 python3 -m unittest tests/test_server.py   # what the server allows and refuses (Python)
 node tests/smoke.mjs        # the whole flow in Chromium, on the static site and against server.py
 ```

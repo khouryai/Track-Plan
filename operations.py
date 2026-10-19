@@ -658,7 +658,7 @@ SETTING_KEYS = {
     "requestor_name", "requestor_cell_phone", "requestor_signature",
     "person_in_charge_name", "person_in_charge_cell_phone", "project_rep_name", "project_rep_cell_phone",
     "category_default", "category_tcr", "category_track", "hours_day", "hours_swing", "hours_night", "hours_possession", "auto_lead_days",
-    "template_info", "phases",
+    "template_info", "phases", "learn_predict", "learn_threshold",
 }
 # What a viewer may read of them: the phases, for looking at the track plan by phase.
 PUBLIC_SETTING_KEYS = {"phases"}
@@ -698,6 +698,13 @@ def _check_phases(text):
             raise Refused(f"the note on phase {name!r} is too long", 400)
 
 
+def _threshold_ok(v):
+    try:
+        return 0.5 <= float(v) <= 0.95
+    except ValueError:
+        return False
+
+
 def set_settings(con, values, actor, workflow):
     require_write(actor, workflow)
     if not isinstance(values, dict):
@@ -711,6 +718,10 @@ def set_settings(con, values, actor, workflow):
                 raise Refused(f"{k} must be text", 400)
             if k == "phases" and v:
                 _check_phases(v)
+            if k == "learn_predict" and v not in (None, "", "on", "off"):
+                raise Refused("learn_predict is on or off", 400)
+            if k == "learn_threshold" and v and not _threshold_ok(v):
+                raise Refused("learn_threshold is a number from 0.5 to 0.95", 400)
             con.execute("INSERT INTO tawr_settings(key, value, updated_by, updated_at) VALUES (?, ?, ?, ?) "
                         "ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_by = excluded.updated_by, "
                         "updated_at = excluded.updated_at", (k, v, actor["id"], now_iso()))
@@ -746,6 +757,63 @@ def delete_description(con, did, actor, workflow):
     if not con.execute("DELETE FROM tawr_descriptions WHERE id = ?", (did,)).rowcount:
         raise Refused("no such wording", 404)
     return {"deleted": did}
+
+
+# ------------------------------------------------------------ the learning memory
+
+MEMORY_KINDS = ("form", "link", "reject", "outcome")
+MEMORY_LIMIT = 5000        # read at most this many, the newest
+MEMORY_DATA_MAX = 20_000   # characters of JSON in one entry
+MEMORY_SELECT = "SELECT m.*, u.name AS by_name FROM memory m LEFT JOIN users u ON u.id = m.created_by"
+
+
+def _memory_out(r):
+    return {"id": r["id"], "kind": r["kind"], "tawr_id": r["tawr_id"], "data": json.loads(r["data"]),
+            "at": r["created_at"], "by": r["by_name"] or "", "by_id": r["created_by"]}
+
+
+def list_memory(con, actor, workflow):
+    """What the memory holds, oldest first — for the requester and the manager, who raise and decide."""
+    require_write(actor, workflow)
+    rows = con.execute(MEMORY_SELECT + " ORDER BY m.id DESC LIMIT ?", (MEMORY_LIMIT,)).fetchall()
+    return [_memory_out(r) for r in reversed(rows)]
+
+
+def add_memory(con, entries, actor, workflow):
+    """Entries web/js/learn.js wrote: kept as they are, once their shape is checked."""
+    require_write(actor, workflow)
+    if not isinstance(entries, list) or not 1 <= len(entries) <= 50:
+        raise Refused("send between 1 and 50 entries", 400)
+    ids = []
+    with Tx(con):
+        for e in entries:
+            if not isinstance(e, dict) or e.get("kind") not in MEMORY_KINDS:
+                raise Refused("unknown kind of memory", 400)
+            tid = e.get("tawr_id")
+            if tid is not None and (not isinstance(tid, int) or isinstance(tid, bool)):
+                raise Refused("tawr_id must be a number", 400)
+            data = e.get("data")
+            text = json.dumps(data, separators=(",", ":"))
+            if not isinstance(data, dict) or len(text) > MEMORY_DATA_MAX:
+                raise Refused(f"memory data must be an object of at most {MEMORY_DATA_MAX:,} characters", 400)
+            ids.append(con.execute("INSERT INTO memory(kind, tawr_id, data, created_by, created_at) VALUES (?, ?, ?, ?, ?)",
+                                   (e["kind"], tid, text, actor["id"], now_iso())).lastrowid)
+    marks = ",".join("?" * len(ids))
+    return [_memory_out(r) for r in con.execute(MEMORY_SELECT + f" WHERE m.id IN ({marks}) ORDER BY m.id", ids)]
+
+
+def forget_memory(con, mid, actor, workflow):
+    require_write(actor, workflow)
+    if not con.execute("DELETE FROM memory WHERE id = ?", (mid,)).rowcount:
+        raise Refused("no such memory", 404)
+    return {"forgotten": mid}
+
+
+def clear_memory(con, actor, workflow):
+    require_write(actor, workflow)
+    if actor["role"] != "manager":
+        raise Refused("only the track allocation manager clears the memory")
+    return {"forgotten": con.execute("DELETE FROM memory").rowcount}
 
 
 def save_template(data, actor, workflow, path=None):

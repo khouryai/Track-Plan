@@ -144,6 +144,33 @@ const SHEET = [
   },
 ];
 
+/*
+ * What the requester typed into the sample's earlier requests before sending
+ * them, so the learning memory (learn.js) has a history to learn from and the
+ * drafts still to come show its predictions. Made-up people, 555 numbers.
+ */
+const IN_CHARGE = { Hitachi: ['Dana Okafor', '415-555-0142'], 'Pacific Civil': ['Luis Ortega', '415-555-0177'], BART: ['Marcus Hill', '510-555-0199'] };
+
+/** The answers typed into one of the sample's requests: by its party, its kind of work, its shift and what it is. */
+export function sampleAnswers(record) {
+  const acts = record.source?.activities || [];
+  const words = acts.map((a) => a.title).join(' ').toLowerCase();
+  const track = record.source?.kind === 'track';
+  const out = { project_rep_name: 'Priya Nair', project_rep_cell_phone: '415-555-0123' };
+  const pic = IN_CHARGE[acts[0]?.party];
+  if (pic) [out.person_in_charge_name, out.person_in_charge_cell_phone] = pic;
+  if (track) Object.assign(out, { clearance_verification_yes: true, clearance_verification_no: false });
+  if (track && ['night', 'possession'].includes(record.shift)) {
+    for (let n = 1; n <= 7; n++) {
+      if (record.fields?.[`row${n}_date`]) Object.assign(out, { [`row${n}_power_off`]: true, [`row${n}_power_na`]: false, [`row${n}_power_on`]: false });
+    }
+  }
+  if (record.shift === 'possession') Object.assign(out, { track_inspection_first_train_yes: true, track_inspection_first_train_no: false });
+  if (/cable/.test(words)) out.police_advisory_threat_of_theft = true; // copper is stolen from cable work
+  if (track && /test/.test(words)) Object.assign(out, { maint_safety_monitor_req: true, maint_safety_monitor_details: 'BART safety monitor on site' });
+  return out;
+}
+
 /**
  * The sample's rows and cells, from the coming Monday. `data` is map.json —
  * its routes for the geometry and its locations for the TCRs.

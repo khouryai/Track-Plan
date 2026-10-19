@@ -566,6 +566,116 @@ async function importBook(page, { mode }) {
   await rowOf(page, 'IXL Regression').waitFor();
   check('its activities come in, painted', (await dayCell(page, 'IXL Regression', '2026-09-07', '2026-09-07').evaluate((n) => getComputedStyle(n).backgroundColor)) === 'rgb(255, 255, 0)');
   check('a location the track plan does not know is marked', await rowOf(page, 'IXL Regression').locator('td.loc-unlinked').count() === 1);
+
+  // "Cable pull" was linked in the flow above, and the memory kept it; the workbook brings it back unlinked.
+  const pull = rowOf(page, 'Cable pull').locator('td.la-m2');
+  check('an activity linked before is marked with what the memory remembers', await pull.locator('[data-action=loc-suggest]').count() === 1
+    && /Linked before: W2 MP 16\.800–17\.200/.test(await pull.locator('[data-action=loc-suggest]').getAttribute('title')));
+  check('and the toolbar offers it', (await page.textContent('[data-action=suggestions]')) === '✦ 1 suggestion');
+  await page.click('[data-action=suggestions]');
+  await page.waitForSelector('.modal [data-action=suggest-apply]');
+  const offered = await page.textContent('.modal');
+  check('the suggestion says where, and why', /Location: W2 MP 16\.800–17\.200/.test(offered) && /“Cable pull”, named the same way, was linked so/.test(offered), offered.slice(0, 300));
+  await page.click('.modal [data-action=suggest-apply]');
+  await page.waitForSelector('.modal-back', { state: 'detached' });
+  check('using it links the activity as before', /W2 MP 16\.800–17\.200/.test(await pull.textContent()) && await pull.evaluate((n) => n.classList.contains('loc-linked')), await pull.textContent());
+  await rowOf(page, 'Cable pull').locator('td.la-m1').click();
+  await page.keyboard.press('Control+z');
+  check('and Undo takes it back', await rowOf(page, 'Cable pull').locator('[data-action=loc-suggest]').count() === 1);
+}
+
+/** What the requests sent before teach the next ones (learn.js), on the sample's history. */
+async function learning(page, { mode }) {
+  console.log(`\n${mode}: the learning memory`);
+  await page.click('nav.views [data-view=tawr]');
+  await page.click('.subtabs [data-section=requests]');
+  await page.click(`.week-btn[data-week="${WEEK}"]`);
+  await page.waitForSelector('.tawr-card .chip-learn');
+  const drafts = page.locator('.tawr-card[data-tawr-status=draft]');
+  const predicted = await drafts.locator('.chip-learn').count();
+  check('the drafts still to come are filled in from the requests sent before', predicted === 6 && await drafts.count() === 6, `${predicted} of ${await drafts.count()}`);
+  const night = card(page, 'M1+M2 MP 12.000–12.800');
+  check('each says how many of its answers were predicted', (await night.locator('.chip-learn').textContent()) === '✦ 4 predicted', await night.locator('.chip-learn').textContent());
+  await night.locator('.tawr-toggle').click();
+  const listed = await night.locator('.learned-list').textContent();
+  check('and which, from how many similar requests', /Person in charge: Dana Okafor, 415-555-0142 — 6 of 6 similar requests \(#/.test(listed)
+    && /Power status: OFF — \d of \d similar requests/.test(listed) && !/Police/.test(listed), listed);
+  await night.locator('[data-action=tawr-review]').click();
+  await page.waitForSelector('.modal .form');
+  check('Review marks every box a prediction filled', await page.locator('.modal .form .predicted').count() === 7, String(await page.locator('.modal .form .predicted').count()));
+  const why = await page.locator('.modal .form .predicted:has([data-field=person_in_charge_name])').getAttribute('title');
+  check('and says on each where it came from', /^Predicted: Person in charge: Dana Okafor, 415-555-0142 — 6 of 6 similar requests/.test(why), why);
+  check('and at the top, how many', /4 answers predicted/.test(await page.textContent('.modal .learned-note')));
+  await page.fill('.modal [data-field=person_in_charge_name]', 'Sam Reyes');
+  await page.click('.modal [data-action=review-submit]');
+  await page.waitForSelector('.modal-back', { state: 'detached' });
+  await page.waitForFunction(() => [...document.querySelectorAll('.tawr-card')].some((c) => c.dataset.tawrStatus === 'submitted' && /M1\+M2 MP 12\.000/.test(c.querySelector('h3')?.textContent)));
+
+  await page.click('.subtabs [data-section=setup]');
+  await page.waitForSelector('#setup-learning [data-learn=stats]');
+  const stats = await page.textContent('#setup-learning [data-learn=stats]');
+  check('Setup says what it has learned from, and how often its predictions were kept', /^10\s*requests learned from/.test(stats) && /75%\s*of predictions kept\s*3 of 4/.test(stats), stats);
+  const cells = await page.locator('#setup-learning [data-learn=accuracy] tr', { hasText: 'Person in charge' }).locator('td').allTextContents();
+  check('each answer keeps its record, and what it was changed to', cells.join('|') === 'Person in charge|0|1|Sam Reyes, 415-555-0142', cells.join('|'));
+  const log = page.locator('#setup-learning .memory-log li');
+  const newest = await log.first().textContent();
+  check('the memory is logged in words, newest first', /#12 M1\+M2 MP 12\.000–12\.800 \(Night\): 3 predictions kept, 1 changed before it was sent \(Person in charge: Dana Okafor, 415-555-0142 → Sam Reyes, 415-555-0142\)/.test(newest), newest);
+  const entries = await log.count();
+  await log.first().locator('[data-action=memory-forget]').click();
+  await page.waitForFunction((n) => document.querySelectorAll('#setup-learning .memory-log li').length === n - 1, entries);
+  check('an entry can be forgotten', /—\s*of predictions kept/.test(await page.textContent('#setup-learning [data-learn=stats]')));
+
+  await page.selectOption('#setup-learning select[data-setting=learn_predict]', 'off');
+  await page.waitForSelector('.toast-good >> text=/Predict answers on new drafts: Off/');
+  await page.click('.subtabs [data-section=requests]');
+  await page.waitForSelector('.tawr-card');
+  check('switched off, a draft carries only the look-ahead and the setup', await page.locator('.tawr-card[data-tawr-status=draft] .chip-learn').count() === 0
+    && await page.locator('.tawr-card[data-tawr-status=draft]').count() === 5);
+  await page.click('.subtabs [data-section=setup]');
+  await page.selectOption('#setup-learning select[data-setting=learn_predict]', 'on');
+  await page.waitForSelector('.toast-good >> text=/Predict answers on new drafts: On/');
+  await page.click('.subtabs [data-section=requests]');
+  await page.waitForSelector('.tawr-card');
+  check('and on again, the predictions come back', await page.locator('.tawr-card[data-tawr-status=draft] .chip-learn').count() === 5);
+
+  await page.click('.week-btn[data-week="2026-10-26"]');
+  const sent = page.locator('.tawr-card[data-tawr-status=submitted]').first();
+  const name = (await sent.locator('h3').textContent()).trim();
+  await sent.locator('.tawr-toggle').click();
+  await sent.locator('[data-action=tawr-reject]').click();
+  await page.fill('.modal textarea', 'No flagger named for the work');
+  await confirm(page);
+  const status = (want) => page.waitForFunction(([n, st]) => [...document.querySelectorAll('.tawr-card')].some((c) => c.querySelector('h3')?.textContent.trim() === n && c.dataset.tawrStatus === st), [name, want]);
+  await status('rejected');
+  const again = card(page, name);
+  check('a rejected request is not warned of its own rejection', await again.locator('li.learned').count() === 0 && /Rejected: No flagger/.test(await again.textContent()));
+  await again.locator('[data-action=tawr-reopen]').click();
+  await confirm(page);
+  await status('draft');
+  if (!(await again.locator('.tawr-detail').isVisible())) await again.locator('.tawr-toggle').click();
+  const warned = await again.locator('li.learned').textContent();
+  check('reopened, it says why it was rejected before it is sent again', /When this request was sent before, it was rejected .*: “No flagger named for the work”/.test(warned), warned);
+  await again.locator('[data-action=tawr-review]').click();
+  await page.waitForSelector('.modal .form');
+  check('and Review says so too', /When this request was sent before, it was rejected/.test(await page.textContent('.modal [data-learned=rejected]')));
+  await page.keyboard.press('Escape');
+  await shot(page, `${mode}-6-learning`);
+  await page.click('.week-btn[data-week="2026-11-09"]'); // where the sample left the track plan
+}
+
+/** The server keeps the memory too, for those who raise and decide. */
+async function serverMemory(page) {
+  console.log('\nserver: the learning memory');
+  await page.click('nav.views [data-view=tawr]');
+  await page.click('.subtabs [data-section=setup]');
+  await page.waitForSelector('#setup-learning [data-learn=stats]');
+  const stats = await page.textContent('#setup-learning [data-learn=stats]');
+  check('what was sent and linked is kept by the server', /^[1-9]\d*\s*requests? learned from/.test(stats) && /2\s*locations remembered/.test(stats), stats);
+  check('a link is logged in words, with who made it', await page.locator('#setup-learning .memory-log li[data-kind=link]', { hasText: '“IXL SIM Testing” linked to Colma TCR · W2 MP 16.600–16.900' }).filter({ hasText: 'Rae Requester' }).count() === 1);
+  await page.click('#setup-learning [data-action=memory-clear]');
+  await confirm(page);
+  await page.waitForFunction(() => /^0\s*requests learned from/.test(document.querySelector('#setup-learning [data-learn=stats]')?.textContent || ''));
+  check('and cleared by the Track Allocation Manager', await page.locator('#setup-learning .memory-log').count() === 0);
 }
 
 /* ══════════════════════════════════════════════════════════════════════════ */
@@ -587,6 +697,7 @@ try {
     await copyPaste(page, { mode: 'static site' });
     await importBook(page, { mode: 'static site' });
     await sampleData(page, { mode: 'static site' });
+    await learning(page, { mode: 'static site' });
     await phases(page, { mode: 'static site' });
     check('no console errors (static site)', !errors.length, errors.join(' | '));
     await context.close();
@@ -640,6 +751,7 @@ try {
       await page.click('.modal [data-action=signin]');
       await page.waitForSelector('#loading', { state: 'detached' });
       await manage(page, { mode: 'server' });
+      await serverMemory(page);
       check('no console errors (server)', !errors.length, errors.join(' | '));
       await context.close();
     } finally {

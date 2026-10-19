@@ -129,3 +129,17 @@ CREATE TABLE IF NOT EXISTS tawr_descriptions (
     activity    TEXT NOT NULL,
     description TEXT NOT NULL DEFAULT ''
 );
+
+-- The learning memory (web/js/learn.js): a request's answers when it was
+-- submitted or approved, a rejection's reason, which predictions a request
+-- kept, a location linked on the look-ahead. `data` is the JSON the browser
+-- wrote; the server only keeps it, and forgets an entry when asked.
+CREATE TABLE IF NOT EXISTS memory (
+    id          INTEGER PRIMARY KEY,
+    kind        TEXT NOT NULL CHECK (kind IN ('form', 'link', 'reject', 'outcome')),
+    tawr_id     INTEGER,
+    data        TEXT NOT NULL,
+    created_by  INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+CREATE INDEX IF NOT EXISTS memory_kind ON memory(kind, created_at);

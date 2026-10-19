@@ -243,6 +243,16 @@ details .row { margin-top: 6px; }
 .loc-go { display: none; position: absolute; right: 3px; top: 50%; transform: translateY(-50%); font: 600 11px system-ui, sans-serif; padding: 1px 8px; border-radius: 6px; background: var(--accent); color: #fff; border: 0; cursor: pointer; box-shadow: -8px 0 8px #fff; }
 .la-m2.has-tawr .loc-go { right: 36px; }
 .la-m2:hover .loc-go, .la-m2.la-cur .loc-go { display: inline-block; }
+/* The memory knows where this one was linked before: a mark that stays, and Link moves aside for it. */
+.loc-suggest { position: absolute; right: 3px; top: 50%; transform: translateY(-50%); font: 600 11px system-ui, sans-serif; line-height: 16px; color: #5b3cc4; background: #f1ecfd; border: 1px solid #d9cdfa; border-radius: 8px; padding: 0 5px; cursor: pointer; }
+.loc-suggest:hover { background: #e4dafc; }
+.la-m2.has-suggest .loc-go { right: 28px; }
+.la-m2.has-tawr.has-suggest .loc-suggest { right: 36px; }
+.la-m2.has-tawr.has-suggest .loc-go { right: 61px; }
+.la-m2.has-suggest .loc-text { padding-right: 22px; }
+.la-suggest { background: #5b3cc4; }
+.la-suggest:hover { background: #4a2fa8; }
+.suggest-list td { vertical-align: top; }
 
 /* ── TAWRs ───────────────────────────────────────────────────────────── */
 .subtabs { display: flex; gap: 4px; margin-bottom: 8px; }
@@ -308,6 +318,13 @@ details .row { margin-top: 6px; }
 .c-act button { margin: 0 0 4px 4px; }
 .notes summary { font-size: 12px; color: var(--warn); cursor: pointer; }
 .tawr-aside { color: var(--muted); margin: 8px 2px; }
+/* What the learning memory predicted: purple, here and in Review. */
+.chip-learn { display: inline-block; margin-top: 4px; font-size: 11px; font-weight: 600; padding: 0 6px; border-radius: 8px; background: #f1ecfd; color: #5b3cc4; cursor: help; }
+.learned-list { margin: 6px 0 8px; padding: 6px 10px; background: #f7f4fe; border: 1px solid #e3dafb; border-radius: 6px; font-size: 12px; }
+.learned-list .learned-head { font-weight: 600; color: #5b3cc4; }
+.learned-list ul { margin: 4px 0 0; padding-left: 18px; }
+.flags .warn { color: #8a5300; }
+.learned-note { font-size: 13px; background: #f7f4fe; border: 1px solid #e3dafb; border-radius: 6px; padding: 6px 10px; margin-bottom: 8px; color: #3f2a8c; }
 .facts { display: grid; grid-template-columns: 110px 1fr; gap: 3px 10px; margin: 8px 0; font-size: 13px; }
 .facts dt { color: var(--muted); }
 .facts dd { margin: 0; }
@@ -338,6 +355,8 @@ details .row { margin-top: 6px; }
 .form .line { display: grid; grid-template-columns: 280px 1fr; gap: 8px; align-items: center; margin: 3px 0; }
 .form .ctl.check { flex-direction: row; align-items: center; gap: 6px; color: var(--ink); font-size: 13px; }
 .form .edited input, .form .edited select, .form .edited textarea { background: #fff7e0; border-color: #e0b44a; }
+.form .predicted input, .form .predicted select, .form .predicted textarea { background: #f4f0fe; border-color: #a993ee; }
+.form label.check.predicted { background: #f4f0fe; box-shadow: 0 0 0 1px #a993ee; border-radius: 4px; }
 .form .grid-table td { padding: 2px; }
 .scroll-x { overflow-x: auto; }
 
@@ -419,6 +438,28 @@ details .row { margin-top: 6px; }
 .phase-table input { width: 100%; min-width: 120px; }
 .phase-add { margin: 8px 0; }
 .phase-add input { max-width: 200px; }
+
+/* Setup → Learning memory */
+.learn-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; margin: 8px 0 4px; }
+.learn-stat { border: 1px solid #e3dafb; background: #f7f4fe; border-radius: 8px; padding: 8px 10px; }
+.learn-num { font-size: 22px; font-weight: 700; color: #3f2a8c; line-height: 1.1; }
+.learn-cap { font-size: 12px; font-weight: 600; }
+.learn-head { margin: 14px 0 4px; font-size: 13px; }
+.learn-table td.warn { color: #8a5300; font-weight: 600; }
+.memory-log { list-style: none; margin: 0; padding: 0; max-height: 420px; overflow: auto; border: 1px solid var(--line); border-radius: 6px; }
+.memory-log li { display: grid; grid-template-columns: 92px 1fr auto auto; gap: 8px; align-items: center; padding: 5px 8px; border-bottom: 1px solid var(--line); font-size: 12px; }
+.memory-log li:last-child { border-bottom: 0; }
+.mem-kind { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; padding: 1px 6px; border-radius: 8px; text-align: center; background: #eef0f3; color: #4b5563; }
+.mem-form { background: #e7f5ec; color: #17663a; }
+.mem-outcome { background: #f1ecfd; color: #5b3cc4; }
+.mem-reject { background: #fdecec; color: #a32121; }
+.mem-link { background: #e8f0fc; color: #1d4f9c; }
+.mem-when { white-space: nowrap; }
+.learn-actions { margin: 8px 0 4px; }
+@media (max-width: 640px) {
+  .memory-log li { grid-template-columns: 1fr auto; }
+  .memory-log .mem-kind, .memory-log .mem-when { grid-column: 1 / -1; justify-self: start; }
+}
 .loc-pin-lit span { box-shadow: 0 0 0 3px #fff, 0 0 14px 6px #14d3a0; }
 /* A request's number on its line, in its status colour. */
 .req-tag span, .req-tag-key { display: inline-block; font: 700 11px system-ui, sans-serif; color: #fff; background: var(--c, #666b73); border: 2px solid #fff; border-radius: 9px; padding: 0 6px; box-shadow: 0 1px 4px rgba(0,0,0,.35); white-space: nowrap; cursor: pointer; }

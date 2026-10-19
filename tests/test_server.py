@@ -183,6 +183,29 @@ class Workflow(Base):
         ok = ops.set_settings(self.con, {"phases": '[{"name": "Phase 1", "bbox": [0, 0, 10.5, 10]}]'}, self.manager, WF)
         self.assertIn("Phase 1", ok["phases"])
 
+    def test_the_memory_is_kept_for_those_who_raise_and_decide(self):
+        entry = {"kind": "form", "tawr_id": 7, "data": {"action": "submit", "answers": {"power": "off"}}}
+        kept = ops.add_memory(self.con, [entry, {"kind": "link", "data": {"title": "IXL"}}], self.requester, WF)
+        self.assertEqual([e["kind"] for e in kept], ["form", "link"])
+        self.assertEqual(kept[0]["by"], self.requester["name"])
+        self.assertEqual(ops.list_memory(self.con, self.manager, WF)[0]["data"]["answers"], {"power": "off"})
+        self.refused(ops.list_memory, self.con, self.viewer, WF, status=403)
+        self.refused(ops.add_memory, self.con, [entry], self.viewer, WF, status=403)
+        for bad in ([], [{"kind": "guess", "data": {}}], [{"kind": "form", "data": "text"}],
+                    [{"kind": "form", "tawr_id": "7", "data": {}}], [{"kind": "form", "data": {"x": "y" * 20_001}}]):
+            self.refused(ops.add_memory, self.con, bad, self.requester, WF, status=400)
+        ops.forget_memory(self.con, kept[1]["id"], self.requester, WF)
+        self.assertEqual(len(ops.list_memory(self.con, self.requester, WF)), 1)
+        self.refused(ops.forget_memory, self.con, kept[1]["id"], self.requester, WF, status=404)
+        self.refused(ops.clear_memory, self.con, self.requester, WF, status=403)
+        self.assertEqual(ops.clear_memory(self.con, self.manager, WF), {"forgotten": 1})
+
+    def test_the_learning_settings_are_checked(self):
+        ops.set_settings(self.con, {"learn_predict": "off", "learn_threshold": "0.75"}, self.requester, WF)
+        self.assertEqual(ops.get_settings(self.con)["learn_threshold"], "0.75")
+        for bad in ({"learn_predict": "maybe"}, {"learn_threshold": "0.2"}, {"learn_threshold": "nan"}, {"learn_threshold": "sure"}):
+            self.refused(ops.set_settings, self.con, bad, self.requester, WF, status=400)
+
     def consolidated(self):
         a = ops.act_on_tawr(self.con, self.draft("a|day")["id"], "submit", self.requester, WF)
         b = ops.act_on_tawr(self.con, self.draft("b|day")["id"], "submit", self.requester, WF)

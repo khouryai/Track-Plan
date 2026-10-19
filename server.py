@@ -30,6 +30,8 @@ TAWRs (signed in; who may do what is web/data/tawr_workflow.json)
   POST   /api/tawrs/consolidate              {ids, merge, record, note}   (track allocation manager)
   POST   /api/tawrs/<id>/split                                             (track allocation manager)
   GET/PUT /api/tawr/settings, /api/tawr/template (application/pdf; 204 until uploaded)
+  GET/POST /api/memory, DELETE /api/memory/<id>, POST /api/memory/clear (manager)
+                                             the learning memory: web/js/learn.js
   GET/POST /api/tawr/descriptions, PUT/DELETE /api/tawr/descriptions/<id>
 
 Legacy access requests (reads open; changes need a requester or the manager)
@@ -309,6 +311,15 @@ class Handler(SimpleHTTPRequestHandler):
                 return self.send_json(ops.save_description(con, int(p[2]), self.body(), need(), WORKFLOW))
             if method == "DELETE":
                 return self.send_json(ops.delete_description(con, int(p[2]), need(), WORKFLOW))
+        if p == ["memory"]:
+            if method == "GET":
+                return self.send_json(ops.list_memory(con, need(), WORKFLOW))
+            if method == "POST":
+                return self.send_json(ops.add_memory(con, (self.body() or {}).get("entries"), need(), WORKFLOW), HTTPStatus.CREATED)
+        if p == ["memory", "clear"] and method == "POST":
+            return self.send_json(ops.clear_memory(con, need(), WORKFLOW))
+        if len(p) == 2 and p[0] == "memory" and p[1].isdigit() and method == "DELETE":
+            return self.send_json(ops.forget_memory(con, int(p[1]), need(), WORKFLOW))
         return self.error_json(HTTPStatus.NOT_FOUND, "no such endpoint")
 
     # -------------------------------------------------- the map, and the legacy requests

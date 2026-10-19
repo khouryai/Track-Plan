@@ -26,6 +26,7 @@ const pdf = await import(path.join(ROOT, 'web/js/tawr_pdf.js'));
 const zip = await import(path.join(ROOT, 'web/js/zip.js'));
 const SAMPLE = await import(path.join(ROOT, 'web/js/sample.js'));
 const PH = await import(path.join(ROOT, 'web/js/phases.js'));
+const LEARN = await import(path.join(ROOT, 'web/js/learn.js'));
 const { readZip } = await import(path.join(ROOT, 'web/js/xlsx.js'));
 const MAP = JSON.parse(fs.readFileSync(path.join(ROOT, 'web/data/map.json'), 'utf8'));
 const WORKFLOW = JSON.parse(fs.readFileSync(path.join(ROOT, 'web/data/tawr_workflow.json'), 'utf8'));
@@ -368,6 +369,88 @@ console.log('\nphases');
   check('said in words', PH.coversText(MAP.routes, phases[0].bbox) === 'the W and Y lines');
   check('a box over no track says so', PH.coversText(MAP.routes, [0, 0, 10, 10]) === 'no calibrated track');
   check('inside a box', PH.insideBox([200, 1000], phases[0].bbox) && !PH.insideBox([2000, 1000], phases[0].bbox));
+}
+
+console.log('\nlearning memory');
+{
+  const act = (title, activityId, party, extra = {}) => ({ title, activityId, party, hoursText: '2200-0500', sswp: '701', ...extra });
+  const src = (kind, acts, tracks, codes = ['X']) => ({
+    kind, activities: acts, support: codes.map((code) => ({ code })),
+    place: { places: kind === 'tcr' ? [{ id: 'tcr:Colma', name: 'Colma TCR' }] : [], limits: tracks.map((t) => ({ track: t, from_mp: 17.2, to_mp: 17.9 })) },
+  });
+  const nightForm = (id, extra = {}) => ({
+    work_in_track_zone_yes: true, clearance_verification_yes: true, track_inspection_first_train_no: true,
+    police_advisory_threat_of_theft: true, person_in_charge_name: 'Dana Okafor', person_in_charge_cell_phone: '415-555-0142',
+    row1_date: '10/20/2026', row1_power_off: true, row2_date: '10/21/2026', row2_power_off: true, ...extra,
+  });
+  let n = 0;
+  const entry = (kind, tawrId, data, at = '2026-10-10T10:00:00Z') => ({ id: ++n, kind, tawr_id: tawrId, at, by: 'Rae', data });
+  const cable = src('track', [act('Cable trough installation', 'C-W101', 'Hitachi')], ['W1', 'W2']);
+  const pull = src('track', [act('Signal cable pull', 'C-W102', 'Hitachi')], ['W2']);
+  const entries = [
+    entry('form', 1, { action: 'submit', shift: 'night', source: LEARN.compactSource(cable), answers: LEARN.answersOf(nightForm(1)) }),
+    entry('form', 1, { action: 'approve', shift: 'night', source: LEARN.compactSource(cable), answers: LEARN.answersOf(nightForm(1)) }, '2026-10-11T10:00:00Z'),
+    entry('form', 2, { action: 'submit', shift: 'night', source: LEARN.compactSource(pull), answers: LEARN.answersOf(nightForm(2)) }),
+    entry('form', 3, { action: 'submit', shift: 'day', source: LEARN.compactSource(src('track', [act('Wayside equipment case foundations', 'C-W103', 'Pacific Civil')], ['W1'])),
+      answers: LEARN.answersOf({ work_in_track_zone_yes: true, clearance_verification_no: true, person_in_charge_name: 'Luis Ortega', person_in_charge_cell_phone: '415-555-0177', row1_date: '10/20/2026', row1_power_na: true }) }),
+    entry('link', null, { title: 'IXL SIM testing — San Bruno', activityId: 'T-W201', typed: 'San Bruno', link: { location_id: 'tcr:San Bruno', location_name: 'San Bruno TCR', location_kind: 'tcr', limits: [] } }),
+    entry('reject', 9, { shift: 'night', source: LEARN.compactSource(cable), reason: 'No flagger named for night work on W1' }),
+    entry('outcome', 2, { kept: ['power', 'person_in_charge'], changed: [{ unit: 'police_advisory_threat_of_theft', predicted: true, final: false }] }),
+  ];
+  const index = LEARN.buildIndex(entries, { now: Date.parse('2026-10-16T12:00:00Z') });
+  check('each request is learned from once, by its last word', index.examples.length === 3 && index.examples.find((e) => e.id === 1).approved);
+  check('the answers a form gives, a decision at a time', JSON.stringify(LEARN.answersOf(nightForm(1)).person_in_charge) === '["Dana Okafor","415-555-0142"]'
+    && LEARN.answersOf(nightForm(1)).power === 'off' && LEARN.answersOf(nightForm(1)).clearance_verification === 'yes');
+
+  const target = { ...src('track', [act('Cable trough installation', 'C-W101', 'Hitachi')], ['W1', 'W2']), shift: 'night' };
+  const defaults = { work_in_track_zone_yes: true, clearance_verification_no: true, track_inspection_first_train_no: true, row1_date: '11/09/2026', row1_power_na: true, row2_date: '11/10/2026', row2_power_na: true };
+  const guess = LEARN.predict(index, target, { generated: defaults });
+  check('a similar request predicts what was sent before', guess.power?.value === 'off' && guess.clearance_verification?.value === 'yes' && guess.police_advisory_threat_of_theft?.value === true
+    && guess.person_in_charge?.value[0] === 'Dana Okafor', JSON.stringify(Object.fromEntries(Object.entries(guess).map(([k, v]) => [k, v.value]))));
+  check('and says how sure, from how many', guess.power.support === 2 && guess.power.confidence >= 0.6 && guess.power.from.includes(1));
+  check('what the setup already gives is no prediction', !('work_in_track_zone' in guess) && !('track_inspection_first_train' in guess));
+  const filled = LEARN.applyPredictions(defaults, guess);
+  check('a prediction fills every box it decides', filled.row1_power_off && filled.row2_power_off && !filled.row1_power_na && filled.clearance_verification_yes && !filled.clearance_verification_no
+    && filled.person_in_charge_cell_phone === '415-555-0142');
+  check('the fields it fills are named for marking', LEARN.fieldsOf('power', filled).includes('row2_power_off') && LEARN.fieldsOf('person_in_charge').length === 2);
+
+  const unlike = { ...src('tcr', [act('IXL SIM testing', 'T-M401', 'BART Systems')], [], ['TCE']), shift: 'day' };
+  check('an unlike request predicts nothing', Object.keys(LEARN.predict(index, unlike, { generated: {} })).length === 0);
+  const split = LEARN.buildIndex([
+    entry('form', 21, { action: 'submit', shift: 'night', source: LEARN.compactSource(cable), answers: LEARN.answersOf(nightForm(21, { row1_power_off: false, row1_power_on: true, row2_power_off: false, row2_power_on: true })) }),
+    entry('form', 22, { action: 'submit', shift: 'night', source: LEARN.compactSource(cable), answers: LEARN.answersOf(nightForm(22)) }),
+  ], { now: Date.parse('2026-10-16T12:00:00Z') });
+  check('requests that disagree predict nothing', !('power' in LEARN.predict(split, target, { generated: defaults })));
+  const monitored = LEARN.buildIndex([1, 2].map((i) => entry('form', 30 + i, { action: 'submit', shift: 'night', source: LEARN.compactSource(cable),
+    answers: LEARN.answersOf(nightForm(30 + i, { maint_safety_monitor_details: 'BART safety monitor' })) })), { now: Date.parse('2026-10-16T12:00:00Z') });
+  check('a details line is predicted only with its tick', !('maint_safety_monitor_details' in LEARN.predict(monitored, target, { generated: defaults })));
+
+  const record = { id: 40, week_start: '2026-11-09', shift: 'night', source: { ...cable, predicted: guess }, fields: { ...filled, row1_power_off: false, row1_power_on: true, row2_power_off: false, row2_power_on: true } };
+  const outcome = LEARN.outcomeOf(record);
+  check('what was sent is checked against what was predicted', outcome.changed.length === 1 && outcome.changed[0].unit === 'power' && outcome.changed[0].final === 'on' && outcome.kept.includes('person_in_charge'), JSON.stringify(outcome));
+  const left = LEARN.entriesFor(record, 'submit');
+  check('submitting leaves the form and its outcome in the memory', left.map((e) => e.kind).join() === 'form,outcome' && left[0].data.answers.power === 'on' && !('geometry' in left[0].data.source.place));
+  check('a rejection is remembered with its reason', LEARN.entriesFor(record, 'reject', 'No flagger')[0].data.reason === 'No flagger' && LEARN.entriesFor(record, 'withdraw').length === 0);
+  const acc = LEARN.accuracy(index);
+  check('how often predictions were kept is tracked', acc.kept === 2 && acc.changed === 1 && Math.round(acc.rate * 100) === 67 && acc.units[0].key);
+
+  const byId = LEARN.suggestLink(index, { activity_id: 'T-W201', description: 'Anything', location: '' });
+  const byWords = LEARN.suggestLink(index, { activity_id: '', description: 'IXL SIM Testing San Bruno', location: '' });
+  check('a location is suggested from the same activity linked before', byId?.link.location_id === 'tcr:San Bruno' && byId.how === 'id' && byId.score === 1);
+  check('or one named the same way, never as surely', byWords?.link.location_id === 'tcr:San Bruno' && byWords.how === 'words' && byWords.score < 1);
+  check('but not where the location typed says somewhere else', LEARN.suggestLink(index, { activity_id: '', description: 'IXL SIM Testing San Bruno', location: 'Daly City' }) === null);
+  check('but not from a stranger', LEARN.suggestLink(index, { activity_id: 'X-1', description: 'Rail grinding', location: '' }) === null);
+  const fills = LEARN.suggestFields(index, { activity_id: 'C-W101', description: 'Cable trough installation', party: '', work_hours: '', sswp: '702' });
+  check('its party and hours from the requests it was in, never over what is there', fills.party?.value === 'Hitachi' && fills.work_hours?.value === '2200-0500' && !fills.sswp, JSON.stringify(fills));
+  const warned = LEARN.rejectionsLike(index, target);
+  check('a request like one rejected says why that one was', warned.length === 1 && /flagger/.test(warned[0].reason) && LEARN.rejectionsLike(index, unlike).length === 0);
+
+  const routes = { W1: [{ legs: [{ pts: [[0, 0], [100, 0]], mps: [17, 18] }] }] };
+  const drawn = { location_id: null, location_name: null, location_kind: null, limits: [{ track: 'W1', from_mp: 17.2, to_mp: 17.5 }], geometry: [[[20.004, 0], [50.0049, 0]]] };
+  const kept = LEARN.linkEntry({ description: 'Tie replacement W1', activity_id: 'T-W301', location: 'W1 17.2' }, drawn).data.link;
+  check('a link is remembered with its drawing, rounded', JSON.stringify(kept.geometry) === '[[[20,0],[50,0]]]' && kept.limits[0].track === 'W1');
+  const again = LEARN.restoreLink({ ...kept, geometry: undefined }, routes);
+  check('and drawn again from its limits when it was too long to keep', again.geometry.length === 1 && Math.round(again.geometry[0][0][0]) === 20 && Math.round(again.geometry[0].at(-1)[0]) === 50);
 }
 
 console.log(`\n${passed} passed, ${failures.length} failed`);

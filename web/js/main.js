@@ -24,6 +24,7 @@ import { el, clear, toast, openModal, dayLabel } from './ui.js';
 import * as LookaheadView from './lookahead_view.js';
 import * as TawrView from './tawr_view.js';
 import { parsePhases } from './phases.js';
+import { buildIndex } from './learn.js';
 
 const $ = (s) => document.querySelector(s);
 const VIEWS = ['lookahead', 'tawr', 'map'];
@@ -51,14 +52,22 @@ app.reloadLookahead = async () => {
   app.la = { model: LA.makeModel(la.rows, la.cells), legend: la.legend, codes: la.codes, version: la.version };
 };
 
+/** The learning memory, and what learn.js reads it into for predicting and suggesting. */
+app.relearn = (memory) => {
+  app.memory = memory;
+  app.learning = buildIndex(memory);
+};
+
 app.reloadTawrs = async () => {
   const since = T.addDaysISO(T.mondayOf(app.today), -56);
-  const [tawrs, merges, descriptions, settings] = await Promise.all([
+  const [tawrs, merges, descriptions, settings, memory] = await Promise.all([
     S.listTawrs(since),
     S.listMerges(),
     S.listDescriptions().catch(() => []),
     S.getSettings().catch(() => ({})), // a viewer is given the phases alone
+    S.writer() ? S.listMemory().catch(() => []) : Promise.resolve([]),
   ]);
+  app.relearn(memory);
   app.tawrs = tawrs;
   app.merges = merges;
   app.descriptions = descriptions;
