@@ -21,8 +21,14 @@
  *
  * Reports (`reports_view.js`) say what the requests came to over the weeks.
  *
+ * A request carries a conversation (`conversation.js`) — what the requester
+ * and the manager say about it, with the reasons for its decisions — and the
+ * files sent with it (`attachments.js`), which go out with BART's form. Once it
+ * stops following the look-ahead, it says exactly what has changed there since,
+ * day by day, and who changed it (`tawr.sourceChanges`, `la_history.js`).
+ *
  * Imports: tawr, tawr_sync, tawr_pdf, zip, store, lookahead, links, ui, map,
- * phases, learn, reports_view.
+ * phases, learn, reports_view, la_history, conversation, attachments.
  */
 
 import * as T from './tawr.js';
@@ -39,6 +45,9 @@ import { STATUS_COLOR } from './map.js';
 import { parsePhases, phasesText, newPhaseId, coversText } from './phases.js';
 import * as Learn from './learn.js';
 import * as ReportsView from './reports_view.js';
+import * as H from './la_history.js';
+import * as Talk from './conversation.js';
+import { ATTACH_ACCEPT, attachProblem, sizeText } from './attachments.js';
 
 const V = { app: null, root: null, section: 'requests', picked: new Set(), open: new Set(), history: false, focus: null, setupAt: null };
 
@@ -409,6 +418,8 @@ function setOpen(node, open) {
   toggle.textContent = open ? 'Hide details' : 'Details';
   const key = node.dataset.tawrKey || node.dataset.tawrId;
   if (open) V.open.add(key); else V.open.delete(key);
+  const record = V.app.tawrs.find((r) => String(r.id) === node.dataset.tawrId);
+  if (open && record) freshThread(node, record);
 }
 
 /** A support code as people say it: "EIC", the register's name, or the code itself. */
@@ -455,6 +466,11 @@ function card(item, items, clashes = [], { power = [], overs = [] } = {}) {
   const pairs = partners(item, kind, items);
   const key = group?.key || record?.group_key || '';
   const open = V.open.has(key || String(record?.id || ''));
+  const talkCount = record ? Talk.thread(record, app.tawrs).filter((t) => t.kind === 'comment').length : 0;
+  const unreadCount = record ? Talk.unread(record, S.store.user?.id).length : 0;
+  const fileCount = record ? (record.attachments || []).length : 0;
+  /* What changed on the look-ahead since it stopped following it, day by day: who did it is read afterwards. */
+  const changes = changed.length ? T.sourceChanges(record.source, group, { dayLabel, elsewhere: (date, rows) => wentTo(items, record, date, rows) }) : [];
 
   const node = el('tbody', {
     class: `tawr-card st-${status}${open ? ' open' : ''}`, style: `--c:${STATUS_COLOR[status] || '#9ca3af'}`,
@@ -497,7 +513,7 @@ function card(item, items, clashes = [], { power = [], overs = [] } = {}) {
       refresh();
     }, { primary: true }));
   } else if (primary === 'download') {
-    rowActions.push(button('Download PDF', 'tawr-download', () => downloadOne(record), { primary: true }));
+    rowActions.push(button(fileCount ? 'Download form and files' : 'Download PDF', 'tawr-download', () => downloadOne(record), { primary: true }));
   } else if (primary) rowActions.push(stepButton(primary, { submit: 'Submit', approve: 'Approve', reopen: 'Reopen' }[primary]));
   /* After approval: the next thing to record about BART, or the access. */
   if (record && S.writer()) {
@@ -529,6 +545,9 @@ function card(item, items, clashes = [], { power = [], overs = [] } = {}) {
       el('div', { class: 'chips' }, [
         el('span', { class: `badge kind-${kind}`, title: kind === 'tcr' ? 'Work in the train control room — never on the same request as track' : kind === 'track' ? 'Work on the track, between these limits' : '', text: T.PART_KINDS[kind] || kind }),
         merged ? el('span', { class: 'badge', text: `Consolidated from ${(view.members || group?.members || []).length}` }) : null,
+        talkCount ? el('span', { class: `badge talk-count${unreadCount ? ' tone-you' : ''}`, dataset: { talk: unreadCount ? 'new' : 'read' }, title: 'Open the details to read the conversation',
+          text: unreadCount ? `${unreadCount} new comment${unreadCount === 1 ? '' : 's'}` : `${talkCount} comment${talkCount === 1 ? '' : 's'}` }) : null,
+        fileCount ? el('span', { class: 'badge file-count', title: (record.attachments || []).map((a) => a.name).join('\n'), text: `${fileCount} file${fileCount === 1 ? '' : 's'}` }) : null,
       ]),
       pairs.length ? el('div', { class: 'small pair', title: 'A TCR and track are separate categories of work, so the same activity makes one request for each.', text: `Goes with ${pairs.map((p) => `${p.record ? `#${p.record.id}` : p.group?.locationName} (${KIND_WORD[p.group?.kind || p.record?.source?.kind] || 'other'})`).join(', ')} — same activity` }) : null,
     ]),
@@ -604,7 +623,16 @@ function card(item, items, clashes = [], { power = [], overs = [] } = {}) {
   for (const o of myOver) {
     needs.append(el('li', { class: 'warn support-over', text: `${dayLabel(o.date)}, ${T.tawrShiftLabel(o.shift).toLowerCase()} shift: ${o.asked} × ${codeName(o.code)} asked for across ${o.ids.map((i) => `#${i}`).join(', ')}, and BART provides ${o.capacity}.` }));
   }
-  if (changed.length) needs.append(el('li', { class: 'block', text: `The look-ahead has changed since this was ${status} (${changed.map(label).join(', ')}). ${status === 'approved' ? 'Revise it if the request should follow, or cancel it and release the track if the work is off.' : status === 'submitted' ? 'Withdraw it to bring it up to date.' : 'Reopen it to bring it up to date.'}` }));
+  if (changed.length) {
+    const todo = status === 'approved' ? 'Revise it if the request should follow, or cancel it and release the track if the work is off.'
+      : status === 'submitted' ? 'Withdraw it to bring it up to date.' : 'Reopen it to bring it up to date.';
+    needs.append(el('li', { class: 'block la-changed', dataset: { changed: changes.length } }, [
+      changes.length ? `The look-ahead has changed since this was ${status}:` : `The look-ahead has changed since this was ${status} (${changed.map(label).join(', ')}).`,
+      changes.length ? el('ul', { class: 'changes' }, changes.map((c, i) => el('li', { dataset: { change: i } }, [c.text, el('span', { class: 'small who' })]))) : null,
+      changes.length ? el('div', { class: 'small', title: changed.map(label).join('\n'), text: `${changed.length} field${changed.length === 1 ? '' : 's'} on the form change.` }) : null,
+      el('div', { text: todo }),
+    ]));
+  }
   if (record?.decision_note && record.status === 'rejected') needs.append(el('li', { class: 'block', text: `Rejected: ${record.decision_note}` }));
   for (const o of overlaps) {
     const other = o.item.record;
@@ -636,7 +664,7 @@ function card(item, items, clashes = [], { power = [], overs = [] } = {}) {
   for (const action of available) if (action !== primary && action !== 'deny' && !(action === 'cancel' && after === 'recorded')) more.append(stepButton(action));
   if (record && merged && T.may(wf, role, 'split', record.status)) more.append(button('Split back up', 'tawr-split', () => splitUp(record)));
   if (record && S.writer()) {
-    if (['approved', 'cancelled'].includes(record.status) && primary !== 'download') more.append(button('Download PDF', 'tawr-download', () => downloadOne(record)));
+    if (['approved', 'cancelled'].includes(record.status) && primary !== 'download') more.append(button(fileCount ? 'Download form and files' : 'Download PDF', 'tawr-download', () => downloadOne(record)));
     if (['granted', 'recorded'].includes(after)) more.append(button(after === 'recorded' ? 'Change the access used…' : 'Access used…', 'tawr-access', () => accessDialog(record)));
     if (['granted', 'recorded', 'access-due'].includes(after)) more.append(button('BART…', 'tawr-bart', () => bartDialog(record)));
     if (!after) more.append(button('Preview PDF', 'tawr-preview', () => downloadOne(record, { draft: true })));
@@ -653,6 +681,8 @@ function card(item, items, clashes = [], { power = [], overs = [] } = {}) {
       el('summary', { text: `${notes.length} note${notes.length === 1 ? '' : 's'}` }),
       el('ul', { class: 'flags' }, notes.map((n) => el('li', { class: 'note', text: n }))),
     ]) : null,
+    record ? filesBox(record) : null,
+    record ? conversation(record) : null,
     el('p', { class: 'small meta', text: meta.join(' · ') }),
     record?.history?.length ? el('details', { class: 'history' }, [
       el('summary', { text: 'History' }),
@@ -662,7 +692,188 @@ function card(item, items, clashes = [], { power = [], overs = [] } = {}) {
   ])]);
 
   node.append(row, detail);
+  if (changes.length) whoChanged(node, record, changes);
+  if (open && record) freshThread(node, record);
   return node;
+}
+
+/* ── What changed on the look-ahead, and who changed it ───────────────── */
+
+/** Where a day a request no longer asks for went: the same work, another shift's request this week. */
+function wentTo(items, record, date, rows) {
+  const other = items.find((i) => i.group && i.group.key !== record.group_key && i.group.days.some((d) => d.date === date && (d.rows || []).some((r) => rows.includes(r))));
+  if (!other) return null;
+  const shift = `the ${T.tawrShiftLabel(other.group.shift).toLowerCase()} shift`;
+  return other.record ? `${shift} (#${other.record.id})` : shift;
+}
+
+/**
+ * Fill in who made each change a request's card lists, from the look-ahead's
+ * history since it was submitted: the edits on its rows (and their names rows)
+ * on those days, or to what its activities say — or a workbook imported since,
+ * which replaces every row at once.
+ */
+async function whoChanged(node, record, changes) {
+  const model = V.app.la.model;
+  const withNames = (rows) => [...new Set(rows.flatMap((id) => [id, ...LA.resourcesOf(model, id).map((r) => r.id)]))];
+  const since = record.submitted_at || record.updated_at || record.created_at;
+  const rows = withNames(changes.flatMap((c) => c.rows));
+  let edits = [];
+  let imports = [];
+  try {
+    if (rows.length) edits = (await S.listEdits({ rows, since, limit: 2000 })).edits;
+    if (changes.some((c) => !H.editsFor({ ...c, rows: withNames(c.rows) }, edits).length)) {
+      imports = (await S.listEdits({ since, limit: 2000 })).edits.filter((e) => e.target === 'import');
+    }
+  } catch { return; } // the history is a help; the change stands without it
+  const stamp = (iso) => stampLabel(iso);
+  changes.forEach((c, i) => {
+    const span = node.querySelector(`.changes li[data-change="${i}"] .who`);
+    if (!span) return;
+    const found = H.editsFor({ ...c, rows: withNames(c.rows) }, edits);
+    span.textContent = found.length ? ` — ${H.whoText(found, { stamp })}`
+      : imports.length ? ` — the workbook imported by ${H.whoText(imports, { stamp })}` : '';
+  });
+}
+
+/* ── The conversation ─────────────────────────────────────────────────── */
+
+const mayComment = () => (S.store.workflow.comment || S.store.workflow.write || []).includes(S.role());
+
+function threadItems(list, record) {
+  clear(list);
+  const items = Talk.thread(record, V.app.tawrs);
+  const fresh = new Set(Talk.unread(record, S.store.user?.id).map((c) => c.id));
+  if (!items.length) list.append(el('li', { class: 'talk-empty small', text: 'Nothing said yet.' }));
+  for (const it of items) {
+    list.append(el('li', { class: `talk-${it.kind}${it.kind === 'comment' && fresh.has(it.id) && !it.on ? ' talk-new' : ''}`, dataset: it.id ? { comment: it.id } : {} }, [
+      el('div', { class: 'talk-head' }, [
+        el('b', { text: it.by || 'Somebody' }),
+        ` · ${stampLabel(it.at)}`,
+        it.kind === 'step' ? el('span', { class: 'badge talk-step', text: it.label }) : null,
+        it.on ? el('span', { class: 'small', text: ` · on #${it.on.id}, before it was ${it.on.how}` }) : null,
+        it.kind === 'comment' && fresh.has(it.id) && !it.on ? el('span', { class: 'badge tone-you', text: 'New' }) : null,
+      ]),
+      el('div', { class: 'talk-text', text: it.text }),
+    ]));
+  }
+}
+
+/** What the requester and the manager say about a request, and the reasons for its decisions: one thread. */
+function conversation(record) {
+  const list = el('ol', { class: 'talk-list', 'aria-live': 'polite' });
+  threadItems(list, record);
+  const box = el('section', { class: 'talk', 'aria-label': `Conversation about #${record.id}` }, [el('h4', { text: 'Conversation' }), list]);
+  if (!mayComment()) return box;
+  const input = el('textarea', { rows: 2, maxlength: 2000, 'aria-label': `Comment on #${record.id}`, placeholder: 'Say something about this request — the other side sees it here, and on their start page.' });
+  const send = async () => {
+    const text = input.value.trim();
+    if (!text) { input.focus(); return; }
+    try {
+      await S.addComment(record.id, text);
+      input.value = '';
+      refresh();
+    } catch (err) { toast(err.message, 'bad'); }
+  };
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); send(); } });
+  box.append(el('div', { class: 'talk-form' }, [input, el('button', { type: 'button', class: 'mini', dataset: { action: 'comment-add' }, text: 'Add comment', title: 'Ctrl+Enter', onClick: send })]));
+  return box;
+}
+
+/**
+ * Opened, a request's conversation is read as it stands — somebody may have
+ * replied since the page loaded — and what it shows is marked read. Only the
+ * list is redrawn: a comment being typed is left alone.
+ */
+async function freshThread(node, record) {
+  try {
+    const now = await S.listComments(record.id);
+    if (now.length !== (record.comments || []).length) {
+      record.comments = now;
+      const list = node.querySelector('.talk-list');
+      if (list) threadItems(list, record);
+    }
+    const upto = Talk.newestComment(record);
+    if (upto > (Number(record.seen_comment) || 0)) {
+      await S.markSeen(record.id, upto);
+      setTimeout(() => { record.seen_comment = upto; }, 0); // shown as new this once, read from now on
+      const chip = node.querySelector('.talk-count');
+      if (chip) { chip.classList.remove('tone-you'); chip.dataset.talk = 'read'; chip.textContent = `${record.comments.length} comment${record.comments.length === 1 ? '' : 's'}`; }
+    }
+  } catch { /* offline for a moment: what was loaded stands */ }
+}
+
+/* ── The files sent with a request ────────────────────────────────────── */
+
+/** The SSWP, drawings, permits: sent with BART's form, changed where its fields may change. */
+function filesBox(record) {
+  const files = record.attachments || [];
+  const may = T.canEdit(S.store.workflow, S.role(), record.status);
+  const box = el('section', { class: 'files', 'aria-label': `Files sent with #${record.id}` }, [
+    el('h4', { text: files.length ? `Files sent with it (${files.length})` : 'Files sent with it' }),
+  ]);
+  if (files.length) {
+    box.append(el('ul', { class: 'file-list' }, files.map((a) => el('li', { dataset: { file: a.id } }, [
+      el('button', { type: 'button', class: 'link', dataset: { action: 'file-download' }, text: a.name, title: `Download ${a.name}`, onClick: () => downloadFile(a) }),
+      el('span', { class: 'small', text: ` ${sizeText(a.size)} · ${a.copied_from ? 'carried over' : 'added'} by ${a.by || 'somebody'}, ${stampLabel(a.at)}` }),
+      may ? el('button', { type: 'button', class: 'mini secondary', dataset: { action: 'file-remove' }, text: 'Remove', 'aria-label': `Remove ${a.name}`, onClick: () => removeFile(record, a) }) : null,
+    ]))));
+  }
+  if (may) {
+    const input = el('input', { type: 'file', multiple: true, accept: ATTACH_ACCEPT, hidden: true, dataset: { files: String(record.id) } });
+    input.addEventListener('change', () => { addFiles(record, [...input.files]); input.value = ''; });
+    box.append(el('div', { class: 'file-add' }, [
+      el('button', { type: 'button', class: 'mini secondary', dataset: { action: 'file-add' }, text: 'Add files…', onClick: () => input.click() }),
+      el('span', { class: 'small', text: 'or drop them here: the SSWP, drawings, permits — up to 20 MB each.' }),
+      input,
+    ]));
+    box.addEventListener('dragover', (e) => { if ([...(e.dataTransfer?.types || [])].includes('Files')) { e.preventDefault(); box.classList.add('drop'); } });
+    box.addEventListener('dragleave', () => box.classList.remove('drop'));
+    box.addEventListener('drop', (e) => { e.preventDefault(); box.classList.remove('drop'); addFiles(record, [...(e.dataTransfer?.files || [])]); });
+  } else if (!files.length) {
+    box.append(el('p', { class: 'small', text: S.writer() ? `No files. Files change where the request does: ${record.status === 'submitted' ? 'the Track Allocation Manager may add them now, or withdraw it to add them' : 'revise it to send different files'}.` : 'No files.' }));
+  }
+  if (files.length) box.append(el('p', { class: 'small', text: 'They go out with BART\'s form: Download PDF gives the form and these in one .zip, and so does Download approved.' }));
+  return box;
+}
+
+async function addFiles(record, list) {
+  let count = (record.attachments || []).length;
+  let added = 0;
+  for (const f of list) {
+    const problem = attachProblem(f.name, f.size, count);
+    if (problem) { toast(`${f.name}: ${problem.message}.`, 'bad'); continue; }
+    try {
+      await S.addAttachment(record.id, f);
+      count++;
+      added++;
+    } catch (err) { toast(`${f.name}: ${err.message}`, 'bad'); }
+  }
+  if (added) toast(`#${record.id}: ${added} file${added === 1 ? '' : 's'} added.`, 'good');
+  refresh();
+}
+
+async function removeFile(record, a) {
+  if (!(await confirmDialog({ title: `Remove ${a.name}?`, message: `It will no longer be sent with #${record.id}.`, confirmLabel: 'Remove', danger: true }))) return;
+  try { await S.removeAttachment(record.id, a.id); toast(`${a.name} removed.`, 'good'); } catch (err) { toast(err.message, 'bad'); }
+  refresh();
+}
+
+async function downloadFile(a) {
+  try { saveFile(a.name, await S.attachmentBytes(a), a.type || 'application/octet-stream'); } catch (err) { toast(`${a.name}: ${err.message}`, 'bad'); }
+}
+
+/** A request's files as zip entries under `folder`, each name once. */
+async function fileEntries(record, folder = '') {
+  const out = [];
+  const used = new Set();
+  for (const a of record.attachments || []) {
+    let name = a.name;
+    for (let n = 2; used.has(name.toLowerCase()); n++) name = a.name.replace(/(\.[^.]*)?$/, (ext) => ` (${n})${ext || ''}`);
+    used.add(name.toLowerCase());
+    out.push({ name: `${folder}${name}`, data: await S.attachmentBytes(a) });
+  }
+  return out;
 }
 
 function button(text, action, onClick, { primary = false, danger = false, disabled = false, title = '' } = {}) {
@@ -964,7 +1175,11 @@ async function downloadOne(record, { draft = false } = {}) {
   if (!bytes) return;
   try {
     const name = T.tawrFileName({ weekStart: record.week_start, locationName: record.location_name, shift: record.shift });
-    saveFile(draft ? `DRAFT ${name}` : name, fill(bytes, record), 'application/pdf');
+    const form = fill(bytes, record);
+    // The files sent with it go with the form, in one .zip.
+    if (!draft && (record.attachments || []).length) {
+      saveFile(name.replace(/\.pdf$/, '.zip'), zipStore([{ name, data: form }, ...(await fileEntries(record))]), 'application/zip');
+    } else saveFile(draft ? `DRAFT ${name}` : name, form, 'application/pdf');
   } catch (err) { toast(err.message, 'bad'); }
 }
 
@@ -974,14 +1189,18 @@ async function downloadAll(week, records) {
   const bytes = await templateOrSay();
   if (!bytes) return;
   try {
-    const files = records.map((r) => ({ name: T.tawrFileName({ weekStart: r.week_start, locationName: `${r.location_name} #${r.id}`, shift: r.shift }), data: fill(bytes, r) }));
+    const files = [];
+    for (const r of records) {
+      const name = T.tawrFileName({ weekStart: r.week_start, locationName: `${r.location_name} #${r.id}`, shift: r.shift });
+      files.push({ name, data: fill(bytes, r) }, ...(await fileEntries(r, `${name.replace(/\.pdf$/, '')} files/`)));
+    }
     saveFile(`TAWRs ${week}.zip`, zipStore(files), 'application/zip');
   } catch (err) { toast(err.message, 'bad'); }
 }
 
 /** One line per approved request: what goes to BART, for the submittal email. */
 function register(week, records) {
-  const head = ['TAWR', 'Week', 'Shift', 'Location', 'Area', 'Dates', 'Hours', 'Work', 'BART support', 'SSWP', 'Approved', 'Requester', 'Sent to BART', 'BART reference', 'BART answer'];
+  const head = ['TAWR', 'Week', 'Shift', 'Location', 'Area', 'Dates', 'Hours', 'Work', 'BART support', 'SSWP', 'Approved', 'Requester', 'Sent to BART', 'BART reference', 'BART answer', 'Files'];
   const lines = [head.map(csvField).join(',')];
   for (const r of records) {
     const days = r.source?.days || [];
@@ -991,7 +1210,7 @@ function register(week, records) {
       days.map((d) => d.date).join(' '), days.map((d) => `${d.start}-${d.end}`).join(' '),
       (r.source?.activities || []).map((a) => [a.activityId, a.title].filter(Boolean).join(' ')).join('; '),
       support, (r.source?.sswp || []).join(' '), stampLabel(r.decided_at), r.fields?.requestor_name || '',
-      r.bart?.sent_on || '', r.bart?.ref || '', r.bart?.answer || '',
+      r.bart?.sent_on || '', r.bart?.ref || '', r.bart?.answer || '', (r.attachments || []).map((a) => a.name).join('; '),
     ].map(csvField).join(','));
   }
   saveFile(`TAWR submittal register ${week}.csv`, `${lines.join('\r\n')}\r\n`, 'text/csv');
@@ -1797,16 +2016,16 @@ function backupSection() {
     const f = input.files?.[0];
     if (!f) return;
     try {
-      S.importLocal(await f.text());
+      await S.importLocal(await f.text());
       toast('Restored from the backup.', 'good');
       setTimeout(() => location.reload(), 600);
     } catch (err) { toast(err.message, 'bad'); }
   });
   return el('section', { class: 'settings-block' }, [
     el('h3', { class: 'settings-group', text: 'This browser\'s copy' }),
-    el('p', { class: 'small', text: 'On the static site the look-ahead, the TAWRs and the learning memory are kept in this browser only. Back them up, or move them to another browser. BART\'s form is not in the backup.' }),
+    el('p', { class: 'small', text: 'On the static site the look-ahead and its history, the TAWRs with their conversations and files, and the learning memory are kept in this browser only. Back them up, or move them to another browser. BART\'s form is not in the backup.' }),
     el('div', { class: 'inline' }, [
-      el('button', { type: 'button', class: 'secondary mini', text: 'Back up (JSON)', onClick: () => saveFile(`track-plan-backup-${V.app.today}.json`, S.exportLocal(), 'application/json') }),
+      el('button', { type: 'button', class: 'secondary mini', dataset: { action: 'backup' }, text: 'Back up (JSON)', onClick: async () => saveFile(`track-plan-backup-${V.app.today}.json`, await S.exportLocal(), 'application/json') }),
       el('button', { type: 'button', class: 'secondary mini', text: 'Restore…', onClick: () => input.click() }),
       input,
     ]),

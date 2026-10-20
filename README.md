@@ -64,6 +64,15 @@ file to import.
    a struck-out code red and struck through, the legend and support codes keyed
    underneath — ready to paste into the master look-ahead (with or without the
    Resource rows). It reads back through the same import, which the tests check.
+   **Every change is kept** — who made it, when, and what it said before
+   (`web/js/la_history.js`; the server's `la_edits`, the browser's copy on the
+   static site): right-click a day → *History of this day…* ("Night Shift →
+   Swing Shift · support taken off WIT"), or an activity → *History of this
+   activity…* (what it says, every day of it and its names); *Changes* on the
+   toolbar lists every change to the weeks on screen as the actions that made
+   them, newest first, each line going to its day. A workbook import is one line
+   that says what it replaced; an undo is new changes like any other. Viewers
+   read the history too.
 2. **Link each activity's location** — hover its Location cell and press *Link*
    (or right-click it → *Select on track plan…*). Once linked, *Map* shows it on
    the track plan, and the cell's *#21* opens the TAWR made from it. After any
@@ -102,6 +111,24 @@ file to import.
    request names the track request made from the same activity. Every field of
    BART's form can be checked in *Review*, which says what BART usually needs that
    is still blank; *Submit* (one, or several picked at once).
+   **Each request has a conversation** (*Details*): what the requester and the
+   Track Allocation Manager say about it, with the reasons for its decisions —
+   a rejection, BART's denial, a cancellation — in the same thread, and what was
+   said on the request a revision replaced or the requests consolidated into it,
+   each marked (`web/js/conversation.js`). Comments are append-only and can be
+   made at any point in a request's life; a viewer reads them. A comment you have
+   not seen is marked on the request's row (*1 new comment*) and on your start
+   page until you open it. **Files go with a request** — the SSWP, drawings,
+   permits, a physical barrier plan: *Add files…* or drop them on the request,
+   up to 20 per request and 20 MB each, documents, drawings, photos, emails and
+   zip files only (`web/js/attachments.js`; the server refuses the rest too).
+   Files change where the request's fields do (a draft is its requester's, a
+   submitted one the manager's, an approved one is final) and a revision or a
+   consolidation carries them over. They go out with BART's form: *Download
+   form and files* gives the form and its files in one .zip, *Download approved*
+   puts each request's files beside its form, and the submittal register lists
+   them. On the static site they are kept in this browser, and its backup
+   carries them.
 5. **The Track Allocation Manager decides.** Requests whose places **overlap** on
    the drawing — the same TCR, or track in common — in the same week and shift are
    named to each other; *Consolidate* makes them one request (the limits
@@ -120,7 +147,12 @@ file to import.
    *Reject* (with a reason the requester sees), one by one or in bulk. An approved
    request is final: changing it is a *Revise*, which keeps the approved version
    as superseded. If two approved requests still repeat each other, the page says
-   so before anything is downloaded.
+   so before anything is downloaded. **Once a request is submitted it no longer
+   follows the look-ahead, and says exactly what has changed there since**, day
+   by day — *Wed 28 Oct moved to the swing shift*, *Mon 2 Nov: hours 2200–0400
+   → 2300–0400, support X.WIT → X*, a day added, an activity's description or
+   location changed — with who changed it and when, read from the look-ahead's
+   history (`tawr.sourceChanges`), and how many of the form's fields that changes.
 6. **Submittal**: *Download PDF* fills BART's own fillable form (uploaded once in
    Setup, never committed or published) and signs it with the requester's
    signature; *Download approved* puts the week's forms in one .zip, and the
@@ -246,6 +278,8 @@ the server keeps it in `memory`, the static site in the browser). From it:
 | Record what BART said, cancel and release, record the access used | yes | yes | — |
 | Approve, reject, consolidate, split | — | yes | — |
 | Add and change accounts (server) | — | yes | — |
+| Comment on a request | yes | yes | — |
+| Add and remove a request's files (where its fields may change) | yes | yes | — |
 | See the learning memory, forget an entry | yes | yes | — |
 | Clear the learning memory (server) | — | yes | — |
 | Read everything | yes | yes | yes |
@@ -420,9 +454,12 @@ is kept at `db/tawr_template.pdf` — outside `web/`, ignored by git.
 |---|---|
 | `users`, `sessions` | accounts (requester, manager, viewer) and signed-in sessions |
 | `la_rows`, `la_cells` | the look-ahead: sections, activities (with their track plan `link`) and Resource rows; a colour and text per day |
+| `la_edits` | the look-ahead's history: one row per thing changed — a day, a row's fields, an import, the legend or the codes — with who, when, before and after |
 | `meta` | the legend (shift colours), the support code register, the look-ahead's version |
 | `tawrs` | the requests: week, place and shift, status, the form's fields as generated and as edited, what they were read from, who did what and when, what happened with BART and the access used (an older database is upgraded on start) |
 | `tawr_merges` | consolidations: which requests the manager made one |
+| `tawr_comments`, `tawr_seen` | each request's conversation, append-only, and how far each person has read it |
+| `tawr_attachments`, `files` | the files sent with each request, and their bytes, kept once by SHA-256 however many requests carry them |
 | `tawr_settings`, `tawr_descriptions` | Setup: contacts, the requester's name, phone and signature, shift hours, lead time, phases, predicting; expanded wording for activities |
 | `memory` | the learning memory: each request's answers as sent, the locations linked, the rejections and why, and which predictions were kept |
 | `calendar_feeds` | each person's calendar link, as the hash of its token |
@@ -438,6 +475,9 @@ is kept at `db/tawr_template.pdf` — outside `web/`, ignored by git.
 | `GET /api/lookahead`, `POST /api/lookahead/ops`, `/api/lookahead/replace`, `PUT /api/lookahead/legend`, `/codes` | the look-ahead |
 | `GET/POST /api/tawrs`, `PUT /api/tawrs/<id>`, `POST /api/tawrs/<id>/<action>`, `/api/tawrs/consolidate`, `/api/tawrs/<id>/split` | TAWRs and their workflow |
 | `PUT /api/tawrs/<id>/bart`, `PUT /api/tawrs/<id>/access` | after approval: sent to BART, BART's reference and answer, the track released; the access used |
+| `GET/POST /api/tawrs/<id>/comments`, `POST /api/tawrs/<id>/seen` | a request's conversation; how far the reader has read it |
+| `POST /api/tawrs/<id>/attachments?name=…`, `DELETE /api/tawrs/<id>/attachments/<aid>`, `GET /api/attachments/<aid>` | the files sent with a request (always served as a download) |
+| `GET /api/lookahead/edits?row=&day=&rows=&since=&start=&end=&before=` | the look-ahead's history, newest first |
 | `GET /api/calendar.ics?token=…`, `POST/DELETE /api/calendar/token` | the deadlines and approved access as a calendar to subscribe to (the link's token, not a session); make or stop the link |
 | `GET/PUT /api/tawr/settings`, `/api/tawr/template`, `/api/tawr/descriptions` | Setup |
 | `GET/POST /api/memory`, `DELETE /api/memory/<id>`, `POST /api/memory/clear` | the learning memory (the requester and the manager; clearing, the manager) |
@@ -465,6 +505,8 @@ server.py, operations.py
 | `main.js` | loads everything, switches between the four views |
 | `today.js`, `today_view.js` | what needs whom today, the deadlines ahead, the access approved; the calendar file |
 | `reports.js`, `reports_view.js` | what the requests came to over the weeks: decisions, BART's answers, how early, hours used; the charts and the CSV |
+| `la_history.js` | the look-ahead's history in words; the edits behind a change to a request, and who made them |
+| `conversation.js`, `attachments.js` | a request's thread and what in it is new; what may be attached, as the server rules it |
 | `lookahead.js` | the look-ahead's rows, cells and ops (undo), the legend and support codes, the workbook import |
 | `links.js` | a track plan link: its label, Area, key, and whether two overlap |
 | `tawr.js` | a week of the look-ahead read into TAWRs; conflicts; the form's values; the workflow table's rules |
@@ -490,7 +532,7 @@ came from.
 ```bash
 npm install                 # once: Playwright, for the browser test
 npm test                    # all three suites
-node tests/test_tawr.mjs    # look-ahead, links, TAWR reading, consolidation, workflow table, workbook import and export, the form filled, phases, the learning memory, after approval, power and capacity, today and the calendar, reports (Node)
+node tests/test_tawr.mjs    # look-ahead, links, TAWR reading, consolidation, workflow table, workbook import and export, the form filled, phases, the learning memory, after approval, power and capacity, today and the calendar, reports, the look-ahead's history, what changed under a request, conversations and files (Node)
 python3 -m unittest tests/test_server.py   # what the server allows and refuses (Python)
 node tests/smoke.mjs        # the whole flow in Chromium, on the static site and against server.py
 ```
@@ -508,7 +550,8 @@ runs all three on every push.
 - Share one copy of the data on the published site: GitHub Pages keeps
   everything in each browser, so the team needs `server.py` (or a hosted
   database) to work from one set of requests.
-- Show another person's changes without a reload, and keep the look-ahead's
-  history (who changed which day, and a reading per week to compare).
+- Show another person's changes without a reload (a reply in a request's
+  conversation shows when it is opened, or on the next reload), and keep a
+  reading of the look-ahead per week to compare one week's with the last.
 - Print the track plan with a week's requests on it; a phone view for the
   field; import a P6 schedule into the look-ahead.

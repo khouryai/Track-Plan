@@ -7,17 +7,23 @@
  * sign in, and the server decides what each role may do (`operations.py`).
  *
  * **local** — a static host (GitHub Pages) with no server. Everything is kept
- * in this browser (localStorage, and IndexedDB for BART's form), and the
- * person says which role they are acting as. The same workflow table is
- * applied here, so the screen behaves the same — but nothing on a static site
- * can stop somebody choosing another role, and the page says so.
+ * in this browser (localStorage, and IndexedDB for BART's form and the files
+ * sent with requests), and the person says which role they are acting as. The
+ * same workflow table is applied here, so the screen behaves the same — but
+ * nothing on a static site can stop somebody choosing another role, and the
+ * page says so.
  *
- * Imports: lookahead, tawr.
+ * Both keep the look-ahead's history the same way (`la_history.js`): every
+ * change, who made it, when, and what it said before.
+ *
+ * Imports: lookahead, tawr, learn, la_history, attachments.
  */
 
 import { DEFAULT_LEGEND, DEFAULT_CODES } from './lookahead.js';
 import { may, canEdit, canWrite } from './tawr.js';
 import { entriesFor } from './learn.js';
+import { rowEdit, cellEdit, rowLabel, LOCAL_EDITS_MAX } from './la_history.js';
+import { cleanFileName, fileType, attachProblem } from './attachments.js';
 
 const LOCAL_KEY = 'trackplan.ops.v1';
 const ACTING_KEY = 'trackplan.acting.v1';
@@ -96,6 +102,8 @@ function blankLocal() {
     rows: [], cells: [], legend: DEFAULT_LEGEND, codes: DEFAULT_CODES, version: 0,
     tawrs: [], merges: [], nextTawr: 1, settings: {}, descriptions: [], nextDescription: 1,
     memory: [], nextMemory: 1,
+    edits: [], nextEdit: 1, editsSince: null, // the look-ahead's history, from editsSince
+    seen: {}, nextComment: 1, nextAttachment: 1, // who has read which conversation; the ids of what was said and sent
   };
 }
 
@@ -103,9 +111,14 @@ let memory = null;
 function readLocal() {
   try {
     const s = JSON.parse(localStorage.getItem(LOCAL_KEY));
-    if (s && Array.isArray(s.rows)) return { ...blankLocal(), ...s };
+    if (s && Array.isArray(s.rows)) {
+      const out = { ...blankLocal(), ...s };
+      // A copy made before the history was kept: it is kept from now.
+      if (!out.editsSince) { out.editsSince = nowIso(); writeLocal(out); }
+      return out;
+    }
   } catch { /* storage blocked: memory only */ }
-  return memory || (memory = blankLocal());
+  return memory || (memory = { ...blankLocal(), editsSince: nowIso() });
 }
 function writeLocal(s) {
   memory = s;
@@ -142,29 +155,53 @@ function history(r, action, note) {
 
 const LIVE_EXCLUDED = ['superseded', 'consolidated'];
 
-/** The look-ahead's ops on the stored rows and cells: the same as `operations.apply_ops`. */
-function localOps(s, ops) {
+/**
+ * The look-ahead's ops on the stored rows and cells, and the history they make:
+ * the same as `operations.apply_ops`. `log` may instead be the lines to keep in
+ * their place — an import says what it replaced, once.
+ */
+function localOps(s, ops, log = true) {
   const rows = new Map(s.rows.map((r) => [r.id, r]));
   const cells = new Map(s.cells.map((c) => [`${c.row_id}|${c.day}`, c]));
+  const edits = [];
+  const label = (id) => rowLabel(rows.get(id), rows);
+  const keep = (e) => { if (e) edits.push(e); };
   for (const op of ops) {
     if (op.op === 'row') {
       const held = rows.get(op.id);
-      rows.set(op.id, { ...(held || { id: op.id, kind: 'activity', parent_id: null, sort: 0, activity_id: '', description: '', location: '', sswp: '', party: '', work_hours: '', link: null }), ...clone(op.set || {}), id: op.id });
+      const next = { ...(held || { id: op.id, kind: 'activity', parent_id: null, sort: 0, activity_id: '', description: '', location: '', sswp: '', party: '', work_hours: '', link: null }), ...clone(op.set || {}), id: op.id };
+      rows.set(op.id, next);
+      keep(rowEdit(held || null, next, label(op.id)));
     } else if (op.op === 'delete_row') {
+      const held = rows.get(op.id);
+      if (held) keep(rowEdit(held, null, label(op.id)));
       rows.delete(op.id);
       for (const k of [...cells.keys()]) if (k.startsWith(`${op.id}|`)) cells.delete(k);
     } else if (op.op === 'cell') {
       const k = `${op.row_id}|${op.day}`;
+      const was = cells.get(k) || null;
       if (!op.color && !op.text) cells.delete(k);
       else {
         if (!rows.has(op.row_id)) throw new Refused('that row is not on the look-ahead', 409);
         cells.set(k, { row_id: op.row_id, day: op.day, color: op.color ? String(op.color).toUpperCase() : null, text: op.text || '' });
       }
+      keep(cellEdit(was, cells.get(k) || null, op.row_id, op.day, label(op.row_id)));
     }
   }
   s.rows = [...rows.values()];
   s.cells = [...cells.values()];
   s.version += 1;
+  keepEdits(s, log === true ? edits : log || []);
+}
+
+/** Lines of the look-ahead's history, stamped with who and when, the batch being the version they made. */
+function keepEdits(s, edits) {
+  if (!edits.length) return;
+  const at = nowIso();
+  s.edits = s.edits || [];
+  s.nextEdit = s.nextEdit || s.edits.reduce((m, e) => Math.max(m, e.id + 1), 1);
+  for (const e of edits) s.edits.push({ id: s.nextEdit++, batch: s.version, at, by: store.user?.name || '', by_id: store.user?.id ?? null, ...e });
+  if (s.edits.length > LOCAL_EDITS_MAX) s.edits = s.edits.slice(-LOCAL_EDITS_MAX);
 }
 
 function localTawr(s, id) {
@@ -234,30 +271,71 @@ export async function replaceLookahead(rows, cells, legend) {
   if (local()) {
     requireWrite();
     const s = readLocal();
+    const had = { rows: s.rows.length, cells: s.cells.length };
     s.rows = clone(rows);
     s.cells = clone(cells);
-    if (legend) s.legend = clone(legend);
     s.version += 1;
+    keepEdits(s, [{ target: 'import', action: 'replace', row_id: null, day: null, label: '', before: had, after: { rows: rows.length, cells: cells.length } }]);
+    if (legend) setLocalList(s, 'legend', legend);
     writeLocal(s);
     return { version: s.version };
   }
   return http('POST', 'api/lookahead/replace', { rows, cells, legend });
 }
 
+/** The legend or the support codes replaced in this browser, and the change kept in the history. */
+function setLocalList(s, key, value) {
+  const was = s[key];
+  s[key] = clone(value);
+  s.version += 1;
+  if (JSON.stringify(was) !== JSON.stringify(s[key])) keepEdits(s, [{ target: key, action: 'update', row_id: null, day: null, label: '', before: clone(was), after: clone(value) }]);
+}
+
 export async function setLegend(legend) {
-  if (local()) { requireWrite(); const s = readLocal(); s.legend = clone(legend); s.version += 1; writeLocal(s); return s.legend; }
+  if (local()) { requireWrite(); const s = readLocal(); setLocalList(s, 'legend', legend); writeLocal(s); return s.legend; }
   return http('PUT', 'api/lookahead/legend', { legend });
 }
 
+/**
+ * The look-ahead's history, newest first: `{ edits, more, since }`. One day of
+ * a row (`row`, `day`), a row (`row`), several rows since a moment (`rows`,
+ * `since`), the days `start`…`end` with every change that is not to a day, or
+ * older than an edit (`before`) for the next page. As operations.list_edits.
+ */
+export async function listEdits({ row = null, day = null, rows = null, since = null, start = null, end = null, before = null, limit = 200 } = {}) {
+  if (local()) {
+    if (!store.user) throw new Refused('choose who you are first', 401);
+    const s = readLocal();
+    const want = rows ? new Set(rows) : null;
+    const after = since ? Date.parse(since) : null;
+    const found = (s.edits || []).filter((e) => (!row || e.row_id === row) && (!want || want.has(e.row_id)) && (!day || e.day === day)
+      && (!start || !e.day || e.day >= start) && (!end || !e.day || e.day <= end)
+      && (after == null || Date.parse(e.at) > after) && (before == null || e.id < before)).sort((a, b) => b.id - a.id);
+    return { edits: clone(found.slice(0, limit)), more: found.length > limit, since: s.editsSince };
+  }
+  const q = new URLSearchParams();
+  for (const [k, v] of Object.entries({ row, day, since, start, end, before, limit })) if (v != null && v !== '') q.set(k, String(v));
+  if (rows?.length) q.set('rows', rows.join(','));
+  return http('GET', `api/lookahead/edits?${q}`);
+}
+
 export async function setCodes(codes) {
-  if (local()) { requireWrite(); const s = readLocal(); s.codes = clone(codes); s.version += 1; writeLocal(s); return s.codes; }
+  if (local()) { requireWrite(); const s = readLocal(); setLocalList(s, 'codes', codes); writeLocal(s); return s.codes; }
   return http('PUT', 'api/lookahead/codes', { codes });
 }
 
 // ── TAWRs
 export async function listTawrs(since = null) {
-  if (local()) return clone(readLocal().tawrs.filter((t) => !since || t.week_start >= since));
+  if (local()) {
+    const s = readLocal();
+    return s.tawrs.filter((t) => !since || t.week_start >= since).map((t) => localOut(s, t));
+  }
   return http('GET', `api/tawrs${since ? `?since=${since}` : ''}`);
+}
+
+/** A request from this browser's copy as the server answers with one: its talk, and how far the reader has read it. */
+function localOut(s, r) {
+  return { ...clone(r), comments: clone(r.comments || []), attachments: clone(r.attachments || []), seen_comment: s.seen?.[store.user?.id]?.[r.id] || 0 };
 }
 
 export async function listMerges() {
@@ -324,6 +402,7 @@ export async function act(id, action, note = null, { on = null, released = false
     if (!may(store.workflow, role(), action)) throw new Refused(`a ${store.workflow.roles[role()].toLowerCase()} cannot ${action} a request`);
     const out = localAct(s, r, action, note, { on, released });
     writeLocal(s);
+    if (action === 'discard') await sweepFiles();
     return out;
   }
   const out = await http('POST', `api/tawrs/${id}/${action}`, { note, on, released });
@@ -368,6 +447,8 @@ function localAct(s, r, action, note, { on = null, released = false } = {}) {
       ...clone(r), id: s.nextTawr++, status: 'draft', supersedes: r.id, merged_into: null, decision_note: null,
       history: history(null, `revision of #${r.id}`), created_by: store.user.id, created_at: stamp,
       submitted_by: null, submitted_at: null, decided_by: null, decided_at: null,
+      // As on a server: its files go with it; what was said, and BART's answer, stay with the request they were about.
+      comments: [], attachments: carryFiles(s, r.attachments), bart: null, access: null,
     };
     s.tawrs.push(out);
   }
@@ -525,7 +606,8 @@ export async function consolidate(ids, merge, record, note = null) {
       id: s.nextTawr++, week_start: record.week_start, group_key: record.group_key, shift: record.shift,
       location_name: record.location_name || '', first_day: record.first_day || null, status, status_before: null,
       fields: clone(record.fields || {}), generated: clone(record.generated || {}), source: clone(record.source || {}),
-      supersedes: null, merged_into: null, decision_note: null,
+      supersedes: null, merged_into: null, decision_note: null, comments: [],
+      attachments: rows.flatMap((r) => carryFiles(s, r.attachments)),
       history: history(null, `consolidated from ${rows.map((r) => `#${r.id}`).join(', ')}`, note),
       created_by: store.user.id, created_at: stamp, updated_by: null, updated_at: null,
       submitted_by: status === 'submitted' ? store.user.id : null, submitted_at: status === 'submitted' ? stamp : null,
@@ -551,8 +633,12 @@ export async function split(id) {
     s.merges = s.merges.filter((m) => m.id !== mergeId);
     for (const m of s.tawrs.filter((t) => t.merged_into === id && t.status === 'consolidated')) {
       Object.assign(m, { status: ['draft', 'submitted'].includes(m.status_before) ? m.status_before : 'draft', status_before: null, merged_into: null, history: history(m, `split back out of #${id}`) });
+      // Nothing said or sent about the merged request is lost: it goes back to every member.
+      m.comments = [...(m.comments || []), ...(r.comments || []).map((c) => ({ ...clone(c), id: nextLocalId(s, 'nextComment', 'comments') }))];
+      m.attachments = [...(m.attachments || []), ...carryFiles(s, (r.attachments || []).filter((a) => a.copied_from == null))];
     }
     writeLocal(s);
+    await sweepFiles();
     return { deleted: id };
   }
   return http('POST', `api/tawrs/${id}/split`, {});
@@ -688,7 +774,7 @@ export async function deleteDescription(id) {
   return http('DELETE', `api/tawr/descriptions/${id}`);
 }
 
-// ── BART's blank form: never published with the site
+// ── Files in this browser: BART's blank form, and what is sent with requests (`file:<sha256>`)
 function idb() {
   return new Promise((resolve, reject) => {
     const req = indexedDB.open('trackplan', 1);
@@ -696,6 +782,36 @@ function idb() {
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
   });
+}
+
+async function idbDo(mode, fn) {
+  const db = await idb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction('files', mode);
+    const req = fn(tx.objectStore('files'));
+    tx.oncomplete = () => resolve(req?.result);
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error);
+  });
+}
+const idbGet = (key) => idbDo('readonly', (os) => os.get(key));
+const idbPut = (key, bytes) => idbDo('readwrite', (os) => os.put(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength), key));
+const idbKeys = () => idbDo('readonly', (os) => os.getAllKeys());
+const idbDelete = (key) => idbDo('readwrite', (os) => os.delete(key));
+
+/** A file's SHA-256, its name in this browser's store: the same file sent twice is kept once. */
+async function sha256Hex(bytes) {
+  if (!crypto?.subtle) return `x${Date.now().toString(16)}${Math.random().toString(16).slice(2)}`; // not a secure page: no digest to share by
+  const d = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
+  return [...d].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+/** Files no request carries any more, forgotten: after a discard, a split, a removal, a fresh start. */
+async function sweepFiles() {
+  try {
+    const held = new Set(readLocal().tawrs.flatMap((t) => (t.attachments || []).map((a) => `file:${a.sha256}`)));
+    for (const k of await idbKeys()) if (String(k).startsWith('file:') && !held.has(k)) await idbDelete(k);
+  } catch { /* storage blocked: nothing kept to forget */ }
 }
 
 export async function getTemplate() {
@@ -729,6 +845,124 @@ export async function putTemplate(bytes) {
   return http('PUT', 'api/tawr/template', undefined, { raw: bytes, type: 'application/pdf' });
 }
 
+// ── What is said and sent with a request (conversation.js reads the first, attachments.js rules the second)
+const COMMENT_LIMIT = 2000;
+
+/** The next id of something kept on requests in this browser: comments, or files. */
+function nextLocalId(s, counter, list) {
+  if (!s[counter]) s[counter] = s.tawrs.flatMap((t) => t[list] || []).reduce((m, x) => Math.max(m, x.id + 1), 1);
+  return s[counter]++;
+}
+
+/** A request's files onto another (a revision, a consolidation, a split): the bytes are shared, never copied. */
+function carryFiles(s, list) {
+  return (list || []).map((a) => ({ ...clone(a), id: nextLocalId(s, 'nextAttachment', 'attachments'), copied_from: a.id }));
+}
+
+function seenLocal(s, tawrId, upto) {
+  const mine = s.seen[store.user.id] || (s.seen[store.user.id] = {});
+  mine[tawrId] = Math.max(mine[tawrId] || 0, upto);
+}
+
+/** Say something on a request: any request, at any point in its life. As operations.add_comment. */
+export async function addComment(id, text) {
+  if (local()) {
+    if (!store.user) throw new Refused('choose who you are first', 401);
+    if (!(store.workflow.comment || store.workflow.write).includes(role())) throw new Refused(`a ${store.workflow.roles[role()].toLowerCase()} cannot comment`);
+    const t = String(text ?? '').trim();
+    if (!t) throw new Refused('write something first', 400);
+    if (t.length > COMMENT_LIMIT) throw new Refused('a comment is at most 2,000 characters', 400);
+    const s = readLocal();
+    const r = localTawr(s, id);
+    const c = { id: nextLocalId(s, 'nextComment', 'comments'), at: nowIso(), by: store.user.name, by_id: store.user.id, text: t };
+    r.comments = [...(r.comments || []), c];
+    seenLocal(s, id, c.id); // what you wrote, you have read
+    writeLocal(s);
+    return localOut(s, r);
+  }
+  return http('POST', `api/tawrs/${id}/comments`, { text });
+}
+
+/** A request's conversation as it stands now — opened, it is current, whatever was loaded before. */
+export async function listComments(id) {
+  if (local()) return clone(localTawr(readLocal(), id).comments || []);
+  return http('GET', `api/tawrs/${id}/comments`);
+}
+
+/** Shown the conversation up to comment `upto`: nothing older is new to whoever is reading. */
+export async function markSeen(id, upto) {
+  if (local()) {
+    if (!store.user) return { seen_comment: 0 };
+    const s = readLocal();
+    seenLocal(s, id, upto);
+    writeLocal(s);
+    return { tawr_id: id, seen_comment: upto };
+  }
+  return http('POST', `api/tawrs/${id}/seen`, { upto });
+}
+
+function mayAttach(r) {
+  if (!store.user) throw new Refused('choose who you are first', 401);
+  if (!canEdit(store.workflow, role(), r.status)) {
+    throw new Refused(`the files on a ${r.status} request cannot be changed by a ${store.workflow.roles[role()].toLowerCase()}`, writer() ? 409 : 403);
+  }
+}
+
+/** Send a file with a request — the SSWP, a drawing, a permit — where its fields may change. As operations.add_attachment. */
+export async function addAttachment(id, file) {
+  const name = cleanFileName(file.name);
+  const bytes = file.bytes || new Uint8Array(await file.arrayBuffer());
+  if (local()) {
+    const before = localTawr(readLocal(), id);
+    mayAttach(before);
+    const problem = attachProblem(name, bytes.length, (before.attachments || []).length);
+    if (problem) throw new Refused(problem.message, problem.status);
+    const sha = await sha256Hex(bytes);
+    try { await idbPut(`file:${sha}`, bytes); } catch { throw new Refused('this browser would not keep the file (private window, or storage full)', 507); }
+    const s = readLocal(); // read again: the file took a moment to keep
+    const r = localTawr(s, id);
+    mayAttach(r);
+    r.attachments = [...(r.attachments || []), {
+      id: nextLocalId(s, 'nextAttachment', 'attachments'), name, type: fileType(name), size: bytes.length, sha256: sha,
+      at: nowIso(), by: store.user.name, by_id: store.user.id, copied_from: null,
+    }];
+    r.history = history(r, `attached ${name}`);
+    r.updated_by = store.user.id;
+    r.updated_at = nowIso();
+    writeLocal(s);
+    return localOut(s, r);
+  }
+  return http('POST', `api/tawrs/${id}/attachments?name=${encodeURIComponent(name)}`, undefined, { raw: bytes, type: fileType(name) || 'application/octet-stream' });
+}
+
+/** The bytes of a file sent with a request. */
+export async function attachmentBytes(a) {
+  if (local()) {
+    const got = await idbGet(`file:${a.sha256}`).catch(() => null);
+    if (!got) throw new Refused('this browser no longer has that file', 404);
+    return new Uint8Array(got);
+  }
+  return http('GET', `api/attachments/${a.id}`, undefined, { bytes: true });
+}
+
+export async function removeAttachment(id, aid) {
+  if (local()) {
+    const s = readLocal();
+    const r = localTawr(s, id);
+    const a = (r.attachments || []).find((x) => x.id === aid);
+    if (!a) throw new Refused('no such file on that request', 404);
+    mayAttach(r);
+    r.attachments = r.attachments.filter((x) => x.id !== aid);
+    r.history = history(r, `removed ${a.name}`);
+    r.updated_by = store.user.id;
+    r.updated_at = nowIso();
+    writeLocal(s);
+    await sweepFiles();
+    return localOut(s, r);
+  }
+  return http('DELETE', `api/tawrs/${id}/attachments/${aid}`);
+}
+
 /** On the static site: forget every TAWR and consolidation in this browser (sample data, a fresh start). */
 export function clearLocalTawrs() {
   if (!local()) throw new Refused('only the copy in this browser can be cleared');
@@ -738,16 +972,28 @@ export function clearLocalTawrs() {
   s.merges = [];
   s.nextTawr = 1;
   s.memory = []; // what was learned from them goes with them: request numbers start again
+  s.seen = {};
   writeLocal(s);
+  sweepFiles(); // and the files sent with them
 }
 
-// ── backing up the browser's copy
-export function exportLocal() {
-  return JSON.stringify(readLocal(), null, 1);
+// ── backing up the browser's copy, with the files sent with requests (base64, under `files`)
+const toBase64 = (bytes) => { let bin = ''; for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000)); return btoa(bin); };
+const fromBase64 = (text) => Uint8Array.from(atob(text), (ch) => ch.charCodeAt(0));
+
+export async function exportLocal() {
+  const s = readLocal();
+  const files = {};
+  for (const sha of new Set(s.tawrs.flatMap((t) => (t.attachments || []).map((a) => a.sha256)))) {
+    const got = await idbGet(`file:${sha}`).catch(() => null);
+    if (got) files[sha] = toBase64(new Uint8Array(got));
+  }
+  return JSON.stringify({ ...s, files }, null, 1);
 }
 
-export function importLocal(text) {
-  const s = JSON.parse(text);
+export async function importLocal(text) {
+  const { files = {}, ...s } = JSON.parse(text);
   if (!s || !Array.isArray(s.rows) || !Array.isArray(s.tawrs)) throw new Error('That is not a Track-Plan backup.');
+  for (const [sha, b64] of Object.entries(files)) await idbPut(`file:${sha}`, fromBase64(b64));
   writeLocal({ ...blankLocal(), ...s });
 }

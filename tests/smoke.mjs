@@ -863,6 +863,134 @@ async function reports(page, { mode }) {
   await shot(page, `${mode}-10-reports`);
 }
 
+/** The look-ahead's history, what changed under a request and who changed it, its conversation and its files. */
+async function talk(page, { mode }) {
+  console.log(`\n${mode}: history, conversations and files`);
+  const sub = await page.evaluate(() => {
+    const st = JSON.parse(localStorage.getItem('trackplan.ops.v1'));
+    const t = st.tawrs.find((x) => x.status === 'submitted' && x.week_start === '2026-10-26');
+    return { id: t.id, row: t.source.activities[0].row, day: t.source.days[t.source.days.length - 1].date };
+  });
+  await page.click('nav.views [data-view=lookahead]');
+  await page.waitForSelector('.la-grid');
+  await page.fill('.la-toolbar input[type=date]', '2026-10-19');
+  await page.dispatchEvent('.la-toolbar input[type=date]', 'change');
+  const cell = page.locator(`tr.la-row[data-row="${sub.row}"] td.la-day`).nth(dayIndex(sub.day, '2026-10-19'));
+  await cell.click();
+  await page.click('[data-paint="FF0000"]'); // the last day of its work is cancelled
+  await page.waitForSelector('.la-status-saved');
+  await cell.click({ button: 'right' });
+  await page.click('.ctx-menu [data-action=day-history]');
+  await page.waitForSelector('.hist-list li');
+  const day = await page.textContent('.hist-list li');
+  check('a day\'s history says who changed it, when, and what it said before', /Rae/.test(day) && /\w+ Shift → Cancellation/.test(day), day);
+  await page.keyboard.press('Escape');
+  await page.click('[data-action=la-changes]');
+  await page.waitForSelector('.hist-batch');
+  const latest = await page.textContent('.hist-batch');
+  const imports = await page.evaluate(() => {
+    const st = JSON.parse(localStorage.getItem('trackplan.ops.v1'));
+    const sample = st.edits.filter((e) => e.target === 'import').pop();
+    return { lines: st.edits.filter((e) => e.batch === sample?.batch).length, text: sample && 'import' };
+  });
+  check('every change on the weeks on screen, newest first — and an import is one line', /\w+ Shift → Cancellation/.test(latest) && imports.text && imports.lines === 1, `${latest} | ${JSON.stringify(imports)}`);
+  await page.locator('.hist-batch').first().locator('.hist-where').click();
+  await page.waitForSelector('.modal-back', { state: 'detached' });
+  check('and a line goes to the day it is about', await page.evaluate((row) => document.querySelector('.la-cur')?.closest('tr')?.dataset.row === row, sub.row));
+
+  await page.click('nav.views [data-view=tawr]');
+  await page.click('.subtabs [data-section=requests]');
+  await page.click('.week-btn[data-week="2026-10-26"]');
+  const req = page.locator(`.tawr-card[data-tawr-id="${sub.id}"]`);
+  await req.locator('.tawr-toggle').click();
+  await page.waitForFunction((id) => /— Rae, /.test(document.querySelector(`.tawr-card[data-tawr-id="${id}"] .la-changed .who`)?.textContent || ''), sub.id);
+  const changed = await req.locator('.la-changed').textContent();
+  check('a submitted request says exactly what changed on the look-ahead, and who changed it', /is no longer asked for on this shift/.test(changed) && /— Rae, /.test(changed), changed);
+  await req.locator('.talk textarea').fill('The last night is cancelled — withdraw and resubmit?');
+  await req.locator('[data-action=comment-add]').click();
+  await page.waitForFunction((id) => document.querySelector(`.tawr-card[data-tawr-id="${id}"] .talk-list li.talk-comment`), sub.id);
+  check('the manager says something on it', /withdraw and resubmit\?/.test(await req.locator('.talk-list').textContent()));
+
+  // Somebody else, who has not read it.
+  await page.click('#who button');
+  await page.fill('.modal input', 'Sam');
+  await page.selectOption('.modal select', 'requester');
+  await Promise.all([page.waitForEvent('load'), page.click('[data-action=acting]')]);
+  await page.waitForSelector('#loading', { state: 'detached' });
+  await page.click('nav.views [data-view=today]');
+  await page.waitForSelector('.needs-you');
+  check('the start page says what was said that they have not read', (await page.textContent('.needs-you li[data-need=comments] .need-title')) === '1 new comment on 1 request');
+  await page.click('nav.views [data-view=tawr]');
+  await page.click('.subtabs [data-section=requests]');
+  await page.click('.week-btn[data-week="2026-10-26"]');
+  check('and the request says so on its row', (await req.locator('.talk-count').textContent()) === '1 new comment');
+  await req.locator('.tawr-toggle').click();
+  await page.waitForFunction((id) => document.querySelector(`.tawr-card[data-tawr-id="${id}"] .talk-count`)?.dataset.talk === 'read', sub.id);
+  check('opened, it is read', /Rae/.test(await req.locator('.talk-list li.talk-new').textContent()));
+
+  // A file on a draft, sent with BART's form.
+  await page.click('.week-btn[data-week="2026-11-09"]');
+  const draft = page.locator('.tawr-card[data-tawr-status=draft]').first();
+  const draftId = await draft.getAttribute('data-tawr-id');
+  await draft.locator('.tawr-toggle').click();
+  const sswp = path.join(tmp, 'SSWP 12.pdf');
+  fs.writeFileSync(sswp, '%PDF-1.4\n% SSWP 12, Example Electric\n');
+  await draft.locator('.files input[type=file]').setInputFiles(sswp);
+  const mine = page.locator(`.tawr-card[data-tawr-id="${draftId}"]`);
+  await mine.locator('.file-list li').waitFor();
+  check('a file is sent with a draft, and the row says so', /SSWP 12\.pdf/.test(await mine.locator('.file-list').textContent()) && (await mine.locator('.file-count').textContent()) === '1 file');
+  const exe = path.join(tmp, 'run.exe');
+  fs.writeFileSync(exe, 'MZ');
+  await mine.locator('.files input[type=file]').setInputFiles(exe);
+  await page.waitForFunction(() => [...document.querySelectorAll('.toast')].some((t) => /only documents, drawings/.test(t.textContent)));
+  check('a program is never taken', await mine.locator('.file-list li').count() === 1);
+  const dl = page.waitForEvent('download');
+  await mine.locator('[data-action=file-download]').click();
+  check('and it downloads as it was sent', fs.readFileSync(await (await dl).path(), 'utf8') === fs.readFileSync(sswp, 'utf8'));
+  await page.click('.subtabs [data-section=setup]');
+  const backup = page.waitForEvent('download');
+  await page.click('[data-action=backup]');
+  const kept = JSON.parse(fs.readFileSync(await (await backup).path(), 'utf8'));
+  check('the backup carries the files and the look-ahead\'s history', Object.values(kept.files || {}).map((b) => Buffer.from(b, 'base64').toString()).join() === fs.readFileSync(sswp, 'utf8')
+    && kept.edits.some((e) => e.after?.color === 'FF0000'));
+  await shot(page, `${mode}-11-talk`);
+}
+
+/** The same on the server: the history, a comment and a file kept there. */
+async function serverTalk(page) {
+  console.log('\nserver: history, conversations and files');
+  await page.click('nav.views [data-view=lookahead]');
+  await page.waitForSelector('.la-grid');
+  const cell = dayCell(page, 'IXL SIM Testing', WEEK);
+  await cell.click();
+  await page.click('[data-paint="FFC000"]');
+  await page.waitForSelector('.la-status-saved');
+  await cell.click({ button: 'right' });
+  await page.click('.ctx-menu [data-action=day-history]');
+  await page.waitForSelector('.hist-list li');
+  check('the server keeps who changed a day, and what it was', /Terry Manager/.test(await page.textContent('.hist-list li')) && /→ Swing Shift/.test(await page.textContent('.hist-list li')),
+    await page.textContent('.hist-list li'));
+  await page.keyboard.press('Escape');
+  await page.click('nav.views [data-view=tawr]');
+  await page.click('.subtabs [data-section=requests]');
+  const open = page.locator('.tawr-card[data-tawr-status=draft], .tawr-card[data-tawr-status=submitted]').first();
+  const id = Number(await open.getAttribute('data-tawr-id'));
+  await open.locator('.tawr-toggle').click();
+  await open.locator('.talk textarea').fill('Flagger is Ann Example, 415-555-0101.');
+  await open.locator('[data-action=comment-add]').click();
+  const it = page.locator(`.tawr-card[data-tawr-id="${id}"]`);
+  await it.locator('.talk-list li.talk-comment').waitFor();
+  const sswp = path.join(tmp, 'Barrier plan.pdf');
+  fs.writeFileSync(sswp, '%PDF-1.4\n% barrier plan\n');
+  await it.locator('.files input[type=file]').setInputFiles(sswp);
+  await it.locator('.file-list li').waitFor();
+  const kept = await page.evaluate(async (tid) => (await (await fetch('api/tawrs')).json()).find((t) => t.id === tid), id);
+  check('the server keeps the comment and the file with the request', kept.comments[0]?.by === 'Terry Manager' && kept.attachments[0]?.name === 'Barrier plan.pdf', JSON.stringify({ c: kept.comments, a: kept.attachments }));
+  const dl = page.waitForEvent('download');
+  await it.locator('[data-action=file-download]').click();
+  check('and gives the file back as it was sent', fs.readFileSync(await (await dl).path(), 'utf8') === fs.readFileSync(sswp, 'utf8'));
+}
+
 /** The start page and the calendar link, on the server. */
 async function serverToday(page) {
   console.log('\nserver: today');
@@ -956,6 +1084,7 @@ try {
     await phases(page, { mode: 'static site' });
     await withBart(page, { mode: 'static site' });
     await reports(page, { mode: 'static site' });
+    await talk(page, { mode: 'static site' });
     check('no console errors (static site)', !errors.length, errors.join(' | '));
     await context.close();
     srv.close();
@@ -1011,6 +1140,7 @@ try {
       await serverToday(page);
       await serverBart(page);
       await serverReports(page);
+      await serverTalk(page);
       await serverMemory(page);
       check('no console errors (server)', !errors.length, errors.join(' | '));
       await context.close();

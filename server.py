@@ -21,6 +21,8 @@ The look-ahead (signed in; changes by a requester or the manager)
   POST   /api/lookahead/ops                  {ops}: web/js/lookahead.js ops, all or nothing
   POST   /api/lookahead/replace              {rows, cells, legend?}: a workbook import
   PUT    /api/lookahead/legend, /api/lookahead/codes
+  GET    /api/lookahead/edits?row=&day=&rows=a,b&since=&start=&end=&before=&limit=
+                                             who changed what and when, newest first (anybody signed in)
 
 TAWRs (signed in; who may do what is web/data/tawr_workflow.json)
   GET    /api/tawrs[?since=YYYY-MM-DD], GET /api/tawrs/merges
@@ -32,6 +34,11 @@ TAWRs (signed in; who may do what is web/data/tawr_workflow.json)
   PUT    /api/tawrs/<id>/access              {days: {YYYY-MM-DD: used}, note}
   POST   /api/tawrs/consolidate              {ids, merge, record, note}   (track allocation manager)
   POST   /api/tawrs/<id>/split                                             (track allocation manager)
+  GET/POST /api/tawrs/<id>/comments          the request's conversation; {text} says something (requester, manager)
+  POST   /api/tawrs/<id>/seen                {upto}: shown the conversation up to that comment
+  POST   /api/tawrs/<id>/attachments?name=…  the file as the body (where its fields may change; at most 20 MB)
+  DELETE /api/tawrs/<id>/attachments/<aid>
+  GET    /api/attachments/<aid>              the file, always as a download (anybody signed in)
   GET/PUT /api/tawr/settings, /api/tawr/template (application/pdf; 204 until uploaded)
   GET    /api/calendar.ics?token=…           the TAWR deadlines and approved access as iCalendar (the link's token, no session)
   POST/DELETE /api/calendar/token             make (or replace) / stop the signed-in person's calendar link
@@ -51,12 +58,13 @@ import argparse
 import getpass
 import json
 import os
+import re
 import sqlite3
 import sys
 from http import HTTPStatus
 from http.cookies import SimpleCookie
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
 import operations as ops
 
@@ -152,6 +160,18 @@ class Handler(SimpleHTTPRequestHandler):
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(data)
+
+    def send_download(self, data, content_type, name):
+        """A file somebody uploaded: always saved, never shown as a page of this site."""
+        ascii_name = re.sub(r'[^\x20-\x7e]|["\\]', "_", name) or "file"
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Content-Disposition", f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{quote(name)}")
+        self.send_header("Content-Security-Policy", "sandbox; default-src 'none'")
+        self.send_header("Cache-Control", "private, no-store")
         self.end_headers()
         self.wfile.write(data)
 
@@ -259,6 +279,12 @@ class Handler(SimpleHTTPRequestHandler):
         if p == ["lookahead", "version"] and method == "GET":
             need()
             return self.send_json({"version": ops.meta_get(con, "la_version", 0)})
+        if p == ["lookahead", "edits"] and method == "GET":
+            rows = [r for r in (q.get("rows") or "").split(",") if r] or None
+            return self.send_json(ops.list_edits(con, need(), row=q.get("row"), day=q.get("day"), rows=rows,
+                                                 since=q.get("since"), start=q.get("start"), end=q.get("end"),
+                                                 before=int(q["before"]) if (q.get("before") or "").isdigit() else None,
+                                                 limit=int(q["limit"]) if (q.get("limit") or "").isdigit() else 200))
         if p == ["lookahead", "ops"] and method == "POST":
             return self.send_json(ops.apply_ops(con, (self.body() or {}).get("ops"), need(), WORKFLOW))
         if p == ["lookahead", "replace"] and method == "POST":
@@ -273,7 +299,7 @@ class Handler(SimpleHTTPRequestHandler):
         if p == ["tawrs"]:
             actor = need()
             if method == "GET":
-                return self.send_json(ops.list_tawrs(con, q.get("since")))
+                return self.send_json(ops.list_tawrs(con, q.get("since"), actor))
             if method == "POST":
                 return self.send_json(ops.create_tawr(con, self.body(), actor, WORKFLOW), HTTPStatus.CREATED)
         if p == ["tawrs", "merges"] and method == "GET":
@@ -290,6 +316,24 @@ class Handler(SimpleHTTPRequestHandler):
                 return self.send_json(ops.record_bart(con, int(p[1]), self.body(), need(), WORKFLOW))
             if p[2] == "access":
                 return self.send_json(ops.record_access(con, int(p[1]), self.body(), need(), WORKFLOW))
+        # What is said and sent with a request.
+        if len(p) == 3 and p[0] == "tawrs" and p[1].isdigit() and p[2] == "comments":
+            if method == "GET":
+                return self.send_json(ops.list_comments(con, int(p[1]), need()))
+            if method == "POST":
+                return self.send_json(ops.add_comment(con, int(p[1]), (self.body() or {}).get("text"), need(), WORKFLOW),
+                                      HTTPStatus.CREATED)
+        if len(p) == 3 and p[0] == "tawrs" and p[1].isdigit() and p[2] == "seen" and method == "POST":
+            return self.send_json(ops.mark_seen(con, int(p[1]), (self.body() or {}).get("upto"), need()))
+        if len(p) == 3 and p[0] == "tawrs" and p[1].isdigit() and p[2] == "attachments" and method == "POST":
+            actor = need()
+            data = self.raw_body(limit=ops.ATTACH_MAX + 1)
+            return self.send_json(ops.add_attachment(con, int(p[1]), q.get("name"), data, actor, WORKFLOW), HTTPStatus.CREATED)
+        if len(p) == 4 and p[0] == "tawrs" and p[1].isdigit() and p[2] == "attachments" and p[3].isdigit() and method == "DELETE":
+            return self.send_json(ops.delete_attachment(con, int(p[1]), int(p[3]), need(), WORKFLOW))
+        if len(p) == 2 and p[0] == "attachments" and p[1].isdigit() and method == "GET":
+            name, kind, data = ops.get_attachment(con, int(p[1]), need())
+            return self.send_download(data, kind, name)
         if len(p) == 3 and p[0] == "tawrs" and p[1].isdigit() and method == "POST":
             if p[2] == "split":
                 return self.send_json(ops.split(con, int(p[1]), need(), WORKFLOW))

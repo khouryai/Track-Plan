@@ -1,5 +1,5 @@
 {
-  "_comment": "Who may do what to a TAWR, and from which status. Read by web/js/tawr.js (what the screen offers) and by server.py (what it allows). Change it here and both follow.",
+  "_comment": "Who may do what to a TAWR, and from which status. Read by web/js/tawr.js (what the screen offers) and by server.py (what it allows). Change it here and both follow. A request's files change where its fields may (edit); anybody in comment may say something on any request.",
   "roles": {
     "requester": "Requester",
     "manager": "Track Allocation Manager",
@@ -37,5 +37,6 @@
     "draft": ["requester", "manager"],
     "submitted": ["manager"]
   },
+  "comment": ["requester", "manager"],
   "write": ["requester", "manager"]
 }

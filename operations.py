@@ -89,7 +89,8 @@ def init_db(path=None):
         con.executescript(schema)
         if _upgrade_tawrs(con, schema):
             con.executescript(schema)  # its indexes went with the old table
-        for key, value in (("legend", DEFAULT_LEGEND), ("codes", DEFAULT_CODES), ("la_version", 0)):
+        for key, value in (("legend", DEFAULT_LEGEND), ("codes", DEFAULT_CODES), ("la_version", 0),
+                           ("la_edits_since", now_iso())):
             con.execute("INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)", (key, json.dumps(value)))
     finally:
         con.close()
@@ -316,12 +317,59 @@ def _check_link(link):
     return json.dumps(link, separators=(",", ":"))
 
 
-def apply_ops(con, ops, actor, workflow):
-    """The look-ahead's ops (web/js/lookahead.js applyOps), applied in order, all or nothing."""
+# What a look-ahead row's history keeps of a link: where it is, never the drawing's geometry.
+LINK_BRIEF = ("location_id", "location_name", "location_kind", "limits")
+# A row's own fields as its history tells them; where it sits (`sort`) is not what it says.
+LOGGED_ROW_FIELDS = ("kind", "parent_id", "activity_id", "description", "location", "sswp", "party", "work_hours", "link")
+
+
+def _link_brief(link):
+    if not link:
+        return None
+    if isinstance(link, str):
+        link = json.loads(link)
+    return {k: link[k] for k in LINK_BRIEF if link.get(k) is not None}
+
+
+def _row_brief(r):
+    """A row as its history keeps it: what it says, never where it sits."""
+    out = {}
+    for k in LOGGED_ROW_FIELDS:
+        v = r[k] if k in r.keys() else None
+        out[k] = _link_brief(v) if k == "link" else v
+    return out
+
+
+def _row_label(con, r):
+    """What a row was called when it changed: "C-W101 · Cable trough", and a Resource row by its activity."""
+    if r is None:
+        return ""
+    if r["kind"] == "resource":
+        parent = con.execute("SELECT * FROM la_rows WHERE id = ?", (r["parent_id"],)).fetchone() if r["parent_id"] else None
+        return f"Names under {_row_label(con, parent)}" if parent else "Names"
+    aid, desc = (r["activity_id"] or "").strip(), (r["description"] or "").strip()
+    return " · ".join(x for x in (aid, desc) if x) or ("Section" if r["kind"] == "section" else "Activity")
+
+
+def apply_ops(con, ops, actor, workflow, log=True):
+    """
+    The look-ahead's ops (web/js/lookahead.js applyOps), applied in order, all
+    or nothing — and each thing they change written to `la_edits` with who did
+    it and what it was before. `log` may instead be the lines to write in their
+    place, in the same transaction: an import says what it replaced, once.
+    """
     require_write(actor, workflow)
     if not isinstance(ops, list) or len(ops) > 20000:
         raise Refused("ops must be a list", 400)
     stamp = now_iso()
+    edits = []
+    labels = {}
+
+    def label_of(rid):
+        if rid not in labels:
+            labels[rid] = _row_label(con, con.execute("SELECT * FROM la_rows WHERE id = ?", (rid,)).fetchone())
+        return labels[rid]
+
     with Tx(con):
         for op in ops:
             kind = op.get("op") if isinstance(op, dict) else None
@@ -350,9 +398,20 @@ def apply_ops(con, ops, actor, workflow):
                         vals[k] = v if isinstance(v, str) and v else None
                     else:
                         vals[k] = _text(v, k)
-                exists = con.execute("SELECT 1 FROM la_rows WHERE id = ?", (rid,)).fetchone()
+                old = con.execute("SELECT * FROM la_rows WHERE id = ?", (rid,)).fetchone()
+                changed_before, changed_after = {}, {}
+                if old is not None:
+                    for k, v in vals.items():
+                        if k not in LOGGED_ROW_FIELDS:
+                            continue
+                        was = old[k]
+                        if k == "link":
+                            if (json.loads(was) if was else None) != (json.loads(v) if v else None):
+                                changed_before[k], changed_after[k] = _link_brief(was), _link_brief(v)
+                        elif (was if was is not None else "") != (v if v is not None else ""):
+                            changed_before[k], changed_after[k] = was, v
                 vals["updated_by"], vals["updated_at"] = actor["id"], stamp
-                if exists:
+                if old is not None:
                     con.execute(f"UPDATE la_rows SET {', '.join(f'{k} = ?' for k in vals)} WHERE id = ?",
                                 list(vals.values()) + [rid])
                 else:
@@ -360,42 +419,127 @@ def apply_ops(con, ops, actor, workflow):
                     vals["id"] = rid
                     con.execute(f"INSERT INTO la_rows({', '.join(vals)}) VALUES ({', '.join('?' * len(vals))})",
                                 list(vals.values()))
+                labels.pop(rid, None)
+                if old is None:
+                    edits.append(("row", "insert", rid, None, label_of(rid), None,
+                                  _row_brief(con.execute("SELECT * FROM la_rows WHERE id = ?", (rid,)).fetchone())))
+                elif changed_after:
+                    edits.append(("row", "update", rid, None, label_of(rid), changed_before, changed_after))
             elif kind == "delete_row":
+                old = con.execute("SELECT * FROM la_rows WHERE id = ?", (op.get("id"),)).fetchone()
+                if old is not None:
+                    edits.append(("row", "delete", old["id"], None, label_of(old["id"]), _row_brief(old), None))
                 con.execute("DELETE FROM la_cells WHERE row_id = ?", (op.get("id"),))
                 con.execute("DELETE FROM la_rows WHERE id = ?", (op.get("id"),))
+                labels.pop(op.get("id"), None)
             elif kind == "cell":
                 day, color, text = op.get("day"), op.get("color"), _text(op.get("text"), "text")
                 if not isinstance(day, str) or not DAY_RE.match(day):
                     raise Refused("day must be YYYY-MM-DD", 400)
                 if color is not None and (not isinstance(color, str) or not HEX_RE.match(color)):
                     raise Refused("color must be RRGGBB", 400)
+                was = con.execute("SELECT color, text FROM la_cells WHERE row_id = ? AND day = ?", (op.get("row_id"), day)).fetchone()
+                before = {"color": was["color"], "text": was["text"]} if was else None
                 if not color and not text:
                     con.execute("DELETE FROM la_cells WHERE row_id = ? AND day = ?", (op.get("row_id"), day))
+                    after = None
                 else:
                     if not con.execute("SELECT 1 FROM la_rows WHERE id = ?", (op.get("row_id"),)).fetchone():
                         raise Refused("that row is not on the look-ahead (reload: somebody may have deleted it)", 409)
                     con.execute("INSERT INTO la_cells(row_id, day, color, text) VALUES (?, ?, ?, ?) "
                                 "ON CONFLICT(row_id, day) DO UPDATE SET color = excluded.color, text = excluded.text",
                                 (op["row_id"], day, color.upper() if color else None, text))
+                    after = {"color": color.upper() if color else None, "text": text}
+                if before != after:
+                    action = "insert" if before is None else "delete" if after is None else "update"
+                    edits.append(("cell", action, op.get("row_id"), day, label_of(op.get("row_id")), before, after))
             else:
                 raise Refused(f"unknown op {kind!r}", 400)
         version = meta_get(con, "la_version", 0) + 1
         meta_set(con, "la_version", version)
+        _log_edits(con, version, stamp, actor, edits if log is True else log or [])
     return {"version": version}
 
 
+def _log_edits(con, batch, stamp, actor, edits):
+    con.executemany(
+        "INSERT INTO la_edits(batch, at, user_id, by_name, target, action, row_id, day, label, before, after) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        [(batch, stamp, actor["id"], actor["name"], target, action, row_id, day, label,
+          None if before is None else json.dumps(before), None if after is None else json.dumps(after))
+         for target, action, row_id, day, label, before, after in edits])
+
+
 def replace_lookahead(con, rows, cells, actor, workflow, legend=None):
-    """The whole look-ahead at once (a workbook import), as ops so the same checks apply."""
+    """
+    The whole look-ahead at once (a workbook import), as ops so the same checks
+    apply. Its history is one line — what was there and what came in — not a
+    line for every day of every row it replaced.
+    """
     require_write(actor, workflow)
     if not isinstance(rows, list) or not isinstance(cells, list):
         raise Refused("rows and cells must be lists", 400)
+    had = {"rows": con.execute("SELECT count(*) FROM la_rows").fetchone()[0],
+           "cells": con.execute("SELECT count(*) FROM la_cells").fetchone()[0]}
     ops = [{"op": "delete_row", "id": r["id"]} for r in con.execute("SELECT id FROM la_rows")]
     ops += [{"op": "row", "id": r.get("id"), "set": {k: r.get(k) for k in ROW_FIELDS if k in r}} for r in rows]
     ops += [{"op": "cell", **c} for c in cells]
-    out = apply_ops(con, ops, actor, workflow)
+    out = apply_ops(con, ops, actor, workflow,
+                    log=[("import", "replace", None, None, "", had, {"rows": len(rows), "cells": len(cells)})])
     if legend is not None:
         set_legend(con, legend, actor, workflow)
     return out
+
+
+def list_edits(con, actor, row=None, day=None, rows=None, since=None, start=None, end=None, before=None, limit=200):
+    """
+    The look-ahead's history, newest first: one day of a row (`row` and `day`),
+    a row (`row`), several rows since a moment (`rows`, `since` — what changed
+    under a request after it was submitted), the days `start`…`end` (with every
+    change that is not to a day), older than an edit (`before`, for the next
+    page). Anybody signed in may read it.
+    """
+    if actor is None:
+        raise Refused("sign in first", 401)
+    where, args = [], []
+    if row:
+        where.append("row_id = ?")
+        args.append(row)
+    if rows:
+        if not isinstance(rows, list) or len(rows) > 500:
+            raise Refused("rows: at most 500", 400)
+        where.append(f"row_id IN ({', '.join('?' * len(rows))})")
+        args += rows
+    for name, v in (("day", day), ("start", start), ("end", end)):
+        if v is not None and not DAY_RE.match(str(v)):
+            raise Refused(f"{name} must be YYYY-MM-DD", 400)
+    if day:
+        where.append("day = ?")
+        args.append(day)
+    if start:
+        where.append("(day IS NULL OR day >= ?)")
+        args.append(start)
+    if end:
+        where.append("(day IS NULL OR day <= ?)")
+        args.append(end)
+    if since:
+        try:
+            moment = datetime.fromisoformat(str(since).replace("Z", "+00:00")).astimezone(timezone.utc)
+        except ValueError:
+            raise Refused("since must be a moment, YYYY-MM-DDTHH:MM:SSZ", 400)
+        where.append("at > ?")
+        args.append(moment.strftime("%Y-%m-%dT%H:%M:%SZ"))
+    if before is not None:
+        where.append("id < ?")
+        args.append(int(before))
+    limit = max(1, min(int(limit or 200), 2000))
+    sql = "SELECT * FROM la_edits" + (f" WHERE {' AND '.join(where)}" if where else "") + " ORDER BY id DESC LIMIT ?"
+    found = con.execute(sql, args + [limit + 1]).fetchall()
+    out = [{"id": e["id"], "batch": e["batch"], "at": e["at"], "by": e["by_name"], "by_id": e["user_id"],
+            "target": e["target"], "action": e["action"], "row_id": e["row_id"], "day": e["day"], "label": e["label"],
+            "before": json.loads(e["before"]) if e["before"] else None,
+            "after": json.loads(e["after"]) if e["after"] else None} for e in found[:limit]]
+    return {"edits": out, "more": len(found) > limit, "since": meta_get(con, "la_edits_since")}
 
 
 def set_legend(con, legend, actor, workflow):
@@ -407,8 +551,12 @@ def set_legend(con, legend, actor, workflow):
     clean = [{"argb": e["argb"].upper(), "meaning": e["meaning"][:80],
               "role": e.get("role") if e.get("role") in ("shift", "ignore") else "shift"} for e in legend]
     with Tx(con):
+        was = meta_get(con, "legend", DEFAULT_LEGEND)
+        version = meta_get(con, "la_version", 0) + 1
         meta_set(con, "legend", clean)
-        meta_set(con, "la_version", meta_get(con, "la_version", 0) + 1)
+        meta_set(con, "la_version", version)
+        if was != clean:
+            _log_edits(con, version, now_iso(), actor, [("legend", "update", None, None, "", was, clean)])
     return clean
 
 
@@ -424,8 +572,12 @@ def set_codes(con, codes, actor, workflow):
                       "party": str(c.get("party") or "BART")[:40], "sort": int(c.get("sort") or (i + 1) * 10),
                       "tawr_line": line, "active": c.get("active", True) is not False})
     with Tx(con):
+        was = meta_get(con, "codes", DEFAULT_CODES)
+        version = meta_get(con, "la_version", 0) + 1
         meta_set(con, "codes", clean)
-        meta_set(con, "la_version", meta_get(con, "la_version", 0) + 1)
+        meta_set(con, "la_version", version)
+        if was != clean:
+            _log_edits(con, version, now_iso(), actor, [("codes", "update", None, None, "", was, clean)])
     return clean
 
 
@@ -441,11 +593,43 @@ def tawr_out(r):
     return d
 
 
-def list_tawrs(con, since=None):
+def list_tawrs(con, since=None, actor=None):
+    """Every request (from the week of `since`), each with its conversation and files (`with_talk`)."""
     sql, args = "SELECT * FROM tawrs", []
     if since:
         sql, args = sql + " WHERE week_start >= ?", [since]
-    return [tawr_out(r) for r in con.execute(sql + " ORDER BY week_start, location_name, shift, id", args)]
+    out = [tawr_out(r) for r in con.execute(sql + " ORDER BY week_start, location_name, shift, id", args)]
+    return with_talk(con, out, actor)
+
+
+def with_talk(con, records, actor=None):
+    """
+    Requests with what was said and sent with them: `comments` oldest first,
+    `attachments` (what each file is, never its bytes), and `seen_comment` — the
+    newest comment `actor` has been shown — so the page can say what is new.
+    """
+    comments, files, seen = {}, {}, {}
+    ids = [r["id"] for r in records]
+    for at in range(0, len(ids), 500):  # an older SQLite takes at most 999 values in one statement
+        part = ids[at:at + 500]
+        marks = ", ".join("?" * len(part))
+        for c in con.execute(f"SELECT * FROM tawr_comments WHERE tawr_id IN ({marks}) ORDER BY id", part):
+            comments.setdefault(c["tawr_id"], []).append(_comment_out(c))
+        for a in con.execute(f"SELECT * FROM tawr_attachments WHERE tawr_id IN ({marks}) ORDER BY id", part):
+            files.setdefault(a["tawr_id"], []).append(_attachment_out(a))
+        if actor is not None:
+            seen.update({r["tawr_id"]: r["seen_comment"] for r in con.execute(
+                f"SELECT tawr_id, seen_comment FROM tawr_seen WHERE user_id = ? AND tawr_id IN ({marks})", [actor["id"]] + part)})
+    for r in records:
+        r["comments"] = comments.get(r["id"], [])
+        r["attachments"] = files.get(r["id"], [])
+        r["seen_comment"] = seen.get(r["id"], 0)
+    return records
+
+
+def _full(con, tid, actor=None):
+    """One request as the page reads it: with its conversation and files."""
+    return with_talk(con, [tawr_out(_get_tawr(con, tid))], actor)[0]
 
 
 def list_merges(con):
@@ -508,7 +692,7 @@ def create_tawr(con, rec, actor, workflow):
             raise Refused("there is already a request for that place and shift this week", 409)
         vals.update(status="draft", created_by=actor["id"], history=_history(None, actor, "created"))
         cur = con.execute(f"INSERT INTO tawrs({', '.join(vals)}) VALUES ({', '.join('?' * len(vals))})", list(vals.values()))
-        return tawr_out(_get_tawr(con, cur.lastrowid))
+        return _full(con, cur.lastrowid, actor)
 
 
 def update_tawr(con, tid, changes, actor, workflow):
@@ -544,12 +728,12 @@ def update_tawr(con, tid, changes, actor, workflow):
                 else:
                     sets[k] = _text(changes[k], k)
         if not sets:
-            return tawr_out(r)
+            return _full(con, tid, actor)
         sets.update(updated_by=actor["id"], updated_at=now_iso())
         if "fields" in sets:
             sets["history"] = _history(r, actor, "edited")
         con.execute(f"UPDATE tawrs SET {', '.join(f'{k} = ?' for k in sets)} WHERE id = ?", list(sets.values()) + [tid])
-        return tawr_out(_get_tawr(con, tid))
+        return _full(con, tid, actor)
 
 
 def _blocking(r):
@@ -592,6 +776,7 @@ def act_on_tawr(con, tid, action, actor, workflow, note=None, on=None, released=
         stamp = now_iso()
         if action == "discard":
             con.execute("DELETE FROM tawrs WHERE id = ?", (tid,))
+            _drop_orphan_files(con)
             return {"deleted": tid}
         sets = {"status": rule["to"], "updated_by": actor["id"], "updated_at": stamp,
                 "history": _history(r, actor, action, note.strip() if isinstance(note, str) and note.strip() else None)}
@@ -615,8 +800,11 @@ def act_on_tawr(con, tid, action, actor, workflow, note=None, on=None, released=
                 "source, supersedes, created_by, history) VALUES (?, ?, ?, ?, ?, 'draft', ?, ?, ?, ?, ?, ?)",
                 (r["week_start"], r["group_key"], r["shift"], r["location_name"], r["first_day"], r["fields"],
                  r["generated"], r["source"], tid, actor["id"], _history(None, actor, f"revision of #{tid}")))
-            return tawr_out(_get_tawr(con, cur.lastrowid))
-        return tawr_out(_get_tawr(con, tid))
+            # Its files go with it: they are part of what is sent. Its conversation stays on the
+            # request it was said about, and the page shows it with the revision.
+            _carry_files(con, tid, cur.lastrowid)
+            return _full(con, cur.lastrowid, actor)
+        return _full(con, tid, actor)
 
 
 def _may_record(r, kind, actor, workflow):
@@ -674,7 +862,7 @@ def record_bart(con, tid, body, actor, workflow):
         bart["by"] = actor["name"]
         con.execute("UPDATE tawrs SET bart = ?, history = ?, updated_by = ?, updated_at = ? WHERE id = ?",
                     (json.dumps(bart), _history(r, actor, "; ".join(said) or "BART details changed"), actor["id"], now_iso(), tid))
-        return tawr_out(_get_tawr(con, tid))
+        return _full(con, tid, actor)
 
 
 def record_access(con, tid, body, actor, workflow):
@@ -700,7 +888,7 @@ def record_access(con, tid, body, actor, workflow):
         con.execute("UPDATE tawrs SET access = ?, history = ?, updated_by = ?, updated_at = ? WHERE id = ?",
                     (json.dumps(access), _history(r, actor, f"access recorded: used on {used} of {len(days)} day{'s' if len(days) != 1 else ''}",
                                                   access["note"]), actor["id"], now_iso(), tid))
-        return tawr_out(_get_tawr(con, tid))
+        return _full(con, tid, actor)
 
 
 def consolidate(con, ids, merge, record, actor, workflow, note=None):
@@ -757,7 +945,8 @@ def consolidate(con, ids, merge, record, actor, workflow, note=None):
             con.execute("UPDATE tawrs SET status = 'consolidated', status_before = ?, merged_into = ?, "
                         "updated_by = ?, updated_at = ?, history = ? WHERE id = ?",
                         (r["status"], new_id, actor["id"], stamp, _history(r, actor, f"consolidated into #{new_id}", note), r["id"]))
-        return tawr_out(_get_tawr(con, new_id))
+            _carry_files(con, r["id"], new_id)
+        return _full(con, new_id, actor)
 
 
 def split(con, tid, actor, workflow):
@@ -775,6 +964,12 @@ def split(con, tid, actor, workflow):
             raise Refused(f"a {r['status']} request cannot be split; revise it first", 409)
         members = con.execute("SELECT * FROM tawrs WHERE merged_into = ? AND status = 'consolidated'", (tid,)).fetchall()
         stamp = now_iso()
+        # What was said about the merged request, and the files added to it rather than carried in
+        # from its members, go back to every member: splitting loses nothing anybody wrote or sent.
+        for m in members:
+            con.execute("INSERT INTO tawr_comments(tawr_id, user_id, by_name, at, text) "
+                        "SELECT ?, user_id, by_name, at, text FROM tawr_comments WHERE tawr_id = ? ORDER BY id", (m["id"], tid))
+            _carry_files(con, tid, m["id"], own_only=True)
         con.execute("DELETE FROM tawrs WHERE id = ?", (tid,))
         con.execute("DELETE FROM tawr_merges WHERE id = ?", (r["group_key"][len("merge:"):],))
         restored = []
@@ -784,7 +979,166 @@ def split(con, tid, actor, workflow):
                         "updated_at = ?, history = ? WHERE id = ?",
                         (back, actor["id"], stamp, _history(m, actor, f"split back out of #{tid}"), m["id"]))
             restored.append(m["id"])
+        _drop_orphan_files(con)
         return {"deleted": tid, "restored": restored}
+
+
+# ------------------------------------------------------------ what is said and sent with a request
+
+COMMENT_LIMIT = 2000
+ATTACH_MAX = 20 * 1024 * 1024
+ATTACH_PER_REQUEST = 20
+# What may be sent with a request, by extension, and the type each is served as: documents,
+# drawings, photos, emails — never a page or a program. Mirrored in web/js/attachments.js.
+ATTACH_TYPES = {
+    "pdf": "application/pdf",
+    "doc": "application/msword",
+    "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "xls": "application/vnd.ms-excel",
+    "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "ppt": "application/vnd.ms-powerpoint",
+    "pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    "csv": "text/csv", "txt": "text/plain",
+    "png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg", "tif": "image/tiff", "tiff": "image/tiff",
+    "dwg": "image/vnd.dwg", "dxf": "image/vnd.dxf",
+    "msg": "application/vnd.ms-outlook", "eml": "message/rfc822",
+    "zip": "application/zip",
+}
+
+
+def _comment_out(c):
+    return {"id": c["id"], "at": c["at"], "by": c["by_name"], "by_id": c["user_id"], "text": c["text"]}
+
+
+def _attachment_out(a):
+    return {"id": a["id"], "name": a["name"], "type": a["type"], "size": a["size"], "sha256": a["sha256"],
+            "at": a["at"], "by": a["by_name"], "by_id": a["user_id"], "copied_from": a["copied_from"]}
+
+
+def add_comment(con, tid, text, actor, workflow):
+    """Say something on a request — any request, at any point in its life; viewers read."""
+    if actor is None:
+        raise Refused("sign in first", 401)
+    if actor["role"] not in workflow.get("comment", workflow["write"]):
+        raise Refused(f"a {workflow['roles'][actor['role']].lower()} cannot comment")
+    text = text.strip() if isinstance(text, str) else ""
+    if not text:
+        raise Refused("write something first", 400)
+    if len(text) > COMMENT_LIMIT:
+        raise Refused("a comment is at most 2,000 characters", 400)
+    with Tx(con):
+        _get_tawr(con, tid)
+        cur = con.execute("INSERT INTO tawr_comments(tawr_id, user_id, by_name, at, text) VALUES (?, ?, ?, ?, ?)",
+                          (tid, actor["id"], actor["name"], now_iso(), text))
+        _seen(con, actor, tid, cur.lastrowid)  # what you wrote, you have read
+        return _full(con, tid, actor)
+
+
+def list_comments(con, tid, actor):
+    """A request's conversation as it stands now: opened, it is current, whatever the page loaded before."""
+    if actor is None:
+        raise Refused("sign in first", 401)
+    _get_tawr(con, tid)
+    return [_comment_out(c) for c in con.execute("SELECT * FROM tawr_comments WHERE tawr_id = ? ORDER BY id", (tid,))]
+
+
+def _seen(con, actor, tid, upto):
+    con.execute("INSERT INTO tawr_seen(user_id, tawr_id, seen_comment) VALUES (?, ?, ?) "
+                "ON CONFLICT(user_id, tawr_id) DO UPDATE SET seen_comment = max(seen_comment, excluded.seen_comment)",
+                (actor["id"], tid, upto))
+
+
+def mark_seen(con, tid, upto, actor):
+    """`actor` has been shown the conversation up to comment `upto`: nothing older is new to them."""
+    if actor is None:
+        raise Refused("sign in first", 401)
+    if not isinstance(upto, int) or upto < 0:
+        raise Refused("upto must be a comment id", 400)
+    with Tx(con):
+        _get_tawr(con, tid)
+        _seen(con, actor, tid, upto)
+    return {"tawr_id": tid, "seen_comment": upto}
+
+
+def clean_file_name(name):
+    """A file's own name, without a folder, control characters or anything a file system refuses."""
+    name = re.split(r"[\\/]", str(name or ""))[-1]
+    name = re.sub(r"[\x00-\x1f\x7f<>:\"|?*]+", "", name)
+    name = re.sub(r"\s+", " ", name).strip(" .")
+    if len(name) > 120:
+        stem, dot, ext = name.rpartition(".")
+        name = f"{stem[:110].rstrip()}.{ext[:8]}" if dot and len(ext) <= 8 else name[:120]
+    return name
+
+
+def _may_attach(r, actor, workflow):
+    """Files change where the request's fields may: a draft is its requester's, a submitted one the manager's."""
+    if actor is None:
+        raise Refused("sign in first", 401)
+    if actor["role"] not in workflow["edit"].get(r["status"], []):
+        raise Refused(f"the files on a {r['status']} request cannot be changed by a "
+                      f"{workflow['roles'][actor['role']].lower()}", 409 if actor["role"] in workflow["write"] else 403)
+
+
+def add_attachment(con, tid, name, data, actor, workflow):
+    """Send a file with a request: the SSWP, a drawing, a permit."""
+    name = clean_file_name(name)
+    ext = name.rpartition(".")[2].lower() if "." in name else ""
+    if not name or ext not in ATTACH_TYPES:
+        raise Refused("only documents, drawings, photos, emails and zip files can be attached "
+                      "(PDF, Word, Excel, PowerPoint, CSV, text, PNG, JPEG, TIFF, DWG, DXF, MSG, EML, ZIP)", 415)
+    if not data:
+        raise Refused("the file is empty", 400)
+    if len(data) > ATTACH_MAX:
+        raise Refused("a file is at most 20 MB", 413)
+    sha = hashlib.sha256(data).hexdigest()
+    with Tx(con):
+        r = _get_tawr(con, tid)
+        _may_attach(r, actor, workflow)
+        if con.execute("SELECT count(*) FROM tawr_attachments WHERE tawr_id = ?", (tid,)).fetchone()[0] >= ATTACH_PER_REQUEST:
+            raise Refused(f"a request carries at most {ATTACH_PER_REQUEST} files", 409)
+        con.execute("INSERT OR IGNORE INTO files(sha256, size, data) VALUES (?, ?, ?)", (sha, len(data), sqlite3.Binary(data)))
+        con.execute("INSERT INTO tawr_attachments(tawr_id, sha256, name, type, size, user_id, by_name, at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)", (tid, sha, name, ATTACH_TYPES[ext], len(data), actor["id"], actor["name"], now_iso()))
+        con.execute("UPDATE tawrs SET history = ?, updated_by = ?, updated_at = ? WHERE id = ?",
+                    (_history(r, actor, f"attached {name}"), actor["id"], now_iso(), tid))
+        return _full(con, tid, actor)
+
+
+def get_attachment(con, aid, actor):
+    """A file sent with a request — `(name, type, bytes)` — for anybody signed in."""
+    if actor is None:
+        raise Refused("sign in first", 401)
+    a = con.execute("SELECT a.name, a.type, f.data FROM tawr_attachments a JOIN files f ON f.sha256 = a.sha256 "
+                    "WHERE a.id = ?", (aid,)).fetchone()
+    if a is None:
+        raise Refused("no such file", 404)
+    return a["name"], a["type"], bytes(a["data"])
+
+
+def delete_attachment(con, tid, aid, actor, workflow):
+    with Tx(con):
+        r = _get_tawr(con, tid)
+        a = con.execute("SELECT * FROM tawr_attachments WHERE id = ? AND tawr_id = ?", (aid, tid)).fetchone()
+        if a is None:
+            raise Refused("no such file on that request", 404)
+        _may_attach(r, actor, workflow)
+        con.execute("DELETE FROM tawr_attachments WHERE id = ?", (aid,))
+        con.execute("UPDATE tawrs SET history = ?, updated_by = ?, updated_at = ? WHERE id = ?",
+                    (_history(r, actor, f"removed {a['name']}"), actor["id"], now_iso(), tid))
+        _drop_orphan_files(con)
+        return _full(con, tid, actor)
+
+
+def _carry_files(con, from_id, to_id, own_only=False):
+    """A request's files onto another (a revision, a consolidation, a split); the bytes are shared, never copied."""
+    con.execute("INSERT INTO tawr_attachments(tawr_id, sha256, name, type, size, copied_from, user_id, by_name, at) "
+                "SELECT ?, sha256, name, type, size, id, user_id, by_name, at FROM tawr_attachments "
+                f"WHERE tawr_id = ?{' AND copied_from IS NULL' if own_only else ''} ORDER BY id", (to_id, from_id))
+
+
+def _drop_orphan_files(con):
+    con.execute("DELETE FROM files WHERE sha256 NOT IN (SELECT sha256 FROM tawr_attachments)")
 
 
 # ------------------------------------------------------------ setup

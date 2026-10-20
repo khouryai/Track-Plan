@@ -6,8 +6,9 @@
  * to approve, rejections and BART's denials to put right, approved requests to
  * send to BART, access to account for, cancellations BART has not been told
  * of, conflicts and power clashes ahead, BART support over what BART can
- * provide, and look-ahead activities still to link. The start page draws it;
- * each item says where to go to deal with it.
+ * provide, look-ahead activities still to link, and comments on requests the
+ * reader has not seen yet. The start page draws it; each item says where to go
+ * to deal with it.
  *
  * `calendarIcs()` writes the TAWR deadlines (an all-day event on each week's
  * deadline, with a reminder the day before) and the approved access (an event
@@ -17,12 +18,13 @@
  *
  * Pure: no DOM — `tests/test_tawr.mjs` reads it.
  *
- * Imports: tawr.
+ * Imports: tawr, conversation.
  */
 
 import {
   tawrDeadline, deadlineState, addDaysISO, mondayOf, afterApproval, conflicts, powerConflicts, supportOver, tawrShiftLabel,
 } from './tawr.js';
+import { unread } from './conversation.js';
 
 const LIVE = (r) => !['superseded', 'consolidated'].includes(r.status);
 const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
@@ -41,8 +43,9 @@ const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
  * @param {number} [o.unlinked]  look-ahead activities with work ahead and no location
  * @param {number} [o.suggestions]  of those, how many the memory can link as before
  * @param {function} [o.label]   a date as people read it
+ * @param {string|number} [o.userId]  who is reading: what was said that they have not seen
  */
-export function attention({ records, today, role, capacity = {}, sections = [], unlinked = 0, suggestions = 0, label = (d) => d }) {
+export function attention({ records, today, role, capacity = {}, sections = [], unlinked = 0, suggestions = 0, label = (d) => d, userId = null }) {
   const writer = role === 'requester' || role === 'manager';
   const live = (records || []).filter(LIVE);
   const out = [];
@@ -123,6 +126,16 @@ export function attention({ records, today, role, capacity = {}, sections = [], 
     add({ key: 'support', tone: writer ? 'you' : 'info', ids: [...new Set(overs.flatMap((o) => o.ids))], go: { view: 'tawr', week: mondayOf(overs[0].date) },
       title: `BART support over what BART can provide on ${plural(overs.length, 'shift')}`,
       detail: overs.slice(0, 3).map((o) => `${label(o.date)} ${tawrShiftLabel(o.shift).toLowerCase()}: ${o.asked} ${o.code}, BART has ${o.capacity}`).join(' · ') });
+  }
+
+  /* What was said on requests that the reader has not seen yet. */
+  if (userId != null) {
+    const talk = live.map((r) => ({ r, n: unread(r, userId).length })).filter((x) => x.n);
+    if (talk.length) {
+      add({ key: 'comments', tone: writer ? 'you' : 'info', ids: talk.map((x) => x.r.id), go: { view: 'tawr', week: talk[0].r.week_start },
+        title: `${plural(talk.reduce((n, x) => n + x.n, 0), 'new comment')} on ${plural(talk.length, 'request')}`,
+        detail: talk.slice(0, 3).map((x) => `${name(x.r)} (${x.n})`).join(' · ') });
+    }
   }
 
   if (unlinked && writer) {

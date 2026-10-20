@@ -773,6 +773,74 @@ export function changedSince(generated, fresh) {
   return [...keys].filter((k) => fromLookahead(k) && !same(generated?.[k], fresh?.[k])).sort();
 }
 
+/**
+ * What changed on the look-ahead since a request stopped following it — since
+ * it was submitted — day by day and activity by activity, in words. `before` is
+ * what the request kept (`record.source`), `after` the look-ahead read now for
+ * the same place and shift (the group `extractWeek` finds for its key). Each
+ * line carries the rows and days it is about, so the edits behind it can be
+ * found (`la_history.editsFor`): `[{ text, rows, days, rowFields }]` — the
+ * days first, in date order, then the activities. `elsewhere(date, rows)` may
+ * say where a day this request no longer asks for went ("the swing shift").
+ */
+export function sourceChanges(before, after, { dayLabel = (d) => d, elsewhere = () => null } = {}) {
+  const lines = [];
+  const daysB = new Map((before?.days || []).map((d) => [d.date, d]));
+  const daysA = new Map((after?.days || []).map((d) => [d.date, d]));
+  const hours = (d) => (d.start || d.end ? `${d.start || '?'}–${d.end || '?'}` : 'no hours');
+  const codes = (m) => Object.entries(m || {}).flatMap(([code, n]) => Array(n).fill(code)).join('.') || 'none';
+  const sameCodes = (a, b) => codes(a).split('.').sort().join() === codes(b).split('.').sort().join();
+  const rowsOf = (...days) => [...new Set(days.flatMap((d) => d?.rows || []))];
+  for (const date of [...new Set([...daysB.keys(), ...daysA.keys()])].sort()) {
+    const b = daysB.get(date);
+    const a = daysA.get(date);
+    if (b && !a) {
+      const went = elsewhere(date, b.rows || []);
+      lines.push({ text: went ? `${dayLabel(date)} moved to ${went} (it was ${hours(b)} on this one)` : `${dayLabel(date)} is no longer asked for on this shift (it was ${hours(b)})`, rows: rowsOf(b), days: [date] });
+    } else if (!b && a) {
+      const asked = a.support && Object.keys(a.support).length ? `, support ${codes(a.support)}` : '';
+      lines.push({ text: `${dayLabel(date)} added, ${hours(a)}${asked}`, rows: rowsOf(a), days: [date] });
+    } else {
+      const parts = [];
+      if (hours(b) !== hours(a)) parts.push(`hours ${hours(b)} → ${hours(a)}`);
+      // A request kept before each day carried its own support has nothing to compare it with.
+      if (b.support && a.support && !sameCodes(b.support, a.support)) parts.push(`support ${codes(b.support)} → ${codes(a.support)}`);
+      if (parts.length) lines.push({ text: `${dayLabel(date)}: ${parts.join(', ')}`, rows: rowsOf(b, a), days: [date] });
+    }
+  }
+
+  const actsB = new Map((before?.activities || []).map((x) => [x.row, x]));
+  const actsA = new Map((after?.activities || []).map((x) => [x.row, x]));
+  const name = (x) => [x.activityId, x.title].filter(Boolean).join(' · ') || 'An activity';
+  const where = (x) => (x.link ? partArea(x.link, { dash: '–' }) : x.rawLocation ? `"${x.rawLocation}" (not linked)` : 'no location');
+  const said = (v) => `"${v || 'none'}"`;
+  let moved = false;
+  for (const [row, b] of actsB) {
+    const a = actsA.get(row);
+    if (!a) {
+      lines.push({ text: `${name(b)} is no longer on this request`, rows: [row], days: b.days || [], rowFields: true });
+      continue;
+    }
+    const parts = [];
+    if ((b.title || '') !== (a.title || '')) parts.push(`description ${said(b.title)} → ${said(a.title)}`);
+    if ((b.activityId || '') !== (a.activityId || '')) parts.push(`activity ID ${said(b.activityId)} → ${said(a.activityId)}`);
+    if (where(b) !== where(a)) { parts.push(`location ${where(b)} → ${where(a)}`); moved = true; }
+    if ((b.party || '') !== (a.party || '')) parts.push(`party to action ${said(b.party)} → ${said(a.party)}`);
+    if ((b.sswp || '') !== (a.sswp || '')) parts.push(`SSWP ${said(b.sswp)} → ${said(a.sswp)}`);
+    const crewB = (b.crew || []).join(', ');
+    const crewA = (a.crew || []).join(', ');
+    if (crewB !== crewA) parts.push(`crew ${crewB || 'none'} → ${crewA || 'none'}`);
+    if (parts.length) lines.push({ text: `${name(a)}: ${parts.join('; ')}`, rows: [row], days: [], rowFields: true });
+  }
+  for (const [row, a] of actsA) {
+    if (!actsB.has(row)) lines.push({ text: `${name(a)} added to this request`, rows: [row], days: a.days || [], rowFields: true });
+  }
+  if (!moved && before?.area && after?.area && before.area !== after.area) {
+    lines.push({ text: `Area ${before.area} → ${after.area}`, rows: [...new Set([...actsB.keys(), ...actsA.keys()])], days: [], rowFields: true });
+  }
+  return lines;
+}
+
 /** Whether a request may be approved: no blocking flag. */
 export function blockers(group) {
   return (group?.flags || []).filter((f) => f.blocking);

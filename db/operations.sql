@@ -66,6 +66,31 @@ CREATE INDEX IF NOT EXISTS la_cells_day ON la_cells(day);
 -- The shift colours, and the support code register: JSON arrays in `meta`
 -- under 'legend' and 'codes', replaced whole when edited.
 
+-- Every change to the look-ahead, one row per thing changed: a day of a row
+-- (`cell`), a row's own fields (`row`), a workbook import, the legend or the
+-- support codes. `before` and `after` are JSON — a day's {color, text}, or the
+-- row fields that changed (a link kept as where it is, never its geometry) —
+-- and `label` is what the row was called then, so a deleted row's history
+-- still says what it was. `batch` is the look-ahead version the change made:
+-- one action, one batch. Kept from `meta.la_edits_since`; nothing is ever
+-- reconstructed, and an undo is new edits like any other.
+CREATE TABLE IF NOT EXISTS la_edits (
+    id       INTEGER PRIMARY KEY,
+    batch    INTEGER NOT NULL,
+    at       TEXT NOT NULL,
+    user_id  INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    by_name  TEXT NOT NULL DEFAULT '',
+    target   TEXT NOT NULL CHECK (target IN ('cell', 'row', 'import', 'legend', 'codes')),
+    action   TEXT NOT NULL CHECK (action IN ('insert', 'update', 'delete', 'replace')),
+    row_id   TEXT,                           -- no foreign key: the history outlives the row
+    day      TEXT,
+    label    TEXT NOT NULL DEFAULT '',
+    before   TEXT,
+    after    TEXT
+);
+CREATE INDEX IF NOT EXISTS la_edits_cell ON la_edits(row_id, day);
+CREATE INDEX IF NOT EXISTS la_edits_at ON la_edits(at);
+
 -- ── TAWRs ───────────────────────────────────────────────────────────────────
 -- One per place and shift per week (or per consolidation). `fields` is what the
 -- form says now, `generated` what the look-ahead said when it was last read;
@@ -109,6 +134,52 @@ CREATE INDEX IF NOT EXISTS tawrs_week ON tawrs(week_start);
 -- replace, never pile up.
 CREATE UNIQUE INDEX IF NOT EXISTS tawrs_current ON tawrs(week_start, group_key)
     WHERE status NOT IN ('superseded', 'consolidated');
+
+-- A request's conversation: what the requester and the Track Allocation
+-- Manager say to each other about it, append-only. A decision's reason stays
+-- in the request's history; the page shows both as one thread.
+CREATE TABLE IF NOT EXISTS tawr_comments (
+    id       INTEGER PRIMARY KEY,
+    tawr_id  INTEGER NOT NULL REFERENCES tawrs(id) ON DELETE CASCADE,
+    user_id  INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    by_name  TEXT NOT NULL,
+    at       TEXT NOT NULL,
+    text     TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS tawr_comments_tawr ON tawr_comments(tawr_id, id);
+
+-- How far each person has read each request's conversation: the newest comment
+-- they were shown. Anything newer, by somebody else, is new to them.
+CREATE TABLE IF NOT EXISTS tawr_seen (
+    user_id       INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    tawr_id       INTEGER NOT NULL REFERENCES tawrs(id) ON DELETE CASCADE,
+    seen_comment  INTEGER NOT NULL,
+    PRIMARY KEY (user_id, tawr_id)
+);
+
+-- The files sent with a request — the SSWP, drawings, permits — each kept once
+-- by its SHA-256 however many requests carry it (a revision or a consolidation
+-- carries its request's files over), and dropped when the last one goes.
+CREATE TABLE IF NOT EXISTS files (
+    sha256  TEXT PRIMARY KEY,
+    size    INTEGER NOT NULL,
+    data    BLOB NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS tawr_attachments (
+    id           INTEGER PRIMARY KEY,
+    tawr_id      INTEGER NOT NULL REFERENCES tawrs(id) ON DELETE CASCADE,
+    sha256       TEXT NOT NULL REFERENCES files(sha256),
+    name         TEXT NOT NULL,
+    type         TEXT NOT NULL,
+    size         INTEGER NOT NULL,
+    copied_from  INTEGER,                  -- the attachment it was carried over from
+    user_id      INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    by_name      TEXT NOT NULL DEFAULT '',
+    at           TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS tawr_attachments_tawr ON tawr_attachments(tawr_id);
+CREATE INDEX IF NOT EXISTS tawr_attachments_file ON tawr_attachments(sha256);
 
 -- The requests the track allocation manager made one: `keys` is the JSON list
 -- of the group keys merged, and the merged request's key is 'merge:' || id.

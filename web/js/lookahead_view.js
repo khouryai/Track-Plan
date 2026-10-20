@@ -23,7 +23,7 @@
  * Every change is an op (`lookahead.js`), applied here at once and saved in
  * order (`store.applyOps`); the inverse is kept for undo.
  *
- * Imports: lookahead, links, tawr, store, ui.
+ * Imports: lookahead, links, tawr, store, ui, la_history.
  */
 
 import * as LA from './lookahead.js';
@@ -31,6 +31,7 @@ import { linkLabel, linkArea, hasLink, resolveLocationText } from './links.js';
 import * as T from './tawr.js';
 import * as S from './store.js';
 import { el, esc, clear, toast, contextMenu, openModal, confirmDialog, dayLabel, stampLabel, saveFile, csvField } from './ui.js';
+import * as H from './la_history.js';
 import { STATUS_COLOR } from './map.js';
 import { sampleLookahead, sampleStart } from './sample.js';
 import { settleSample } from './tawr_sync.js';
@@ -231,6 +232,10 @@ function toolbar() {
     }) : null,
     writer() ? el('button', { type: 'button', class: 'secondary mini', dataset: { action: 'import' }, text: 'Import 4WLA (.xlsx)…', onClick: importWorkbook }) : null,
     writer() ? el('button', { type: 'button', class: 'secondary mini', dataset: { action: 'sample' }, text: 'Sample data…', title: 'Four weeks of W and M line work, with conflicts, from the coming Monday', onClick: loadSample }) : null,
+    el('button', {
+      type: 'button', class: 'secondary mini', dataset: { action: 'la-changes' }, text: 'Changes',
+      title: 'Who changed what on the weeks on screen, and when — newest first', onClick: openChanges,
+    }),
     el('button', {
       type: 'button', class: 'secondary mini', dataset: { action: 'export-xlsx' }, text: 'Excel (4WLA)',
       title: 'The weeks on screen in BART\'s 4WLA layout, to paste into the master look-ahead', onClick: exportXlsx,
@@ -853,10 +858,16 @@ function cellMenu(r, c, x, y) {
   if (!row) return;
   if (!V.sel || !inSel(r, c)) select(r, c);
   if (c === LOC && row.kind === 'activity') { locationMenu(row, x, y); return; }
+  const history = [
+    c >= META && row.kind !== 'section' ? { id: 'day-history', label: 'History of this day…', hint: 'Who changed it, and what it said', onClick: () => dayHistory(row, V.days[c - META]) } : null,
+    { id: 'row-history', label: row.kind === 'activity' ? 'History of this activity…' : 'History of this row…', onClick: () => rowHistory(row) },
+  ].filter(Boolean);
   if (!writer()) {
     contextMenu(x, y, [
       { id: 'copy', label: 'Copy', hint: 'Ctrl+C', onClick: () => copySelection() },
       row.kind === 'activity' && hasLink(row.link) ? { label: 'Show on track plan', onClick: () => V.app.showOnMap(row.link) } : null,
+      '-',
+      ...history,
     ].filter(Boolean));
     return;
   }
@@ -880,8 +891,95 @@ function cellMenu(r, c, x, y) {
     { label: 'Move down', onClick: () => moveRow(row, 1) },
     '-',
     { id: 'delete-row', label: selectedRows().length > 1 ? `Delete ${selectedRows().length} rows` : 'Delete row', onClick: () => deleteRows(selectedRows()) },
+    '-',
+    ...history,
   );
   contextMenu(x, y, items);
+}
+
+/* ── History: who changed what, and when (la_history.js says it in words) ─ */
+
+function meaningOf() {
+  const legend = LA.legendMap(V.app.la.legend);
+  return (hex) => legend.get(String(hex).toUpperCase())?.meaning || '';
+}
+
+/** Entries as lines: when and who, where (for a list of several places), what. */
+function historyList(edits, { where = false, jump = false } = {}) {
+  const meaning = meaningOf();
+  return el('ol', { class: 'hist-list' }, edits.map((e) => el('li', { dataset: { edit: e.id } }, [
+    el('span', { class: 'hist-when', text: `${stampLabel(e.at)} · ${e.by || 'somebody'}` }),
+    where ? (jump && e.row_id
+      ? el('button', { type: 'button', class: 'link hist-where', text: H.editWhere(e, { dayLabel }), title: 'Show it on the look-ahead', onClick: () => focusCell(e.row_id, e.day) })
+      : el('span', { class: 'hist-where', text: H.editWhere(e, { dayLabel }) })) : null,
+    el('span', { class: 'hist-what', text: H.editText(e, { meaningOf: meaning }) }),
+  ])));
+}
+
+const keptFrom = (since) => (since ? `Changes are kept from ${stampLabel(since)}.` : '');
+
+async function showHistory(title, query, { where = false } = {}) {
+  const body = el('div', { class: 'hist-body', 'aria-live': 'polite' }, [el('p', { class: 'small', text: 'Reading the history…' })]);
+  openModal({ title, body, size: 'lg' });
+  let got;
+  try { got = await S.listEdits({ limit: 500, ...query }); } catch (err) { clear(body); body.append(el('p', { class: 'msg err', text: err.message })); return; }
+  clear(body);
+  body.append(got.edits.length ? historyList(got.edits, { where }) : el('p', { class: 'empty', text: 'No changes recorded here yet.' }));
+  body.append(el('p', { class: 'small', text: [got.more ? 'The newest 500 shown.' : '', keptFrom(got.since)].filter(Boolean).join(' ') }));
+}
+
+function dayHistory(row, day) {
+  return showHistory(`${row.kind === 'resource' ? H.rowLabel(row, new Map(model().rows.map((r) => [r.id, r]))) : LA.rowTitle(row)} · ${dayLabel(day)}`, { row: row.id, day });
+}
+
+/** An activity's history is its own and its names rows'. */
+function rowHistory(row) {
+  const ids = [row.id, ...(row.kind === 'activity' ? LA.resourcesOf(model(), row.id).map((r) => r.id) : [])];
+  return showHistory(`History of ${row.kind === 'resource' ? H.rowLabel(row, new Map(model().rows.map((r) => [r.id, r]))) : LA.rowTitle(row)}`, { rows: ids }, { where: true });
+}
+
+/** Every change to the weeks on screen, as the actions that made them, newest first; each jumps to its cell. */
+async function openChanges() {
+  const query = { start: V.days[0], end: V.days[V.days.length - 1], limit: 200 };
+  const body = el('div', { class: 'hist-body', 'aria-live': 'polite' }, [el('p', { class: 'small', text: 'Reading the history…' })]);
+  const handle = openModal({ title: `Changes · ${dayLabel(query.start)} – ${dayLabel(query.end)}`, subtitle: 'Who changed what on the weeks on screen, newest first. Click a line to see it.', body, size: 'lg' });
+  const list = el('div', { class: 'hist-batches' });
+  const more = el('button', { type: 'button', class: 'secondary mini', dataset: { action: 'changes-more' }, text: 'Show older', hidden: true });
+  const note = el('p', { class: 'small' });
+  let last = null;
+  const page = async () => {
+    let got;
+    try { got = await S.listEdits(last ? { ...query, before: last } : query); } catch (err) { note.textContent = err.message; return; }
+    for (const b of H.batches(got.edits)) {
+      list.append(el('section', { class: 'hist-batch' }, [
+        el('h3', { text: `${b.by || 'Somebody'} · ${stampLabel(b.at)}${b.edits.length > 1 ? ` · ${b.edits.length} changes` : ''}` }),
+        historyList(b.edits, { where: true, jump: true }),
+      ]));
+    }
+    if (got.edits.length) last = got.edits[got.edits.length - 1].id;
+    more.hidden = !got.more;
+    note.textContent = keptFrom(got.since);
+    if (!list.childNodes.length) list.append(el('p', { class: 'empty', text: 'Nothing on these weeks has changed since the history began.' }));
+  };
+  more.addEventListener('click', page);
+  clear(body);
+  body.append(list, more, note);
+  body.addEventListener('click', (e) => { if (e.target.closest('.hist-where')) handle.close(); });
+  await page();
+}
+
+/** Bring a row's day into view and select it: where a line of the history happened. */
+function focusCell(rowId, day) {
+  if (!model().rows.some((r) => r.id === rowId)) { toast('That row has since been deleted.', 'warn'); return; }
+  if (day && (day < V.days[0] || day > V.days[V.days.length - 1])) V.from = LA.mondayOf(day);
+  if (V.hideQuiet && !LA.rowsInWindow(model(), windowDays(), { all: false }).some((r) => r.id === rowId)) V.hideQuiet = false;
+  render(V.root, V.app);
+  const r = V.rows.findIndex((x) => x.id === rowId);
+  if (r < 0) return;
+  const c = day && V.days.includes(day) ? META + V.days.indexOf(day) : 1;
+  select(r, c);
+  V.cells[r]?.[c]?.scrollIntoView({ block: 'center', inline: 'center' });
+  V.scroll?.focus({ preventScroll: true });
 }
 
 function inSel(r, c) {

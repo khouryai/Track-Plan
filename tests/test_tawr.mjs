@@ -30,6 +30,9 @@ const LEARN = await import(path.join(ROOT, 'web/js/learn.js'));
 const XL = await import(path.join(ROOT, 'web/js/la_xlsx.js'));
 const TODAY = await import(path.join(ROOT, 'web/js/today.js'));
 const REP = await import(path.join(ROOT, 'web/js/reports.js'));
+const HIST = await import(path.join(ROOT, 'web/js/la_history.js'));
+const CONV = await import(path.join(ROOT, 'web/js/conversation.js'));
+const ATT = await import(path.join(ROOT, 'web/js/attachments.js'));
 const { readZip } = await import(path.join(ROOT, 'web/js/xlsx.js'));
 const MAP = JSON.parse(fs.readFileSync(path.join(ROOT, 'web/data/map.json'), 'utf8'));
 const WORKFLOW = JSON.parse(fs.readFileSync(path.join(ROOT, 'web/data/tawr_workflow.json'), 'utf8'));
@@ -433,6 +436,133 @@ console.log('\nReports');
     && REP.percent(rep.totals.hoursUsed, rep.totals.hoursRecorded) === '50%' && REP.percent(1, 0) === '—');
   check('the reasons for rejections and denials, newest first, and only those', rep.reasons.map((x) => `${x.id} ${x.kind}`).join() === '7 rejected,2 denied,1 rejected'
     && rep.reasons[2].note === 'No flagger named', rep.reasons.map((x) => `${x.id} ${x.kind}`).join());
+}
+
+console.log('\nThe look-ahead\'s history');
+{
+  const meaning = (hex) => ({ '0070C0': 'Night Shift', FFC000: 'Swing Shift', FFFF00: 'Day Shift' })[hex] || '';
+  check('a day painted, moved to another shift and cleared, in words',
+    HIST.dayChange(null, { color: '0070C0', text: '' }, meaning) === 'Painted Night Shift'
+    && HIST.dayChange({ color: '0070C0', text: 'X.WIT' }, { color: 'FFC000', text: 'X' }, meaning) === 'Night Shift → Swing Shift · support taken off WIT'
+    && HIST.dayChange({ color: '0070C0', text: '' }, null, meaning) === 'Night Shift cleared',
+  HIST.dayChange({ color: '0070C0', text: 'X.WIT' }, { color: 'FFC000', text: 'X' }, meaning));
+  const d = HIST.codesDiff('X.WIT', 'X.~WIT.X');
+  check('support counted code by code: one more EIC, the witness struck out', d.added.join() === 'X' && d.struck.join() === 'WIT' && !d.removed.length, JSON.stringify(d));
+  const back = HIST.codesDiff('X.~WIT', 'X.WIT');
+  check('and a struck code put back is put back, not added', back.reinstated.join() === 'WIT' && !back.added.length && !back.removed.length, JSON.stringify(back));
+  check('names put on and taken off', HIST.namesChange({ text: 'Ann Example, Bo Sample' }, { text: 'Ann Example and Cy Test' }) === 'Cy Test put on · Bo Sample taken off');
+  check('text that is not codes is said as it was and is', HIST.dayChange({ color: null, text: 'see note' }, { color: null, text: 'see notes' }) === '"see note" → "see notes"');
+
+  const rows = new Map([['a', { id: 'a', kind: 'activity', activity_id: 'C-W101', description: 'Cable trough' }], ['r', { id: 'r', kind: 'resource', parent_id: 'a' }]]);
+  check('a row is called what it said then, a names row by its activity', HIST.rowLabel(rows.get('a'), rows) === 'C-W101 · Cable trough'
+    && HIST.rowLabel(rows.get('r'), rows) === 'Names under C-W101 · Cable trough' && HIST.rowLabel({ kind: 'section' }) === 'Section');
+  const link = { location_id: 'tcr:Colma', location_name: 'Colma TCR', location_kind: 'tcr', limits: [], geometry: [[[0, 0], [1, 1]]] };
+  const e = HIST.rowEdit({ id: 'a', kind: 'activity', description: 'IXL', sort: 1, link: null }, { id: 'a', kind: 'activity', description: 'IXL SIM Testing', sort: 2, link }, 'IXL SIM Testing');
+  check('a row change keeps what changed, never where it sits or the geometry', JSON.stringify(e.before) === JSON.stringify({ description: 'IXL', link: null })
+    && JSON.stringify(e.after.link) === JSON.stringify({ location_id: 'tcr:Colma', location_name: 'Colma TCR', location_kind: 'tcr', limits: [] }) && !('sort' in e.after), JSON.stringify(e));
+  check('moving a row is no change to what it says', HIST.rowEdit({ id: 'a', sort: 1 }, { id: 'a', sort: 2 }, '') === null);
+  check('a day written as it was is no change; a new one is an insert', HIST.cellEdit({ color: 'ffff00', text: 'X' }, { color: 'FFFF00', text: 'X' }, 'a', MON, '') === null
+    && HIST.cellEdit(null, { color: 'FFFF00', text: '' }, 'a', MON, '').action === 'insert' && HIST.cellEdit({ color: 'FFFF00', text: '' }, null, 'a', MON, '').action === 'delete');
+
+  const log = [
+    { id: 1, batch: 5, at: '2026-10-18T09:00:00Z', by: 'Rae Requester', target: 'row', action: 'insert', row_id: 'a', day: null, label: 'C-W101 · Cable trough', before: null, after: {} },
+    { id: 2, batch: 5, at: '2026-10-18T09:00:00Z', by: 'Rae Requester', target: 'cell', action: 'insert', row_id: 'a', day: MON, label: 'C-W101 · Cable trough', before: null, after: { color: '0070C0', text: 'X' } },
+    { id: 3, batch: 6, at: '2026-10-19T10:30:00Z', by: 'Sam Scheduler', target: 'cell', action: 'update', row_id: 'a', day: MON, label: 'C-W101 · Cable trough', before: { color: '0070C0', text: 'X' }, after: { color: 'FFC000', text: 'X' } },
+    { id: 4, batch: 6, at: '2026-10-19T10:30:00Z', by: 'Sam Scheduler', target: 'cell', action: 'insert', row_id: 'a', day: day(1), label: 'C-W101 · Cable trough', before: null, after: { color: 'FFC000', text: '' } },
+    { id: 5, batch: 7, at: '2026-10-19T11:00:00Z', by: 'Rae Requester', target: 'import', action: 'replace', row_id: null, day: null, label: '', before: { rows: 3, cells: 9 }, after: { rows: 4, cells: 12 } },
+  ];
+  check('a day\'s history is its entries, newest first', HIST.cellHistory(log, 'a', MON).map((x) => x.id).join() === '3,2');
+  check('a row\'s is everything on it', HIST.rowHistory(log, 'a').map((x) => x.id).join() === '4,3,2,1');
+  const b = HIST.batches(log);
+  check('the log read as the actions that made it, newest first, each in the order it was done',
+    b.map((x) => x.batch).join() === '7,6,5' && b[1].edits.map((x) => x.id).join() === '3,4' && b[1].by === 'Sam Scheduler');
+  check('an import is one line that says what it replaced', HIST.editText(log[4]) === 'Imported a workbook: 4 rows and 12 days, in place of 3 rows and 9 days', HIST.editText(log[4]));
+  check('a row added, a day changed, and where', HIST.editText(log[0]) === 'Added C-W101 · Cable trough' && HIST.editText(log[2], { meaningOf: meaning }) === 'Night Shift → Swing Shift'
+    && HIST.editWhere(log[2], { dayLabel: (x) => `<${x}>` }) === `C-W101 · Cable trough · <${MON}>`);
+  const brief = HIST.linkBrief(link);
+  const linked = HIST.editText({ target: 'row', action: 'update', label: 'x', before: { link: null }, after: { link: brief } });
+  check('a link changed is said as where it is', linked === `Track plan link none → ${L.linkLabel(brief)}` && L.linkLabel(brief), linked);
+  check('the legend and the codes say what was added', HIST.editText({ target: 'codes', before: [{ code: 'X' }], after: [{ code: 'X' }, { code: 'TCE' }] }) === 'Support codes: TCE added');
+
+  const behind = HIST.editsFor({ rows: ['a'], days: [MON] }, log);
+  check('the edits behind a change to a request: its days on its rows', behind.map((x) => x.id).join() === '2,3');
+  check('what an activity says is found on its row, not its days', HIST.editsFor({ rows: ['a'], days: [], rowFields: true }, log).map((x) => x.id).join() === '1');
+  const stamp = (iso) => iso.slice(5, 16);
+  check('who made them, and when', HIST.whoText(behind, { stamp }) === 'Rae Requester and Sam Scheduler, 10-18T09:00 – 10-19T10:30', HIST.whoText(behind, { stamp }));
+  check('one person, one moment; nobody, nothing', HIST.whoText([log[2]], { stamp }) === 'Sam Scheduler, 10-19T10:30' && HIST.whoText([]) === '');
+}
+
+console.log('\nWhat changed since a request was submitted');
+{
+  const track = (to) => ({ kind: 'track', limits: [{ track: 'W2', from_mp: 16.6, to_mp: to }] });
+  const before = {
+    area: 'W2 MP 16.600–17.200',
+    days: [{ date: MON, start: '22:00', end: '04:00', rows: ['a'], support: { X: 1, WIT: 1 } }, { date: day(1), start: '22:00', end: '04:00', rows: ['a'], support: { X: 1 } }],
+    activities: [{ row: 'a', title: 'Cable trough', activityId: 'C-W101', party: 'Example Electric', sswp: '12', days: [MON, day(1)], crew: ['Ann Example'], link: track(17.2) }],
+  };
+  const after = JSON.parse(JSON.stringify(before));
+  after.days = [{ date: MON, start: '23:00', end: '04:00', rows: ['a'], support: { X: 1 } }, { date: day(2), start: '22:00', end: '04:00', rows: ['a'], support: { X: 1 } }];
+  after.activities[0].title = 'Cable trough and conduit';
+  after.activities.push({ row: 'b', title: 'Signal cable', activityId: 'C-W102', days: [day(2)], crew: [], link: track(17.2) });
+  const lines = T.sourceChanges(before, after, { dayLabel: (x) => `<${x}>` });
+  const text = lines.map((l) => l.text);
+  check('a day\'s hours and support, as they were and are', text[0] === `<${MON}>: hours 22:00–04:00 → 23:00–04:00, support X.WIT → X`, text[0]);
+  check('a day no longer asked for', text[1] === `<${day(1)}> is no longer asked for on this shift (it was 22:00–04:00)`, text[1]);
+  check('a day added', text[2] === `<${day(2)}> added, 22:00–04:00, support X`, text[2]);
+  check('what an activity says, and an activity added', text[3] === 'C-W101 · Cable trough and conduit: description "Cable trough" → "Cable trough and conduit"'
+    && text[4] === 'C-W102 · Signal cable added to this request', text.slice(3).join(' | '));
+  check('each line carries its rows and days, to find the edits behind it', lines[0].rows.join() === 'a' && lines[0].days.join() === MON && lines[3].rowFields === true && lines[4].days.join() === day(2));
+  check('the same reading is no change', T.sourceChanges(before, JSON.parse(JSON.stringify(before))).length === 0);
+  const old = JSON.parse(JSON.stringify(before));
+  for (const x of old.days) delete x.support;
+  check('a request kept before each day carried its support compares what it has', T.sourceChanges(old, before).length === 0);
+  const moved = JSON.parse(JSON.stringify(before));
+  moved.activities[0].link = track(17.4);
+  moved.area = 'W2 MP 16.600–17.400';
+  const ml = T.sourceChanges(before, moved).map((l) => l.text);
+  check('a location moved is said once, as the activity\'s', ml.length === 1
+    && ml[0].includes(`location ${L.partArea(track(17.2), { dash: '–' })} → ${L.partArea(track(17.4), { dash: '–' })}`), ml.join(' | '));
+}
+
+console.log('\nA request\'s conversation');
+{
+  const first = {
+    id: 1, status: 'superseded', comments: [{ id: 1, at: '2026-10-10T09:00:00Z', by: 'Rae Requester', by_id: 2, text: 'Flagger is Ann Example, 415-555-0101' }],
+    history: [{ at: '2026-10-11T09:00:00Z', by: 'Terry Manager', action: 'reject', note: 'No flagger named' }, { at: '2026-10-12T09:00:00Z', by: 'Rae Requester', action: 'submit' }],
+  };
+  const second = {
+    id: 2, status: 'draft', supersedes: 1, seen_comment: 0, week_start: MON, first_day: MON, location_name: 'Colma TCR', history: [],
+    comments: [{ id: 2, at: '2026-10-13T09:00:00Z', by: 'Terry Manager', by_id: 1, text: 'Is the EIC booked?' }, { id: 3, at: '2026-10-13T10:00:00Z', by: 'Rae Requester', by_id: 2, text: 'Yes.' }],
+  };
+  const member = { id: 3, status: 'consolidated', merged_into: 2, comments: [{ id: 4, at: '2026-10-09T09:00:00Z', by: 'Rae Requester', by_id: 2, text: 'Same room as #1.' }], history: [] };
+  const t = CONV.thread(second, [first, second, member]);
+  check('the thread is the request\'s own and those it replaced, oldest first',
+    t.map((x) => x.text).join(' | ') === 'Same room as #1. | Flagger is Ann Example, 415-555-0101 | No flagger named | Is the EIC booked? | Yes.', t.map((x) => x.text).join(' | '));
+  check('a line from an earlier request says which, and how it was replaced', t[0].on.id === 3 && t[0].on.how === 'consolidated' && t[1].on.id === 1 && t[1].on.how === 'revised' && t[3].on === null);
+  check('a decision\'s reason is in it, named', t[2].kind === 'step' && t[2].label === 'Rejected' && t[2].by === 'Terry Manager');
+  check('what is new: somebody else\'s, newer than what was shown', CONV.unread(second, 2).map((c) => c.id).join() === '2' && CONV.unread(second, '1').map((c) => c.id).join() === '3'
+    && CONV.unread({ ...second, seen_comment: 3 }, 2).length === 0 && CONV.newestComment(second) === 3);
+  const items = TODAY.attention({ records: [second], today: '2026-10-16', role: 'requester', userId: 2, label: (x) => x });
+  check('the start page says what was said that the reader has not seen', items.some((i) => i.key === 'comments' && i.title === '1 new comment on 1 request' && i.detail === '#2 Colma TCR (1)'),
+    items.map((i) => i.title).join(' | '));
+}
+
+console.log('\nFiles sent with a request');
+{
+  check('a file is its own name, with no folder or forbidden characters', ATT.cleanFileName('C:\\Users\\rae\\SSWP 12.pdf') === 'SSWP 12.pdf'
+    && ATT.cleanFileName('../../etc/passwd') === 'passwd' && ATT.cleanFileName('a<b>:c|d?.pdf') === 'abcd.pdf' && ATT.cleanFileName(`${'x'.repeat(200)}.pdf`).length === 114);
+  check('documents, drawings, photos and emails go; pages and programs do not', ATT.fileType('plan.DWG') === 'image/vnd.dwg' && ATT.fileType('SSWP.pdf') === 'application/pdf'
+    && ATT.fileType('run.exe') === null && ATT.fileType('page.html') === null && ATT.fileType('README') === null);
+  check('never too big, empty or too many', ATT.attachProblem('a.pdf', ATT.ATTACH_MAX + 1).status === 413 && ATT.attachProblem('a.pdf', 0).status === 400
+    && ATT.attachProblem('a.pdf', 10, ATT.ATTACH_PER_REQUEST).status === 409 && ATT.attachProblem('a.exe', 10).status === 415 && ATT.attachProblem('a.pdf', 10) === null);
+  check('sizes as people say them', ATT.sizeText(840) === '840 bytes' && ATT.sizeText(12 * 1024) === '12 KB' && ATT.sizeText(3.4 * 1024 * 1024) === '3.4 MB');
+  const py = fs.readFileSync(path.join(ROOT, 'operations.py'), 'utf8');
+  const block = py.match(/ATTACH_TYPES = \{([\s\S]*?)\n\}/)[1];
+  const server = Object.fromEntries([...block.matchAll(/"(\w+)": "([^"]+)"/g)].map(([, k, v]) => [k, v]));
+  check('the browser allows exactly what the server allows', JSON.stringify(Object.entries(server).sort()) === JSON.stringify(Object.entries(ATT.ATTACH_TYPES).sort()),
+    `${Object.keys(server).length} on the server, ${Object.keys(ATT.ATTACH_TYPES).length} here`);
+  check('and the same limits', new RegExp(`ATTACH_MAX = 20 \\* 1024 \\* 1024`).test(py) && ATT.ATTACH_MAX === 20 * 1024 * 1024
+    && new RegExp(`ATTACH_PER_REQUEST = ${ATT.ATTACH_PER_REQUEST}\\b`).test(py));
 }
 
 console.log('\nThe sample data');

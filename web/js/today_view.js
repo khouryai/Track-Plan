@@ -39,7 +39,7 @@ export function render(root, app) {
   const suggestions = app.learning ? unlinked.filter((r) => suggestLink(app.learning, r)).length : 0;
   const items = attention({
     records: app.tawrs, today: app.today, role, capacity: T.parseCapacity(app.settings?.support_capacity),
-    sections: app.data?.power?.sections || [], unlinked: unlinked.length, suggestions, label: dayLabel,
+    sections: app.data?.power?.sections || [], unlinked: unlinked.length, suggestions, label: dayLabel, userId: S.store.user?.id ?? null,
   });
   const mine = items.filter((i) => i.tone === 'bad' || i.tone === 'you');
   const page = el('div', { class: 'today' });

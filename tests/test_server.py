@@ -51,6 +51,22 @@ class Base(unittest.TestCase):
             self.assertEqual(cm.exception.status, status, str(cm.exception))
         return cm.exception
 
+    def draft(self, key="loc:tcr:Colma|day", **kw):
+        return ops.create_tawr(self.con, record(key, **kw), self.requester, WF)
+
+    def consolidated(self, before_submit=None):
+        a, b = self.draft("a|day"), self.draft("b|day")
+        if before_submit:
+            before_submit(a, b)
+        a = ops.act_on_tawr(self.con, a["id"], "submit", self.requester, WF)
+        b = ops.act_on_tawr(self.con, b["id"], "submit", self.requester, WF)
+        merge = {"id": "m-0001-abcd", "week_start": MON, "keys": ["a|day", "b|day"]}
+        m = ops.consolidate(self.con, [a["id"], b["id"]], merge, record("merge:m-0001-abcd"), self.manager, WF)
+        return a, b, m
+
+    def files(self):
+        return self.con.execute("SELECT count(*) FROM files").fetchone()[0]
+
 
 class Accounts(Base):
     def test_first_account_is_the_manager(self):
@@ -106,9 +122,6 @@ class Lookahead(Base):
 
 
 class Workflow(Base):
-    def draft(self, key="loc:tcr:Colma|day", **kw):
-        return ops.create_tawr(self.con, record(key, **kw), self.requester, WF)
-
     def test_a_new_request_is_always_a_draft(self):
         r = ops.create_tawr(self.con, {**record("k|day"), "status": "approved"}, self.requester, WF)
         self.assertEqual(r["status"], "draft")
@@ -319,13 +332,6 @@ class Workflow(Base):
         for bad in ({"learn_predict": "maybe"}, {"learn_threshold": "0.2"}, {"learn_threshold": "nan"}, {"learn_threshold": "sure"}):
             self.refused(ops.set_settings, self.con, bad, self.requester, WF, status=400)
 
-    def consolidated(self):
-        a = ops.act_on_tawr(self.con, self.draft("a|day")["id"], "submit", self.requester, WF)
-        b = ops.act_on_tawr(self.con, self.draft("b|day")["id"], "submit", self.requester, WF)
-        merge = {"id": "m-0001-abcd", "week_start": MON, "keys": ["a|day", "b|day"]}
-        m = ops.consolidate(self.con, [a["id"], b["id"]], merge, record("merge:m-0001-abcd"), self.manager, WF)
-        return a, b, m
-
     def test_only_the_manager_consolidates(self):
         a, b = self.draft("a|day"), self.draft("b|day")
         merge = {"id": "m-0001-abcd", "week_start": MON, "keys": ["a|day", "b|day"]}
@@ -379,6 +385,212 @@ class Workflow(Base):
         merge = {"id": "m-0003-abcd", "week_start": MON, "keys": ["a|day", "b|day"]}
         self.refused(ops.consolidate, self.con, [a["id"], b["id"]], merge, record("merge:m-0003-abcd"),
                      self.manager, WF, status=409)
+
+
+class History(Base):
+    """The look-ahead's history: who changed what and when, and what it was before."""
+
+    def apply(self, batch, who=None):
+        return ops.apply_ops(self.con, batch, who or self.requester, WF)
+
+    def edits(self, **kw):
+        return ops.list_edits(self.con, self.viewer, **kw)["edits"]
+
+    def test_a_day_says_who_changed_it_and_what_it_was(self):
+        self.apply([{"op": "row", "id": "a1", "set": {"kind": "activity", "activity_id": "C-W101", "description": "Cable trough", "sort": 1}},
+                    {"op": "cell", "row_id": "a1", "day": MON, "color": "0070c0", "text": "X"}])
+        self.apply([{"op": "cell", "row_id": "a1", "day": MON, "color": "FFC000", "text": "X.WIT"}], self.manager)
+        self.apply([{"op": "cell", "row_id": "a1", "day": MON, "color": None, "text": ""}])
+        day = self.edits(row="a1", day=MON)
+        self.assertEqual([e["action"] for e in day], ["delete", "update", "insert"])  # newest first
+        self.assertEqual(day[1]["by"], "Terry Manager")
+        self.assertEqual((day[1]["before"], day[1]["after"]), ({"color": "0070C0", "text": "X"}, {"color": "FFC000", "text": "X.WIT"}))
+        self.assertIsNone(day[0]["after"])
+        self.assertEqual(day[2]["label"], "C-W101 · Cable trough")
+        self.assertEqual(len({e["batch"] for e in day}), 3)  # one action, one batch
+
+    def test_a_row_change_keeps_what_changed_and_never_the_geometry(self):
+        link = {"location_id": "tcr:Colma", "location_name": "Colma TCR", "limits": [], "geometry": [[[0, 0], [1, 1]]]}
+        self.apply([{"op": "row", "id": "a1", "set": {"kind": "activity", "description": "IXL", "sort": 1}}])
+        self.apply([{"op": "row", "id": "a1", "set": {"description": "IXL SIM Testing", "sort": 2, "link": link}}])
+        self.apply([{"op": "row", "id": "a1", "set": {"sort": 3}}])  # moved: where it sits, not what it says
+        row = self.edits(row="a1")
+        self.assertEqual([e["action"] for e in row], ["update", "insert"])
+        self.assertEqual(row[0]["before"], {"description": "IXL", "link": None})
+        self.assertEqual(row[0]["after"], {"description": "IXL SIM Testing",
+                                           "link": {"location_id": "tcr:Colma", "location_name": "Colma TCR", "limits": []}})
+
+    def test_writing_a_day_as_it_was_is_no_change(self):
+        cell = {"op": "cell", "row_id": "a1", "day": MON, "color": "FFFF00", "text": "X"}
+        self.apply([{"op": "row", "id": "a1", "set": {"kind": "activity"}}, cell])
+        self.apply([cell])
+        self.assertEqual(len(self.edits(row="a1", day=MON)), 1)
+
+    def test_a_deleted_row_keeps_its_history_and_its_name(self):
+        self.apply([{"op": "row", "id": "a1", "set": {"kind": "activity", "description": "Foundations"}},
+                    {"op": "cell", "row_id": "a1", "day": MON, "color": "FFFF00", "text": ""}])
+        self.apply([{"op": "cell", "row_id": "a1", "day": MON, "color": None, "text": ""}, {"op": "delete_row", "id": "a1"}])
+        row = self.edits(row="a1")
+        self.assertEqual((row[0]["action"], row[0]["before"]["description"], row[0]["label"]), ("delete", "Foundations", "Foundations"))
+
+    def test_names_say_whose_they_are(self):
+        self.apply([{"op": "row", "id": "a1", "set": {"kind": "activity", "activity_id": "T-1", "description": "Loop test"}},
+                    {"op": "row", "id": "r1", "set": {"kind": "resource", "parent_id": "a1"}},
+                    {"op": "cell", "row_id": "r1", "day": MON, "color": None, "text": "Ann Example"}])
+        self.assertEqual(self.edits(row="r1", day=MON)[0]["label"], "Names under T-1 · Loop test")
+
+    def test_an_import_is_one_line_and_so_is_the_legend(self):
+        self.apply([{"op": "row", "id": "a1", "set": {"kind": "activity"}}])
+        ops.replace_lookahead(self.con, [{"id": "b1", "kind": "activity", "description": "New"}],
+                              [{"row_id": "b1", "day": MON, "color": "FFFF00", "text": ""}], self.requester, WF)
+        last = self.edits(limit=1)[0]
+        self.assertEqual((last["target"], last["before"], last["after"]), ("import", {"rows": 1, "cells": 0}, {"rows": 1, "cells": 1}))
+        self.assertEqual(self.edits(row="b1"), [])
+        ops.set_legend(self.con, ops.DEFAULT_LEGEND + [{"argb": "00B050", "meaning": "Possession", "role": "shift"}], self.manager, WF)
+        self.assertEqual(self.edits(limit=1)[0]["target"], "legend")
+
+    def test_what_changed_under_some_rows_since_a_moment(self):
+        self.apply([{"op": "row", "id": "a1", "set": {"kind": "activity"}}, {"op": "row", "id": "a2", "set": {"kind": "activity"}}])
+        self.con.execute("UPDATE la_edits SET at = '2026-10-01T00:00:00Z'")
+        self.apply([{"op": "cell", "row_id": "a1", "day": MON, "color": "FFFF00", "text": ""},
+                    {"op": "cell", "row_id": "a2", "day": MON, "color": "FFFF00", "text": ""}])
+        since = self.edits(rows=["a1"], since="2026-10-02T00:00:00.000Z")
+        self.assertEqual([(e["row_id"], e["target"]) for e in since], [("a1", "cell")])
+        self.refused(ops.list_edits, self.con, None, status=401)
+        self.refused(ops.list_edits, self.con, self.viewer, since="yesterday", status=400)
+
+    def test_the_window_and_the_pages(self):
+        self.apply([{"op": "row", "id": "a1", "set": {"kind": "activity"}}] + [
+            {"op": "cell", "row_id": "a1", "day": f"2026-11-0{d}", "color": "FFFF00", "text": ""} for d in range(2, 9)])
+        week = self.edits(start="2026-11-03", end="2026-11-04")
+        self.assertEqual(sorted(e["day"] or "row" for e in week), ["2026-11-03", "2026-11-04", "row"])
+        page = ops.list_edits(self.con, self.viewer, limit=3)
+        rest = ops.list_edits(self.con, self.viewer, before=page["edits"][-1]["id"])
+        self.assertEqual((page["more"], rest["more"], len(page["edits"]) + len(rest["edits"])), (True, False, 8))
+        self.assertTrue(page["since"])  # the history says when it started
+
+
+class Talk(Base):
+    """What the requester and the manager say about a request, and what is new to whom."""
+
+    def test_both_sides_talk_and_a_viewer_reads(self):
+        t = self.draft()
+        ops.add_comment(self.con, t["id"], "  Flagger is Ann Example, 415-555-0101  ", self.requester, WF)
+        out = ops.add_comment(self.con, t["id"], "Thanks — put her on the form.", self.manager, WF)
+        self.assertEqual([(c["by"], c["text"]) for c in out["comments"]],
+                         [("Rae Requester", "Flagger is Ann Example, 415-555-0101"), ("Terry Manager", "Thanks — put her on the form.")])
+        self.refused(ops.add_comment, self.con, t["id"], "hello", self.viewer, WF, status=403)
+        self.assertEqual(len(ops.list_comments(self.con, t["id"], self.viewer)), 2)
+
+    def test_a_comment_says_something_and_not_too_much(self):
+        t = self.draft()
+        self.refused(ops.add_comment, self.con, t["id"], "   ", self.requester, WF, status=400)
+        self.refused(ops.add_comment, self.con, t["id"], "x" * 2001, self.requester, WF, status=400)
+        self.refused(ops.add_comment, self.con, 999, "hello", self.requester, WF, status=404)
+
+    def test_any_request_can_be_talked_about_at_any_point(self):
+        tid = self.draft()["id"]
+        ops.act_on_tawr(self.con, tid, "submit", self.requester, WF)
+        ops.act_on_tawr(self.con, tid, "approve", self.manager, WF)
+        self.assertEqual(len(ops.add_comment(self.con, tid, "Sent to BART today.", self.requester, WF)["comments"]), 1)
+
+    def test_what_is_new_to_whom(self):
+        tid = self.draft()["id"]
+        said = ops.add_comment(self.con, tid, "Is the EIC booked?", self.manager, WF)["comments"][-1]
+        read = lambda who: {r["id"]: r for r in ops.list_tawrs(self.con, actor=who)}[tid]["seen_comment"]  # noqa: E731
+        self.assertEqual((read(self.manager), read(self.requester)), (said["id"], 0))  # what you wrote, you have read
+        ops.mark_seen(self.con, tid, said["id"], self.requester)
+        ops.mark_seen(self.con, tid, 0, self.requester)  # never back
+        self.assertEqual(read(self.requester), said["id"])
+        self.refused(ops.mark_seen, self.con, tid, "all", self.requester, status=400)
+
+    def test_a_split_keeps_what_was_said_about_the_merged_request(self):
+        a, b, m = self.consolidated()
+        ops.add_comment(self.con, m["id"], "One request for both rooms.", self.manager, WF)
+        ops.split(self.con, m["id"], self.manager, WF)
+        live = {r["id"]: r for r in ops.list_tawrs(self.con)}
+        self.assertEqual([c["text"] for c in live[a["id"]]["comments"]], ["One request for both rooms."])
+        self.assertEqual([c["text"] for c in live[b["id"]]["comments"]], ["One request for both rooms."])
+
+
+class Files(Base):
+    """The files sent with a request: the SSWP, drawings, permits."""
+    PDF = b"%PDF-1.4\n% SSWP\n"
+
+    def attach(self, tid, name="SSWP 12.pdf", data=None, who=None):
+        return ops.add_attachment(self.con, tid, name, self.PDF if data is None else data, who or self.requester, WF)
+
+    def test_a_draft_takes_files_and_anybody_signed_in_reads_them(self):
+        t = self.draft()
+        out = self.attach(t["id"], "C:\\Users\\rae\\SSWP 12.pdf")
+        a = out["attachments"][0]
+        self.assertEqual((a["name"], a["type"], a["size"], a["by"]), ("SSWP 12.pdf", "application/pdf", len(self.PDF), "Rae Requester"))
+        self.assertEqual(out["history"][-1]["action"], "attached SSWP 12.pdf")
+        self.assertEqual(ops.get_attachment(self.con, a["id"], self.viewer), ("SSWP 12.pdf", "application/pdf", self.PDF))
+        self.refused(ops.get_attachment, self.con, a["id"], None, status=401)
+        self.refused(ops.get_attachment, self.con, 999, self.viewer, status=404)
+
+    def test_files_change_where_the_fields_do(self):
+        t = self.draft()
+        self.refused(self.attach, t["id"], who=self.viewer, status=403)
+        ops.act_on_tawr(self.con, t["id"], "submit", self.requester, WF)
+        self.refused(self.attach, t["id"], status=409)  # submitted: the manager's to change
+        out = self.attach(t["id"], "Barrier plan.pdf", who=self.manager)
+        ops.act_on_tawr(self.con, t["id"], "approve", self.manager, WF)
+        self.refused(ops.delete_attachment, self.con, t["id"], out["attachments"][0]["id"], self.manager, WF, status=409)
+        self.refused(self.attach, t["id"], who=self.manager, status=409)  # approved is final
+
+    def test_only_documents_and_never_too_big(self):
+        t = self.draft()
+        self.refused(self.attach, t["id"], "install.exe", status=415)
+        self.refused(self.attach, t["id"], "page.html", status=415)
+        self.refused(self.attach, t["id"], "no extension", status=415)
+        self.refused(self.attach, t["id"], "empty.pdf", b"", status=400)
+        self.refused(self.attach, t["id"], "big.pdf", b"0" * (ops.ATTACH_MAX + 1), status=413)
+        for i in range(ops.ATTACH_PER_REQUEST):
+            self.attach(t["id"], f"page {i}.png", b"%PNG" + bytes([i]))
+        self.refused(self.attach, t["id"], "one more.png", status=409)
+
+    def test_a_file_is_kept_once_and_goes_with_its_last_copy(self):
+        t = self.draft()
+        one = self.attach(t["id"], "a.pdf")["attachments"][0]
+        two = self.attach(t["id"], "b.pdf")["attachments"][1]
+        self.assertEqual((one["sha256"], self.files()), (two["sha256"], 1))
+        ops.delete_attachment(self.con, t["id"], one["id"], self.requester, WF)
+        self.assertEqual(self.files(), 1)
+        out = ops.delete_attachment(self.con, t["id"], two["id"], self.requester, WF)
+        self.assertEqual((out["attachments"], self.files(), out["history"][-1]["action"]), ([], 0, "removed b.pdf"))
+
+    def test_a_revision_carries_the_files_and_the_approved_one_keeps_them(self):
+        t = self.draft()
+        self.attach(t["id"])
+        ops.act_on_tawr(self.con, t["id"], "submit", self.requester, WF)
+        ops.act_on_tawr(self.con, t["id"], "approve", self.manager, WF)
+        rev = ops.act_on_tawr(self.con, t["id"], "revise", self.requester, WF)
+        self.assertEqual([a["name"] for a in rev["attachments"]], ["SSWP 12.pdf"])
+        self.assertIsNotNone(rev["attachments"][0]["copied_from"])
+        ops.delete_attachment(self.con, rev["id"], rev["attachments"][0]["id"], self.requester, WF)
+        old = {r["id"]: r for r in ops.list_tawrs(self.con)}[t["id"]]
+        self.assertEqual((len(old["attachments"]), self.files()), (1, 1))
+
+    def test_discarding_a_draft_drops_its_files(self):
+        t = self.draft()
+        self.attach(t["id"])
+        ops.act_on_tawr(self.con, t["id"], "discard", self.requester, WF)
+        self.assertEqual(self.files(), 0)
+
+    def test_consolidating_carries_files_in_and_a_split_gives_back_what_was_added(self):
+        def before_submit(a, b):
+            self.attach(a["id"], "a.pdf")
+            self.attach(b["id"], "b.pdf", b"%PDF-1.4 b")
+        a, b, m = self.consolidated(before_submit)
+        self.assertEqual(sorted(x["name"] for x in m["attachments"]), ["a.pdf", "b.pdf"])
+        self.attach(m["id"], "barrier.pdf", b"%PDF-1.4 c", who=self.manager)
+        ops.split(self.con, m["id"], self.manager, WF)
+        live = {r["id"]: r for r in ops.list_tawrs(self.con)}
+        self.assertEqual(sorted(x["name"] for x in live[a["id"]]["attachments"]), ["a.pdf", "barrier.pdf"])
+        self.assertEqual(sorted(x["name"] for x in live[b["id"]]["attachments"]), ["b.pdf", "barrier.pdf"])
+        self.assertEqual(self.files(), 3)
 
 
 class Http(unittest.TestCase):
@@ -459,6 +671,35 @@ class Http(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(self.call("GET", "/api/tawr/template", cookie=rc)[1], b"%PDF-1.4 test")
         self.assertEqual(self.call("GET", "/api/tawr/template")[0], 401)
+        # what is said and sent with a request, and the look-ahead's history
+        status, out, _ = self.call("POST", f"/api/tawrs/{t['id']}/comments", {"text": "Sent the SSWP."}, cookie=rc)
+        self.assertEqual((status, out["comments"][-1]["text"]), (201, "Sent the SSWP."))
+        said = out["comments"][-1]["id"]
+        listed = self.call("GET", "/api/tawrs", cookie=cookie)[1]
+        self.assertEqual(next(x for x in listed if x["id"] == t["id"])["seen_comment"], 0)  # new to the manager
+        self.assertEqual(self.call("POST", f"/api/tawrs/{t['id']}/seen", {"upto": said}, cookie=cookie)[0], 200)
+        self.assertEqual(self.call("GET", f"/api/tawrs/{t['id']}/comments", cookie=cookie)[1][0]["id"], said)
+        status, d, _ = self.call("POST", "/api/tawrs", record("k2|day"), cookie=rc)
+        status, out, _ = self.call("POST", f"/api/tawrs/{d['id']}/attachments?name=SSWP%2012.pdf", raw=b"%PDF-1.4 sswp",
+                                   cookie=rc, ctype="application/pdf")
+        self.assertEqual(status, 201, out)
+        aid = out["attachments"][0]["id"]
+        c = http.client.HTTPConnection("127.0.0.1", self.port)
+        c.request("GET", f"/api/attachments/{aid}", headers={"Cookie": cookie})
+        r = c.getresponse()
+        self.assertEqual((r.status, r.read()), (200, b"%PDF-1.4 sswp"))
+        self.assertEqual(r.getheader("Content-Disposition"), "attachment; filename=\"SSWP 12.pdf\"; filename*=UTF-8''SSWP%2012.pdf")
+        self.assertIn("sandbox", r.getheader("Content-Security-Policy"))
+        self.assertEqual(r.getheader("X-Content-Type-Options"), "nosniff")
+        c.close()
+        self.assertEqual(self.call("GET", f"/api/attachments/{aid}")[0], 401)
+        self.assertEqual(self.call("POST", f"/api/tawrs/{d['id']}/attachments?name=run.exe", raw=b"MZ", cookie=rc,
+                                   ctype="application/octet-stream")[0], 415)
+        status, out, _ = self.call("DELETE", f"/api/tawrs/{d['id']}/attachments/{aid}", cookie=rc)
+        self.assertEqual((status, out["attachments"]), (200, []))
+        self.call("POST", "/api/lookahead/ops", {"ops": [{"op": "row", "id": "h1", "set": {"kind": "activity", "description": "Trench"}}]}, cookie=rc)
+        status, hist, _ = self.call("GET", "/api/lookahead/edits?row=h1", cookie=cookie)
+        self.assertEqual((status, hist["edits"][0]["by"], hist["edits"][0]["action"]), (200, "R", "insert"))
         # legacy requests: reads open, changes need an account
         self.assertEqual(self.call("POST", "/api/requests", {"location": "x"})[0], 401)
         self.call("POST", "/api/logout", {}, cookie=rc)

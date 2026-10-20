@@ -13,6 +13,7 @@ export default [
         DecompressionStream: 'readonly', TextDecoder: 'readonly', TextEncoder: 'readonly', crypto: 'readonly',
         CustomEvent: 'readonly', Event: 'readonly', Node: 'readonly', navigator: 'readonly', DOMParser: 'readonly', getComputedStyle: 'readonly', requestAnimationFrame: 'readonly',
         setTimeout: 'readonly', clearTimeout: 'readonly', setInterval: 'readonly', clearInterval: 'readonly', console: 'readonly',
+        URLSearchParams: 'readonly', btoa: 'readonly', atob: 'readonly',
       },
     },
     rules: { 'no-undef': 'error', 'no-unused-vars': ['error', { args: 'none', caughtErrors: 'none' }] },

@@ -407,6 +407,46 @@ details .row { margin-top: 6px; }
 .history ol { margin: 4px 0; padding-left: 20px; color: var(--muted); }
 .tawr-history { margin-top: 18px; }
 .tawr-old { font-size: 13px; padding: 3px 0; color: var(--muted); }
+/* A request's conversation, its files, and what changed on the look-ahead since it was sent. */
+.talk, .files { margin: 10px 0; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
+.talk h4, .files h4 { margin: 0 0 6px; font-size: 13px; }
+.talk-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.talk-list li { padding: 6px 8px; border-radius: 6px; background: #f7f8fa; border-left: 3px solid #c7cbd1; }
+.talk-list li.talk-step { background: #fff7f5; border-left-color: var(--bad); }
+.talk-list li.talk-new { border-left-color: var(--accent); background: #eef4fd; }
+.talk-list li.talk-empty { background: none; border: 0; padding: 0; }
+.talk-head { font-size: 12px; color: var(--muted); display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+.talk-head b { color: var(--ink); }
+.talk-text { white-space: pre-wrap; overflow-wrap: anywhere; margin-top: 2px; }
+.talk-form { display: flex; gap: 6px; align-items: flex-end; margin-top: 8px; }
+.talk-form textarea { flex: 1; min-height: 44px; resize: vertical; }
+.badge.tone-you { background: #e8f0fc; color: var(--accent); font-weight: 600; }
+.badge.talk-step { background: #fdecec; color: #a32121; }
+.file-list { list-style: none; margin: 0 0 6px; padding: 0; display: grid; gap: 4px; }
+.file-list li { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.file-list .link { font-size: 13px; }
+.file-add { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.files.drop { outline: 2px dashed var(--accent); outline-offset: 2px; background: #f4f8fe; }
+.la-changed .changes { margin: 4px 0; padding-left: 18px; }
+.la-changed .changes li { margin: 2px 0; }
+.la-changed .who { color: var(--muted); }
+/* The look-ahead's history. */
+.hist-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+.hist-list li { display: grid; grid-template-columns: minmax(150px, max-content) 1fr; gap: 2px 10px; padding: 4px 0; border-bottom: 1px solid var(--line); font-size: 13px; }
+.hist-list li:last-child { border-bottom: 0; }
+.hist-when { color: var(--muted); font-size: 12px; white-space: nowrap; }
+.hist-where { grid-column: 2; font-weight: 600; text-align: left; font-size: 13px; }
+.hist-what { grid-column: 2; }
+.hist-batch { margin: 0 0 10px; }
+.hist-batch h3 { margin: 6px 0 2px; font-size: 13px; }
+.hist-batch .hist-when { display: none; }
+.hist-batch .hist-list li { grid-template-columns: 1fr; }
+.hist-batch .hist-where, .hist-batch .hist-what { grid-column: 1; }
+@media (max-width: 640px) {
+  .hist-list li { grid-template-columns: 1fr; }
+  .hist-where, .hist-what { grid-column: 1; }
+  .talk-form { flex-direction: column; align-items: stretch; }
+}
 .tawr .empty { padding: 24px; text-align: center; color: var(--muted); }
 
 .review .fit { margin-bottom: 8px; }
