@@ -10,7 +10,7 @@
  * Imports: today, tawr, lookahead, links, learn, store, ui.
  */
 
-import { attention, deadlines, onTrack, calendarIcs } from './today.js';
+import { attention, figures, deadlines, onTrack, calendarIcs } from './today.js';
 import * as T from './tawr.js';
 import * as LA from './lookahead.js';
 import { hasLink, resolveLocationText } from './links.js';
@@ -51,6 +51,15 @@ export function render(root, app) {
       ? `${mine.length} thing${mine.length === 1 ? '' : 's'} waiting on you${S.store.user ? `, ${S.store.user.name}` : ''}.`
       : `Nothing is waiting on you${S.store.user ? `, ${S.store.user.name}` : ''}.` }),
   ]));
+
+  /* The figures: how much is waiting where, each a way there. */
+  page.append(el('div', { class: 'today-figures', role: 'group', 'aria-label': 'At a glance' }, figures({
+    records: app.tawrs, today: app.today, sections: app.data?.power?.sections || [], userId: S.store.user?.id ?? null,
+  }).map((f) => el('button', {
+    type: 'button', class: `figure${f.n ? ' some' : ''}`, dataset: { figure: f.key },
+    'aria-label': `${f.n} — ${f.label}`, disabled: !f.n || null,
+    onClick: () => app.go(f.go.view, { week: f.go.week || null }),
+  }, [el('span', { class: 'figure-n', text: String(f.n) }), el('span', { class: 'figure-label', text: f.label })]))));
 
   /* What needs doing, most pressing first. */
   page.append(el('section', { class: 'today-block', 'aria-label': 'What needs attention' }, [

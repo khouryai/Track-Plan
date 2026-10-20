@@ -33,6 +33,7 @@ const REP = await import(path.join(ROOT, 'web/js/reports.js'));
 const HIST = await import(path.join(ROOT, 'web/js/la_history.js'));
 const CONV = await import(path.join(ROOT, 'web/js/conversation.js'));
 const ATT = await import(path.join(ROOT, 'web/js/attachments.js'));
+const FIND = await import(path.join(ROOT, 'web/js/find.js'));
 const { readZip } = await import(path.join(ROOT, 'web/js/xlsx.js'));
 const MAP = JSON.parse(fs.readFileSync(path.join(ROOT, 'web/data/map.json'), 'utf8'));
 const WORKFLOW = JSON.parse(fs.readFileSync(path.join(ROOT, 'web/data/tawr_workflow.json'), 'utf8'));
@@ -563,6 +564,49 @@ console.log('\nFiles sent with a request');
     `${Object.keys(server).length} on the server, ${Object.keys(ATT.ATTACH_TYPES).length} here`);
   check('and the same limits', new RegExp(`ATTACH_MAX = 20 \\* 1024 \\* 1024`).test(py) && ATT.ATTACH_MAX === 20 * 1024 * 1024
     && new RegExp(`ATTACH_PER_REQUEST = ${ATT.ATTACH_PER_REQUEST}\\b`).test(py));
+}
+
+console.log('\nQuick find');
+{
+  const tawrs = [
+    { id: 12, status: 'draft', shift: 'night', week_start: '2026-11-02', location_name: 'W1 MP 20.700–21.300', source: { area: 'W1 MP 20.700-21.300', activities: [{ activityId: 'C-W103', title: 'Wayside equipment case foundations', party: 'Pacific Civil' }] } },
+    { id: 7, status: 'approved', shift: 'day', week_start: '2026-10-19', location_name: 'Daly City TCR', source: { activities: [{ activityId: 'T-M401', title: 'IXL SIM testing', party: 'Hitachi' }] } },
+    { id: 3, status: 'superseded', shift: 'day', week_start: '2026-10-19', location_name: 'Daly City TCR', source: {} },
+    { id: 120, status: 'submitted', shift: 'day', week_start: '2026-11-09', location_name: 'Colma TCR', source: {} },
+  ];
+  const rows = [
+    { id: 'a', kind: 'activity', activity_id: 'C-W101', description: 'Cable trough installation', location: 'W1 MP 17.2', party: 'Hitachi' },
+    { id: 's', kind: 'section', description: 'W LINE — CONSTRUCTION' },
+    { id: 'r', kind: 'resource', description: 'Resource' },
+  ];
+  const locations = [{ id: 'tcr:Daly City', name: 'Daly City TCR (Train Control Room)', kind: 'tcr', near: 'M1 MP 13.5' }, { id: 'stn:Colma', name: 'Colma Station', kind: 'station' }];
+  const screens = [{ id: 'reports', title: 'Reports', detail: 'Approval rate', words: 'charts statistics' }];
+  const list = FIND.entries({ tawrs, rows, locations, screens });
+  const titles = (q) => FIND.search(list, q).map((f) => f.title);
+  check('requests replaced by a revision or a consolidation are not found; sections and names rows are not activities',
+    !list.some((e) => e.id === 'tawr:3') && list.filter((e) => e.kind === 'activity').length === 1 && list.length === 3 + 1 + 2 + 1);
+  check('a request by its number, before the one whose number only starts the same', titles('#12')[0] === '#12 W1 MP 20.700–21.300' && titles('12')[0] === '#12 W1 MP 20.700–21.300', titles('12').join(' | '));
+  check('an activity by its ID, whatever the case', titles('c-w101')[0] === 'C-W101 · Cable trough installation');
+  check('a place: the request there before the room on the drawing, both found', titles('daly city').join(' | ') === '#7 Daly City TCR | Daly City TCR (Train Control Room)', titles('daly city').join(' | '));
+  check('every word typed has to be found, anywhere in it', titles('cable hitachi')[0] === 'C-W101 · Cable trough installation' && !titles('cable pacific').length);
+  check('a request by its work, its party, its shift', titles('wayside')[0] === '#12 W1 MP 20.700–21.300' && titles('pacific civil')[0] === '#12 W1 MP 20.700–21.300'
+    && titles('night').includes('#12 W1 MP 20.700–21.300'));
+  check('a screen by its name or its words', titles('reports')[0] === 'Reports' && titles('statistics')[0] === 'Reports');
+  check('nothing typed finds nothing; a limit is kept', FIND.search(list, '   ').length === 0 && FIND.search(list, 'a', { limit: 2 }).length === 2);
+}
+
+console.log('\nToday at a glance');
+{
+  const recs = [
+    { id: 1, status: 'draft', week_start: '2026-11-02', first_day: '2026-11-02', location_name: 'A', source: {}, comments: [{ id: 5, by_id: 9, text: 'hello' }], seen_comment: 0 },
+    { id: 2, status: 'draft', week_start: '2026-11-30', first_day: '2026-11-30', location_name: 'B', source: {} },
+    { id: 3, status: 'submitted', week_start: '2026-10-26', first_day: '2026-10-26', location_name: 'C', source: {} },
+    { id: 4, status: 'approved', week_start: '2026-10-19', first_day: '2026-10-19', location_name: 'D', source: { days: [{ date: '2026-10-20' }] }, bart: { sent_on: '2026-10-02' } },
+  ];
+  const f = Object.fromEntries(TODAY.figures({ records: recs, today: '2026-10-16', userId: 2 }).map((x) => [x.key, x]));
+  check('drafts due within a week, and where they are', f.due.n === 1 && f.due.go.week === '2026-11-02' && f.due.go.view === 'tawr');
+  check('waiting for approval, waiting for BART, comments not yet read', f.approve.n === 1 && f.approve.go.week === '2026-10-26' && f.bart.n === 1 && f.comments.n === 1, JSON.stringify(f));
+  check('nothing in conflict is said as nothing', f.clash.n === 0 && f.clash.go.view === 'map');
 }
 
 console.log('\nThe sample data');

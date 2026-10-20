@@ -149,6 +149,38 @@ export function attention({ records, today, role, capacity = {}, sections = [], 
 }
 
 /**
+ * The figures at the top of the start page, each saying where it is dealt
+ * with: `[{ key, label, n, go: { view, week } }]` — drafts due within a week
+ * (or late), requests waiting for approval, conflicts and power clashes from
+ * this week on, requests sent to BART and not yet answered, and comments the
+ * reader has not seen. A figure of nothing is still said: it is good news.
+ */
+export function figures({ records, today, sections = [], userId = null }) {
+  const live = (records || []).filter(LIVE);
+  const first = (rs) => rs.map((r) => r.week_start).sort()[0] || null;
+  const due = live.filter((r) => r.status === 'draft' && deadlineState(r.first_day || r.week_start, today).daysLeft <= 7);
+  const submitted = live.filter((r) => r.status === 'submitted');
+  const sent = live.filter((r) => afterApproval(r, today) === 'sent');
+  const ahead = live.filter((r) => r.week_start >= mondayOf(today));
+  let clashes = 0;
+  let clashWeek = null;
+  for (const week of [...new Set(ahead.map((r) => r.week_start))].sort()) {
+    const these = ahead.filter((r) => r.week_start === week);
+    const n = conflicts(these).length + powerConflicts(these, sections).length;
+    if (n && !clashWeek) clashWeek = week;
+    clashes += n;
+  }
+  const talk = userId == null ? [] : live.filter((r) => unread(r, userId).length);
+  return [
+    { key: 'due', label: 'Drafts due within a week', n: due.length, go: { view: 'tawr', week: first(due) } },
+    { key: 'approve', label: 'Waiting for approval', n: submitted.length, go: { view: 'tawr', week: first(submitted) } },
+    { key: 'clash', label: 'Conflicts ahead', n: clashes, go: { view: 'map', week: clashWeek } },
+    { key: 'bart', label: 'Waiting for BART', n: sent.length, go: { view: 'tawr', week: first(sent) } },
+    { key: 'comments', label: 'New comments', n: talk.reduce((n, r) => n + unread(r, userId).length, 0), go: { view: 'tawr', week: first(talk) } },
+  ];
+}
+
+/**
  * The weeks to come and their deadlines: `[{ week, deadline, state, counts }]`,
  * from this week for `weeks` weeks — each week's deadline is its first day of
  * work, less the lead time, as `tawrDeadline` has it.

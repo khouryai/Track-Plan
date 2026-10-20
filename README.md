@@ -28,8 +28,21 @@ data extracted automatically from the drawing.
                                                                or reject → BART's form (PDF)
 ```
 
-**Today** is the page that opens first: what needs the person looking, most
-pressing first, each with a button to where it is dealt with — drafts coming
+**Getting around.** *Find* in the header — or **Ctrl+K** (⌘K on a Mac), or
+**/** anywhere but a text box — finds a request by its number, its place or its
+work, an activity on the look-ahead by its ID or its words, a station, train
+control room or yard on the track plan, or a screen (*Reports*, *Setup*,
+*Changes*…); the arrows pick, Enter opens it where it lives (`web/js/find.js`
+ranks, `finder.js` draws). **?** lists the keyboard shortcuts. Each screen
+names itself in the browser's tab, a message in the corner closes with its ×
+(at most three are shown), and on a phone every screen fits the width: a week's
+requests become cards one under another, and the track plan's panel lies over
+the drawing rather than under its labels.
+
+**Today** is the page that opens first: a row of figures — drafts due within a
+week, requests waiting for approval, conflicts ahead, requests waiting for
+BART, comments not yet read — each going where it is dealt with, then what
+needs the person looking, most pressing first, each with a button to where it is dealt with — drafts coming
 due (by the week, late ones first), requests waiting for the Track Allocation
 Manager, rejections and BART's denials to put right, approved requests to send
 to BART, access to account for, cancellations BART has not been told of,
@@ -110,7 +123,10 @@ file to import.
    (in red), notes (folded away), history and the less common actions. A TCR
    request names the track request made from the same activity. Every field of
    BART's form can be checked in *Review*, which says what BART usually needs that
-   is still blank; *Submit* (one, or several picked at once).
+   is still blank; *Submit* (one, or several picked at once). Above the table,
+   the week can be narrowed to the requests in one status or in a conflict, or
+   to those whose number, place, work or party match a few words; the table's
+   heading stays in view as it scrolls.
    **Each request has a conversation** (*Details*): what the requester and the
    Track Allocation Manager say about it, with the reasons for its decisions —
    a rejection, BART's denial, a cancellation — in the same thread, and what was
@@ -507,6 +523,7 @@ server.py, operations.py
 | `reports.js`, `reports_view.js` | what the requests came to over the weeks: decisions, BART's answers, how early, hours used; the charts and the CSV |
 | `la_history.js` | the look-ahead's history in words; the edits behind a change to a request, and who made them |
 | `conversation.js`, `attachments.js` | a request's thread and what in it is new; what may be attached, as the server rules it |
+| `find.js`, `finder.js` | quick find: what a few typed letters could mean, ranked; the finder and the shortcuts list |
 | `lookahead.js` | the look-ahead's rows, cells and ops (undo), the legend and support codes, the workbook import |
 | `links.js` | a track plan link: its label, Area, key, and whether two overlap |
 | `tawr.js` | a week of the look-ahead read into TAWRs; conflicts; the form's values; the workflow table's rules |
@@ -532,7 +549,7 @@ came from.
 ```bash
 npm install                 # once: Playwright, for the browser test
 npm test                    # all three suites
-node tests/test_tawr.mjs    # look-ahead, links, TAWR reading, consolidation, workflow table, workbook import and export, the form filled, phases, the learning memory, after approval, power and capacity, today and the calendar, reports, the look-ahead's history, what changed under a request, conversations and files (Node)
+node tests/test_tawr.mjs    # look-ahead, links, TAWR reading, consolidation, workflow table, workbook import and export, the form filled, phases, the learning memory, after approval, power and capacity, today and the calendar, reports, the look-ahead's history, what changed under a request, conversations and files, quick find and Today's figures (Node)
 python3 -m unittest tests/test_server.py   # what the server allows and refuses (Python)
 node tests/smoke.mjs        # the whole flow in Chromium, on the static site and against server.py
 ```

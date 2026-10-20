@@ -49,13 +49,23 @@ import * as H from './la_history.js';
 import * as Talk from './conversation.js';
 import { ATTACH_ACCEPT, attachProblem, sizeText } from './attachments.js';
 
-const V = { app: null, root: null, section: 'requests', picked: new Set(), open: new Set(), history: false, focus: null, setupAt: null };
+const V = {
+  app: null, root: null, section: 'requests', picked: new Set(), open: new Set(), history: false, focus: null, setupAt: null,
+  filter: { status: 'all', text: '' }, // the week's requests narrowed: kept while the page is open
+};
 
-/** Open with one request in view (from the map). */
-export function focus(id) { V.focus = id; }
+/** Open with one request in view, opened — from the map, the finder, a start-page item: on the requests, nothing filtered out. */
+export function focus(id) {
+  V.focus = id;
+  V.section = 'requests';
+  V.filter = { status: 'all', text: '' };
+}
 
 /** Open Setup at one of its sections (`phases`). */
 export function openSetup(section) { V.section = 'setup'; V.setupAt = section; }
+
+/** Open the requests, the reports or the setup. */
+export function openSection(section) { V.section = section; }
 
 const live = (r) => !['superseded', 'consolidated'].includes(r.status);
 const label = (name) => T.FIELD_LABEL.get(name) || name;
@@ -215,23 +225,52 @@ function renderRequests(host) {
       el('button', { type: 'button', class: 'mini', text: 'Go to the look-ahead', onClick: () => app.go('lookahead') }),
     ]));
   } else {
-    const pickable = items.filter((i) => i.record && live(i.record)).map((i) => i.record.id);
-    const all = el('input', {
-      type: 'checkbox', class: 'pick-all', 'aria-label': 'Pick every request this week',
-      onChange: (e) => { for (const id of pickable) { if (e.target.checked) V.picked.add(id); else V.picked.delete(id); } rerender(); },
-    });
-    all.checked = pickable.length > 0 && pickable.every((id) => V.picked.has(id));
     const clashes = T.conflicts(records.filter(live));
     const power = T.powerConflicts(records.filter(live), app.data?.power?.sections);
-    const table = el('table', { class: 'tawr-table' }, [
-      el('thead', {}, [el('tr', {}, [
-        el('th', { class: 'c-pick' }, [pickable.length ? all : null]),
-        ...['Request', 'When', 'Work', 'BART support', 'Status and next step'].map((h) => el('th', { text: h })),
-        el('th', { class: 'c-act' }, [el('span', { class: 'sr-only', text: 'Actions' })]),
-      ])]),
-      ...items.map((item) => card(item, items, clashes, { power, overs })),
-    ]);
-    host.append(el('div', { class: 'scroll-x' }, [table]));
+    const clashing = new Set([...clashes, ...power].flatMap((c) => [c.a.id, c.b.id]));
+    const tableHost = el('div', { class: `tawr-table-wrap${picked.length ? ' has-bulk' : ''}` });
+    const shown = el('p', { class: 'small filter-shown', 'aria-live': 'polite' });
+    const draw = () => {
+      const visible = filterItems(items, V.filter, clashing);
+      clear(tableHost);
+      chips.querySelectorAll('[data-filter]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.filter === V.filter.status)));
+      shown.textContent = visible.length === items.length ? '' : `Showing ${visible.length} of ${items.length}.`;
+      if (!visible.length) {
+        tableHost.append(el('div', { class: 'empty' }, [
+          el('p', { text: 'No request this week matches.' }),
+          el('button', { type: 'button', class: 'mini secondary', dataset: { action: 'filter-clear' }, text: 'Show them all', onClick: () => { V.filter = { status: 'all', text: '' }; search.value = ''; draw(); } }),
+        ]));
+        return;
+      }
+      const pickable = visible.filter((i) => i.record && live(i.record)).map((i) => i.record.id);
+      const all = el('input', {
+        type: 'checkbox', class: 'pick-all', 'aria-label': visible.length === items.length ? 'Pick every request this week' : 'Pick every request shown',
+        onChange: (e) => { for (const id of pickable) { if (e.target.checked) V.picked.add(id); else V.picked.delete(id); } rerender(); },
+      });
+      all.checked = pickable.length > 0 && pickable.every((id) => V.picked.has(id));
+      tableHost.append(el('table', { class: 'tawr-table' }, [
+        el('thead', {}, [el('tr', {}, [
+          el('th', { class: 'c-pick' }, [pickable.length ? all : null]),
+          ...['Request', 'When', 'Work', 'BART support', 'Status and next step'].map((h) => el('th', { text: h })),
+          el('th', { class: 'c-act' }, [el('span', { class: 'sr-only', text: 'Actions' })]),
+        ])]),
+        ...visible.map((item) => card(item, items, clashes, { power, overs })),
+      ]));
+    };
+    /* Narrowing the week: by where a request stands, or by what it says. */
+    const counts = filterCounts(items, clashing);
+    const chips = el('div', { class: 'filter-chips', role: 'group', 'aria-label': 'Show only' }, FILTERS.filter(([k]) => k === 'all' || counts[k]).map(([k, name]) => el('button', {
+      type: 'button', class: `chip-filter${k === 'clash' ? ' chip-filter-bad' : ''}`, dataset: { filter: k }, 'aria-pressed': String(V.filter.status === k),
+      onClick: () => { V.filter.status = V.filter.status === k && k !== 'all' ? 'all' : k; draw(); },
+    }, [name, el('span', { class: 'n', text: String(k === 'all' ? items.length : counts[k]) })])));
+    if (V.filter.status !== 'all' && !counts[V.filter.status]) V.filter.status = 'all';
+    let typing = null;
+    const search = el('input', {
+      type: 'search', class: 'filter-text', value: V.filter.text, placeholder: 'Filter: #12, a place, an activity, a party…', 'aria-label': 'Filter the week\'s requests',
+      onInput: (e) => { clearTimeout(typing); typing = setTimeout(() => { V.filter.text = e.target.value; draw(); }, 120); },
+    });
+    host.append(el('div', { class: 'tawr-filter' }, [chips, search, shown]), tableHost);
+    draw();
   }
 
   /* Said once for the week, quietly, not on every request. */
@@ -268,6 +307,46 @@ function renderRequests(host) {
     }
     V.focus = null;
   }
+}
+
+/* ── Narrowing the week's requests ────────────────────────────────────── */
+
+/** The filters, in the order they are offered: where a request stands, and whether it is in a conflict. */
+const FILTERS = [
+  ['all', 'All'], ['none', 'Not raised'], ['draft', 'Drafts'], ['submitted', 'Submitted'], ['approved', 'Approved'],
+  ['rejected', 'Rejected'], ['denied', 'Denied by BART'], ['cancelled', 'Cancelled'], ['clash', 'In a conflict'],
+];
+
+function filterCounts(items, clashing) {
+  const out = {};
+  for (const i of items) {
+    const st = i.record?.status || 'none';
+    out[st] = (out[st] || 0) + 1;
+    if (i.record && clashing.has(i.record.id)) out.clash = (out.clash || 0) + 1;
+  }
+  return out;
+}
+
+/** The words a request can be found by: its number, its place, its work, its party, its shift and where it stands. */
+function itemWords(i) {
+  const r = i.record;
+  const src = i.group || r?.source || {};
+  return [
+    r ? `#${r.id}` : '', i.group?.locationName || r?.location_name || '', src.area || '',
+    ...(src.activities || []).flatMap((a) => [a.activityId, a.title, a.party, a.rawLocation]),
+    T.tawrShiftLabel(i.group?.shift || r?.shift || ''), statusName(r?.status || 'none'),
+  ].join(' ').toLowerCase();
+}
+
+function filterItems(items, filter, clashing) {
+  const words = String(filter.text || '').toLowerCase().split(/\s+/).filter(Boolean);
+  return items.filter((i) => {
+    const st = i.record?.status || 'none';
+    if (filter.status === 'clash' ? !(i.record && clashing.has(i.record.id)) : filter.status !== 'all' && st !== filter.status) return false;
+    if (!words.length) return true;
+    const hay = itemWords(i);
+    return words.every((w) => hay.includes(w) || (/^\d+$/.test(w) && i.record?.id === Number(w)));
+  });
 }
 
 /** Where a request goes, step by step, with this account's step marked. */
@@ -551,17 +630,17 @@ function card(item, items, clashes = [], { power = [], overs = [] } = {}) {
       ]),
       pairs.length ? el('div', { class: 'small pair', title: 'A TCR and track are separate categories of work, so the same activity makes one request for each.', text: `Goes with ${pairs.map((p) => `${p.record ? `#${p.record.id}` : p.group?.locationName} (${KIND_WORD[p.group?.kind || p.record?.source?.kind] || 'other'})`).join(', ')} — same activity` }) : null,
     ]),
-    el('td', { class: 'c-when' }, [
+    el('td', { class: 'c-when', dataset: { label: 'When' } }, [
       el('span', { class: 'badge', text: `${T.tawrShiftLabel(shift)} shift` }),
       el('div', { text: daysShort(days) }),
       el('div', { class: 'small', text: hoursShort(days) }),
     ]),
-    el('td', { class: 'c-work' }, [
+    el('td', { class: 'c-work', dataset: { label: 'Work' } }, [
       activities[0] ? el('div', { text: [activities[0].activityId, activities[0].title].filter(Boolean).join(' · ') }) : el('div', { text: '—' }),
       activities.length > 1 ? el('div', { class: 'small', text: `and ${activities.length - 1} more` }) : null,
       parties.length ? el('div', { class: 'small', text: parties.join(', ') }) : null,
     ]),
-    el('td', { class: 'c-sup', text: supportText(support) }),
+    el('td', { class: 'c-sup', dataset: { label: 'BART support' }, text: supportText(support) }),
     el('td', { class: 'c-status' }, [
       el('span', { class: 'pill', style: `--c:${STATUS_COLOR[status] || '#9ca3af'}`, text: statusName(status) }),
       el('div', { class: `next tone-${next.tone}`, text: next.text }),

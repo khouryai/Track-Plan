@@ -42,15 +42,27 @@ export function clear(node) {
 
 /* ── Toasts ────────────────────────────────────────────────────────────── */
 
+/**
+ * Say something briefly, bottom right: gone after a few seconds (a failure
+ * twice as long), at most three at once — the oldest goes first — held while
+ * the pointer is on it, and closed with its ×.
+ */
 export function toast(message, tone = 'info', ms = 4500) {
   let host = document.getElementById('toasts');
   if (!host) {
     host = el('div', { id: 'toasts', role: 'status', 'aria-live': 'polite' });
     document.body.append(host);
   }
-  const t = el('div', { class: `toast toast-${tone}`, text: message });
+  const t = el('div', { class: `toast toast-${tone}` }, [
+    el('span', { class: 'toast-text', text: message }),
+    el('button', { type: 'button', class: 'toast-close', 'aria-label': 'Close this message', title: 'Close', text: '×', onClick: () => t.remove() }),
+  ]);
   host.append(t);
-  setTimeout(() => t.remove(), tone === 'bad' ? ms * 2 : ms);
+  while (host.children.length > 3) host.firstElementChild.remove();
+  const life = tone === 'bad' ? ms * 2 : ms;
+  let timer = setTimeout(() => t.remove(), life);
+  t.addEventListener('mouseenter', () => clearTimeout(timer));
+  t.addEventListener('mouseleave', () => { timer = setTimeout(() => t.remove(), 1500); });
   return t;
 }
 

@@ -939,7 +939,7 @@ function rowHistory(row) {
 }
 
 /** Every change to the weeks on screen, as the actions that made them, newest first; each jumps to its cell. */
-async function openChanges() {
+export async function openChanges() {
   const query = { start: V.days[0], end: V.days[V.days.length - 1], limit: 200 };
   const body = el('div', { class: 'hist-body', 'aria-live': 'polite' }, [el('p', { class: 'small', text: 'Reading the history…' })]);
   const handle = openModal({ title: `Changes · ${dayLabel(query.start)} – ${dayLabel(query.end)}`, subtitle: 'Who changed what on the weeks on screen, newest first. Click a line to see it.', body, size: 'lg' });
@@ -966,6 +966,15 @@ async function openChanges() {
   body.append(list, more, note);
   body.addEventListener('click', (e) => { if (e.target.closest('.hist-where')) handle.close(); });
   await page();
+}
+
+/** Bring an activity into view and select it — from the finder: the day it is painted soonest from this week, or its last. */
+export function reveal(rowId) {
+  const m = model();
+  const ids = new Set([rowId, ...LA.resourcesOf(m, rowId).map((r) => r.id)]);
+  const days = LA.cellList(m).filter((c) => ids.has(c.row_id) && c.color).map((c) => c.day).sort();
+  const thisWeek = LA.mondayOf(V.app.today);
+  focusCell(rowId, days.find((d) => d >= thisWeek) || days[days.length - 1] || null);
 }
 
 /** Bring a row's day into view and select it: where a line of the history happened. */

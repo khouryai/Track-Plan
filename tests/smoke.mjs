@@ -991,6 +991,89 @@ async function serverTalk(page) {
   check('and gives the file back as it was sent', fs.readFileSync(await (await dl).path(), 'utf8') === fs.readFileSync(sswp, 'utf8'));
 }
 
+/** Finding things, the keyboard, the week narrowed, messages that close, the figures — and a phone. */
+async function upgrades(page, { mode }) {
+  console.log(`\n${mode}: finding, filtering, the keyboard and a phone`);
+  const live = await page.evaluate(() => JSON.parse(localStorage.getItem('trackplan.ops.v1')).tawrs.filter((t) => t.status === 'submitted').map((t) => ({ id: t.id, week: t.week_start })));
+  const want = live[0];
+  await page.click('nav.views [data-view=today]');
+  await page.waitForSelector('.today-figures');
+  check('each screen names itself in the browser\'s tab', await page.title() === 'Today · Track Plan');
+  await page.keyboard.press('Control+k');
+  await page.waitForSelector('.finder-input');
+  await page.keyboard.type(`#${want.id}`);
+  await page.waitForSelector('.finder-item.on');
+  check('the finder finds a request by its number, first', (await page.textContent('.finder-item.on .finder-title')).startsWith(`#${want.id} `));
+  await page.keyboard.press('Enter');
+  await page.waitForSelector(`.tawr-card.open[data-tawr-id="${want.id}"]`);
+  check('and opens it, in its week', (await page.getAttribute('.week-btn.on', 'data-week')) === want.week && await page.title() === 'TAWRs · Track Plan');
+  await page.locator('header h1').click();
+  await page.keyboard.press('/');
+  await page.waitForSelector('.finder-input');
+  await page.keyboard.type('c-w101');
+  await page.waitForSelector('.finder-item.on[data-kind=activity]');
+  await page.keyboard.press('Enter');
+  await page.waitForSelector('.la-cur');
+  check('an activity found opens on the look-ahead, selected', await page.evaluate(() => document.querySelector('.la-cur')?.closest('tr')?.querySelector('td')?.textContent) === 'C-W101');
+  await page.locator('header h1').click();
+  await page.keyboard.press('?');
+  await page.waitForSelector('.shortcuts');
+  check('? lists the keyboard shortcuts', /Ctrl K/.test(await page.textContent('.shortcuts')) && /Alt 1 … Alt 5/.test(await page.textContent('.shortcuts')));
+  await page.keyboard.press('Escape');
+
+  await page.click('nav.views [data-view=tawr]');
+  await page.click('.subtabs [data-section=requests]');
+  await page.click('.week-btn[data-week="2026-11-02"]');
+  const all = await page.locator('.tawr-card').count();
+  await page.click('.chip-filter[data-filter=clash]');
+  const clashing = await page.locator('.tawr-card').count();
+  check('the week narrowed to the requests in a conflict', clashing > 0 && clashing < all && (await page.textContent('.filter-shown')) === `Showing ${clashing} of ${all}.`, `${clashing} of ${all}`);
+  await page.click('.chip-filter[data-filter=all]');
+  await page.fill('.filter-text', 'daly city');
+  await page.waitForFunction((n) => document.querySelectorAll('.tawr-card').length < n, all);
+  check('and by what the requests say, the box keeping the keyboard', await page.locator('.tawr-card').count() === 2
+    && await page.evaluate(() => document.activeElement?.classList.contains('filter-text')));
+  await page.fill('.filter-text', '');
+  await page.waitForFunction((n) => document.querySelectorAll('.tawr-card').length === n, all);
+  check('the table\'s heading stays in view', await page.evaluate(() => getComputedStyle(document.querySelector('.tawr-table thead th')).position) === 'sticky');
+  await page.click('[data-action=tawr-sync]');
+  await page.waitForSelector('.toast .toast-close');
+  const before = await page.locator('.toast').count();
+  await page.locator('.toast').last().locator('.toast-close').click();
+  check('a message closes with its ×, and no more than three are ever shown', await page.locator('.toast').count() === before - 1 && before <= 3);
+
+  await page.click('nav.views [data-view=today]');
+  const approval = page.locator('.figure[data-figure=approve]');
+  check('Today\'s figures say how much is waiting where', /^\d+$/.test(await approval.locator('.figure-n').textContent()));
+  if (await approval.isEnabled()) {
+    await approval.click();
+    await page.waitForSelector('body[data-view=tawr]');
+    check('and each goes there', true);
+  }
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  const wide = [];
+  for (const v of ['today', 'lookahead', 'tawr', 'map']) {
+    await page.click(`nav.views [data-view=${v}]`);
+    await page.waitForTimeout(400);
+    const over = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+    if (over > 0) wide.push(`${v} +${over}px`);
+  }
+  check('on a phone no screen scrolls sideways', !wide.length, wide.join(', '));
+  const covered = await page.evaluate(() => {
+    const p = document.querySelector('#panel');
+    if (!p || p.classList.contains('hidden')) return 'no panel';
+    const r = p.getBoundingClientRect();
+    const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+    return p.contains(hit) ? 'panel' : `${hit?.className}`;
+  });
+  check('and the track plan\'s panel is above the drawing\'s labels', covered === 'panel' || covered === 'no panel', covered);
+  await page.click('nav.views [data-view=tawr]');
+  check('a week\'s requests are cards, one under another', await page.evaluate(() => getComputedStyle(document.querySelector('.tawr-table tr.tawr-row')).display) === 'grid');
+  await page.setViewportSize({ width: 1500, height: 950 });
+  await shot(page, `${mode}-12-upgrades`);
+}
+
 /** The start page and the calendar link, on the server. */
 async function serverToday(page) {
   console.log('\nserver: today');
@@ -1085,6 +1168,7 @@ try {
     await withBart(page, { mode: 'static site' });
     await reports(page, { mode: 'static site' });
     await talk(page, { mode: 'static site' });
+    await upgrades(page, { mode: 'static site' });
     check('no console errors (static site)', !errors.length, errors.join(' | '));
     await context.close();
     srv.close();

@@ -1,6 +1,7 @@
 /**
- * The application: three views of one plan.
+ * The application: four views of one plan.
  *
+ *   Today        what needs whom, the deadlines ahead and the access approved
  *   Look-ahead   the four-week look-ahead — activities, shifts painted by day,
  *                BART support typed in the cells — where each activity's
  *                Location is linked to the track plan
@@ -9,10 +10,12 @@
  *   Track plan   the map: where every linked activity and request is, and
  *                where a location is picked
  *
- * This module loads what all three read, keeps it in `app`, and switches
- * between them. The views never import each other; they call `app`.
+ * This module loads what they all read, keeps it in `app`, and switches
+ * between them. The views never import each other; they call `app`. The
+ * finder (Ctrl+K or /) and the shortcuts list (?) are wired here too.
  *
- * Imports: store, lookahead, tawr, tawr_sync, map, ui, lookahead_view, tawr_view.
+ * Imports: store, lookahead, tawr, tawr_sync, map, ui, lookahead_view,
+ * tawr_view, today_view, phases, learn, finder.
  */
 
 import * as S from './store.js';
@@ -26,10 +29,12 @@ import * as TawrView from './tawr_view.js';
 import * as TodayView from './today_view.js';
 import { parsePhases } from './phases.js';
 import { buildIndex } from './learn.js';
+import { openFinder, showShortcuts, MOD } from './finder.js';
 
 const $ = (s) => document.querySelector(s);
 const VIEWS = ['today', 'lookahead', 'tawr', 'map'];
 const VIEW_NAMES = { today: 'Today', lookahead: 'the look-ahead', tawr: 'TAWRs', map: 'the track plan' };
+const VIEW_TITLES = { today: 'Today', lookahead: 'Look-ahead', tawr: 'TAWRs', map: 'Track plan' };
 
 export const app = {
   data: null,
@@ -130,6 +135,7 @@ app.go = (view, { week = null, focus = null, back = null } = {}) => {
   if (app.view === 'lookahead' && view !== 'lookahead') LookaheadView.leave?.();
   app.view = view;
   document.body.dataset.view = view;
+  document.title = `${VIEW_TITLES[view]} · Track Plan`;
   document.querySelectorAll('nav.views button').forEach((b) => b.setAttribute('aria-selected', String(b.dataset.view === view)));
   if (location.hash !== `#${view}`) history.replaceState(null, '', `#${view}`);
   if (view === 'map') { pushOverlay(); M.enter(focus); }
@@ -256,6 +262,65 @@ function updateCount() {
   c.title = S.isManager() ? `${waiting.length} waiting for your approval` : `${waiting.length} draft${waiting.length === 1 ? '' : 's'} to review and submit`;
 }
 app.updateCount = updateCount;
+
+/* ══════════════════════════════════════════════════════════════════════════
+   Finding things, and the keyboard
+   ═══════════════════════════════════════════════════════════════════════ */
+
+/** The screens the finder can open, with the words they are known by. */
+const SCREENS = [
+  { id: 'today', title: 'Today', detail: 'What needs you, the deadlines ahead, the calendar link', words: 'start home attention deadlines calendar' },
+  { id: 'lookahead', title: 'Look-ahead', detail: 'The four-week look-ahead', words: '4wla calendar grid weeks' },
+  { id: 'changes', title: 'Changes to the look-ahead', detail: 'Who changed what on the weeks on screen, and when', words: 'history edits log who' },
+  { id: 'tawr', title: 'TAWRs', detail: 'The week\'s track access work requests', words: 'requests track access work week' },
+  { id: 'reports', title: 'Reports', detail: 'Approval rate, BART\'s answers, how early, hours used', words: 'charts statistics figures' },
+  { id: 'setup', title: 'Setup', detail: 'BART\'s form, the requester, contacts, codes, legend', words: 'settings configuration signature form' },
+  { id: 'phases', title: 'Phases of the work', detail: 'Setup', words: 'phase box area' },
+  { id: 'learning', title: 'Learning memory', detail: 'Setup', words: 'predictions memory learned' },
+  { id: 'map', title: 'Track plan', detail: 'The drawing, with the week\'s requests on it', words: 'map drawing sheet' },
+];
+
+function find() {
+  openFinder({
+    source: () => ({ tawrs: app.tawrs, rows: app.la.model.rows, locations: app.data?.locations || [], screens: SCREENS }),
+    go: (f) => {
+      if (f.kind === 'request') {
+        app.openTawr(f.ref);
+      } else if (f.kind === 'activity') {
+        app.go('lookahead');
+        LookaheadView.reveal(f.ref.id);
+      } else if (f.kind === 'place') {
+        app.showOnMap({ location_id: f.ref.id, location_name: f.ref.name, location_kind: f.ref.kind, limits: [], geometry: [] });
+      } else if (f.ref.id === 'changes') {
+        app.go('lookahead');
+        LookaheadView.openChanges();
+      } else if (f.ref.id === 'reports' || f.ref.id === 'setup') {
+        TawrView.openSection(f.ref.id);
+        app.go('tawr');
+      } else if (f.ref.id === 'phases' || f.ref.id === 'learning') {
+        app.openSetup(f.ref.id);
+      } else {
+        app.go(f.ref.id);
+      }
+    },
+  });
+}
+app.find = find;
+
+/** Ctrl+K or "/" finds, "?" lists the shortcuts — never while a dialog, a text box or the grid has the keyboard. */
+function onKeys(e) {
+  if (document.querySelector('.modal-back, .finder-back') || !S.store.user) return;
+  if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === 'k') { e.preventDefault(); find(); return; }
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  if (e.target.closest?.('input, textarea, select, [contenteditable=""], [contenteditable=true], .la-scroll')) return;
+  if (e.key === '/') {
+    e.preventDefault();
+    find();
+  } else if (e.key === '?') {
+    e.preventDefault();
+    showShortcuts();
+  }
+}
 
 /* ══════════════════════════════════════════════════════════════════════════
    Who is using it
@@ -406,6 +471,9 @@ function poll() {
     app.data = data;
     app.locations = data.locations;
     document.querySelectorAll('nav.views button').forEach((b) => { b.onclick = () => app.go(b.dataset.view); });
+    $('#find').onclick = find;
+    $('#find kbd').textContent = `${MOD} K`;
+    document.addEventListener('keydown', onKeys);
     $('#map-back').onclick = () => { const b = backTo; if (b?.tawr) app.openTawr(b.tawr); else if (b) app.go(b.view); };
     window.addEventListener('hashchange', () => { const v = location.hash.slice(1); if (VIEWS.includes(v) && v !== app.view) app.go(v); });
     window.addEventListener('tp:signed-out', () => { toast('Signed out. Sign in again to carry on.', 'warn'); signIn().then(() => location.reload()); });
